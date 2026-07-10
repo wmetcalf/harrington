@@ -31,7 +31,7 @@ impl RedirTarget {
 
 static REDIR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?P<lead>^|\s)(?P<fd>[012])?(?P<op>>>|>|<)\s*(?P<tgt>"(?:[^"]|"")*"|'(?:[^']|'')*'|[^\s|&<>]+)"#,
+        r#"(?P<lead>^|\s)(?P<fd>[012])?(?P<op>>>|>|<)\s*(?P<tgt>""(?:[^"]|"")*""|"(?:[^"]|"")*"|'(?:[^']|'')*'|[^\s|&<>]+)"#,
     )
         .expect("redir regex compiles")
 });
@@ -46,13 +46,7 @@ pub fn extract_redirections(cmd: &str) -> (String, RedirectionSet) {
             .and_then(|s| s.parse().ok())
             .unwrap_or(1);
         let op = m.name("op").map(|x| x.as_str()).unwrap_or(">");
-        let mut tgt = m.name("tgt").map(|x| x.as_str()).unwrap_or("").to_string();
-        if ((tgt.starts_with('"') && tgt.ends_with('"'))
-            || (tgt.starts_with('\'') && tgt.ends_with('\'')))
-            && tgt.len() >= 2
-        {
-            tgt = tgt[1..tgt.len() - 1].to_string();
-        }
+        let tgt = unquote_redirection_target(m.name("tgt").map(|x| x.as_str()).unwrap_or(""));
         match op {
             "<" => set.stdin = Some(tgt),
             ">" | ">>" => {
@@ -74,4 +68,37 @@ pub fn extract_redirections(cmd: &str) -> (String, RedirectionSet) {
     }
     let cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     (cleaned, set)
+}
+
+fn unquote_redirection_target(token: &str) -> String {
+    if token.starts_with(r#""""#) && token.ends_with(r#""""#) && token.len() >= 4 {
+        return token[2..token.len() - 2].to_string();
+    }
+    if ((token.starts_with('"') && token.ends_with('"'))
+        || (token.starts_with('\'') && token.ends_with('\'')))
+        && token.len() >= 2
+    {
+        return token[1..token.len() - 1].to_string();
+    }
+    token.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_redirections, RedirTarget};
+
+    #[test]
+    fn doubled_quoted_stdout_target_is_not_parsed_as_empty() {
+        let (cleaned, redir) = extract_redirections(
+            r#"echo payload > ""C:\Users\puncher\AppData\Local\Temp\getadmin.vbs"""#,
+        );
+
+        assert_eq!(cleaned, "echo payload");
+        assert_eq!(
+            redir.stdout,
+            Some(RedirTarget::Trunc(
+                r#"C:\Users\puncher\AppData\Local\Temp\getadmin.vbs"#.to_string()
+            ))
+        );
+    }
 }

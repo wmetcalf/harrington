@@ -8,7 +8,7 @@
 use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
 use thiserror::Error;
 
-pub const MAX_CIPHERTEXT: usize = 4 * 1024 * 1024;
+pub const MAX_CIPHERTEXT: usize = 12 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum CryptoError {

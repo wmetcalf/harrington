@@ -4,6 +4,7 @@
 //! loader payload; `:: ` is the single-line AES ciphertext envelope).
 
 const MAX_TOTAL: usize = 2 * 1024 * 1024;
+const MAX_COLON_N_ENTRIES: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PayloadLines<'a> {
@@ -54,6 +55,9 @@ pub fn collect(raw: &[u8]) -> PayloadLines<'_> {
             if let Ok(s) = std::str::from_utf8(digits) {
                 if let Ok(n) = s.parse::<u32>() {
                     let content = &line[end..];
+                    if colon_n.len() >= MAX_COLON_N_ENTRIES {
+                        break;
+                    }
                     if total + content.len() > MAX_TOTAL {
                         break;
                     }
@@ -131,5 +135,17 @@ mod tests {
         let p = collect(&raw);
         let total: usize = p.colon_n.iter().map(|(_, s)| s.len()).sum();
         assert!(total <= MAX_TOTAL, "total {} exceeds cap", total);
+    }
+
+    #[test]
+    fn caps_empty_colon_n_entry_count() {
+        let mut raw = Vec::new();
+        for i in 0..10_000 {
+            raw.extend_from_slice(format!(":::{i}\n").as_bytes());
+        }
+
+        let p = collect(&raw);
+
+        assert_eq!(p.colon_n.len(), MAX_COLON_N_ENTRIES);
     }
 }

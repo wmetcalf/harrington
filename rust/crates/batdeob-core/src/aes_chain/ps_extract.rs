@@ -9,6 +9,8 @@ use base64::Engine;
 use once_cell::sync::Lazy;
 use regex::Regex;
 
+const MAX_AES_BYTE_ARRAY_FIELD_MATCHES: usize = 1024;
+
 /// All single-quoted PS string literals whose body length is >= min_len.
 ///
 /// PS single-quoted strings cannot contain a literal `'` (the doubled
@@ -163,7 +165,12 @@ fn collect_base64_blobs(text: &str) -> Vec<Vec<u8>> {
 
 fn find_aes_byte_array_assignment(text: &str, field: &str) -> Option<Vec<u8>> {
     let mut search_start = 0usize;
+    let mut matches_seen = 0usize;
     while let Some(pos) = find_ascii_case_insensitive(text, field, search_start) {
+        matches_seen += 1;
+        if matches_seen > MAX_AES_BYTE_ARRAY_FIELD_MATCHES {
+            return None;
+        }
         let after_field = skip_ascii_ws(text, pos + field.len());
         if text.as_bytes().get(after_field) != Some(&b'=') {
             search_start = pos + field.len();
@@ -249,10 +256,7 @@ fn parse_ps_byte_array(body: &str) -> Option<Vec<u8>> {
 }
 
 fn find_ascii_case_insensitive(text: &str, needle: &str, start: usize) -> Option<usize> {
-    text.get(start..)?
-        .to_ascii_lowercase()
-        .find(&needle.to_ascii_lowercase())
-        .map(|pos| start + pos)
+    crate::util::find_ascii_case_insensitive_from(text, needle, start)
 }
 
 fn skip_ascii_ws(text: &str, mut idx: usize) -> usize {
@@ -394,6 +398,17 @@ mod tests {
         let (key, iv) = find_aes_key_iv(text).unwrap();
         assert_eq!(key, (1u8..=24).collect::<Vec<_>>());
         assert_eq!(iv, (101u8..=116).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn aes_byte_array_assignment_scan_is_bounded() {
+        let mut text = String::new();
+        for _ in 0..2_000 {
+            text.push_str("$aes.Key : [byte[]]@(1,2,3,4);\n");
+        }
+        text.push_str("$aes.Key = [byte[]]@(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16);\n");
+
+        assert_eq!(find_aes_byte_array_assignment(&text, "Key"), None);
     }
 
     #[test]

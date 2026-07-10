@@ -5,7 +5,6 @@ use crate::handlers::util::{
     filesystem_entry_for_path, filesystem_storage_key, join_windows_path_preserving_separator,
     normalize_wildcard_path, split_words, strip_outer_quotes, wildcard_match,
 };
-use crate::traits::Trait;
 
 pub fn h_robocopy(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
@@ -13,10 +12,7 @@ pub fn h_robocopy(raw: &str, env: &mut Environment) {
         return;
     };
 
-    env.traits.push(Trait::AdminCommand {
-        name: "robocopy".to_string(),
-        cmd: raw.to_string(),
-    });
+    env.push_admin_command("robocopy", raw);
 
     if files.is_empty() {
         copy_default_file_set(&src_dir, &dst_dir, env);

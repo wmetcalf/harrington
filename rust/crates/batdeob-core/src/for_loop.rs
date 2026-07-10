@@ -17,6 +17,9 @@ where
 {
     let mut count = 0u64;
     for v in values {
+        if for_body_budget_exhausted(body, env) {
+            break;
+        }
         if env.limits.iterations >= env.limits.max_iterations {
             if !env
                 .traits
@@ -34,8 +37,42 @@ where
         // Substitute %%A or %A in the body with the current value.
         let substituted = substitute_loop_var(body, var_name, &v);
         on_iter(env, &substituted);
+        if for_body_budget_exhausted(body, env) {
+            break;
+        }
     }
     count
+}
+
+pub(crate) fn for_body_budget_exhausted(body: &str, env: &mut Environment) -> bool {
+    if let Some(deadline) = env.limits.deadline {
+        if std::time::Instant::now() >= deadline {
+            if !env
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::TimeoutHit))
+            {
+                env.traits.push(crate::traits::Trait::TimeoutHit);
+            }
+            return true;
+        }
+    }
+    if env.limits.max_output_bytes > 0
+        && (env.iter_output.len() as u64) >= env.limits.max_output_bytes
+    {
+        env.note_output_capped(env.iter_output.len() as u64);
+        if !env
+            .traits
+            .iter()
+            .any(|t| matches!(t, crate::traits::Trait::IterationCapped { .. }))
+        {
+            env.traits.push(crate::traits::Trait::IterationCapped {
+                command: body.to_string(),
+            });
+        }
+        return true;
+    }
+    false
 }
 
 /// Replace `%%X` (script form) and `%X` (interactive form) with `value`.

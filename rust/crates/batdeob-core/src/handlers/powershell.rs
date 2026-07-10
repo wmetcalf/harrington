@@ -275,8 +275,7 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
                 let body = command_body_from_attached_value(value, &tokens[i + 1..]);
                 let body = command_body_payload(&body);
                 if !body.is_empty() && has_non_redirection_body(&body) {
-                    record_powershell_side_effects(&body, env);
-                    env.exec_ps1.push(body.into_bytes());
+                    queue_powershell_command_body(body, env);
                 }
                 return;
             }
@@ -301,8 +300,7 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
                 let body = tokens[i + 1..].join(" ");
                 let body = command_body_payload(&body);
                 if !body.is_empty() && has_non_redirection_body(&body) {
-                    record_powershell_side_effects(&body, env);
-                    env.exec_ps1.push(body.into_bytes());
+                    queue_powershell_command_body(body, env);
                 }
                 return;
             }
@@ -326,9 +324,14 @@ pub fn h_powershell(raw: &str, env: &mut Environment) {
     let body = skip_ps_meta_flags(&tokens[1..]);
     let body = command_body_payload(&body);
     if !body.is_empty() && has_non_redirection_body(&body) {
-        record_powershell_side_effects(&body, env);
-        env.exec_ps1.push(body.into_bytes());
+        queue_powershell_command_body(body, env);
     }
+}
+
+fn queue_powershell_command_body(body: String, env: &mut Environment) {
+    let body = crate::ps1_scan::expand_ps_env_refs(&body, env);
+    record_powershell_side_effects(&body, env);
+    env.exec_ps1.push(body.into_bytes());
 }
 
 fn record_powershell_side_effects(body: &str, env: &mut Environment) {
@@ -347,7 +350,12 @@ fn record_quoted_literal_redirect_side_effects(body: &str, env: &mut Environment
 }
 
 fn record_download_side_effects(body: &str, env: &mut Environment) {
-    for (src, dst) in crate::ps1_scan::ps_download_side_effects(body) {
+    let (downloads, timed_out) =
+        crate::ps1_scan::ps_download_side_effects_until(body, env.limits.deadline);
+    if timed_out {
+        env.note_timeout();
+    }
+    for (src, dst) in downloads {
         env.modified_filesystem
             .insert(filesystem_storage_key(&dst), FsEntry::Download { src });
     }
@@ -426,16 +434,30 @@ fn record_set_content_value_side_effects(body: &str, env: &mut Environment) {
 
 fn write_powershell_content(env: &mut Environment, dst: &str, content: Vec<u8>, append: bool) {
     let key = filesystem_storage_key(dst);
+    let cap = env.limits.max_output_bytes as usize;
     if append {
         if let Some(FsEntry::Content {
             content: prior,
             append: prior_append,
         }) = env.modified_filesystem.get_mut(&key)
         {
-            prior.extend_from_slice(&content);
+            let room = cap.saturating_sub(prior.len());
+            let take = content.len().min(room);
+            if take > 0 {
+                prior.extend_from_slice(&content[..take]);
+            }
+            let capped_at = (take < content.len()).then_some(prior.len() as u64);
             *prior_append = true;
+            if let Some(bytes_at_cap) = capped_at {
+                env.note_output_capped(bytes_at_cap);
+            }
             return;
         }
+    }
+    let mut content = content;
+    if content.len() > cap {
+        content.truncate(cap);
+        env.note_output_capped(content.len() as u64);
     }
     env.modified_filesystem
         .insert(key, FsEntry::Content { content, append });

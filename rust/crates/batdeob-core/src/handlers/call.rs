@@ -46,28 +46,54 @@ pub fn h_call(raw: &str, env: &mut Environment) {
                 .push(crate::handlers::cmd::has_v_on_raw(body));
             return;
         }
-        crate::interp::interpret_line(body, env);
+        if call_body_is_set_assignment(body) {
+            crate::handlers::set::h_set(body, env);
+            return;
+        }
+        if env.enter_child_script(body) {
+            crate::interp::interpret_line(body, env);
+        }
     }
 }
 
 pub(crate) fn call_body(raw: &str) -> Option<&str> {
     let rest = raw.trim_start_matches(|c: char| {
-        c == '@' || c == '(' || c == ';' || c == ',' || c.is_whitespace()
+        c == '@' || c == '(' || c == ')' || c == ';' || c == ',' || c.is_whitespace()
     });
-    let after = strip_keyword_ci(rest, "call", b":/")?;
-    Some(after.trim_start())
+    let after = strip_keyword_ci(rest, "call", b":/;,")?;
+    Some(after.trim_start_matches(|c: char| c == ';' || c == ',' || c.is_whitespace()))
 }
 
 fn unescape_outer_caret_bangs(command: &str) -> String {
     command.replace("^!", "!")
 }
 
+fn call_body_is_set_assignment(body: &str) -> bool {
+    let tokens = split_words(body);
+    tokens.first().is_some_and(|cmd| {
+        let cmd = cmd.trim_start_matches('@').trim_matches(['"', '\'']);
+        cmd.eq_ignore_ascii_case("set")
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::call_body;
+    use super::{call_body, call_body_is_set_assignment};
 
     #[test]
     fn call_body_accepts_echo_suppressed_prefix() {
         assert_eq!(call_body("@call payload.cmd"), Some("payload.cmd"));
+    }
+
+    #[test]
+    fn call_body_accepts_wrapper_and_separator_prefix() {
+        assert_eq!(call_body("(CalL;netstat /ano)"), Some("netstat /ano)"));
+    }
+
+    #[test]
+    fn call_set_body_is_assignment_not_child_script() {
+        assert!(call_body_is_set_assignment(r#"set "X=value""#));
+        assert!(call_body_is_set_assignment(r#"@set X=value"#));
+        assert!(!call_body_is_set_assignment("payload.cmd"));
     }
 }

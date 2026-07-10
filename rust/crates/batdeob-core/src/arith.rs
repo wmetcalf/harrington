@@ -15,6 +15,8 @@
 
 use crate::env::Environment;
 
+const MAX_PARSE_RECURSION: usize = 128;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Token {
     Int(i32),
@@ -63,7 +65,11 @@ pub enum EvalError {
 /// Evaluate a set /a expression. Returns the value of the last sub-expression.
 pub fn eval(expr: &str, env: &mut Environment) -> Result<i32, EvalError> {
     let tokens = tokenize(expr)?;
-    let mut p = Parser { tokens, pos: 0 };
+    let mut p = Parser {
+        tokens,
+        pos: 0,
+        recursion_depth: 0,
+    };
     let v = p.parse_comma(env)?;
     if p.pos != p.tokens.len() {
         return Err(EvalError::Parse(format!(
@@ -206,6 +212,7 @@ fn tokenize(s: &str) -> Result<Vec<Token>, EvalError> {
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    recursion_depth: usize,
 }
 
 impl Parser {
@@ -229,6 +236,21 @@ impl Parser {
         } else {
             false
         }
+    }
+
+    fn parse_nested<F>(&mut self, env: &mut Environment, f: F) -> Result<i32, EvalError>
+    where
+        F: FnOnce(&mut Self, &mut Environment) -> Result<i32, EvalError>,
+    {
+        if self.recursion_depth >= MAX_PARSE_RECURSION {
+            return Err(EvalError::Parse(
+                "arithmetic expression nesting too deep".into(),
+            ));
+        }
+        self.recursion_depth += 1;
+        let result = f(self, env);
+        self.recursion_depth -= 1;
+        result
     }
 
     fn parse_comma(&mut self, env: &mut Environment) -> Result<i32, EvalError> {
@@ -264,7 +286,7 @@ impl Parser {
                         | Op::ShrEq
                 ) {
                     self.pos += 2;
-                    let rhs = self.parse_assign(env)?;
+                    let rhs = self.parse_nested(env, |parser, env| parser.parse_assign(env))?;
                     let cur = lookup(env, &name);
                     let new = match o {
                         Op::Assign => rhs,
@@ -375,25 +397,25 @@ impl Parser {
     }
     fn parse_unary(&mut self, env: &mut Environment) -> Result<i32, EvalError> {
         if self.eat_op(Op::Minus) {
-            let v = self.parse_unary(env)?;
+            let v = self.parse_nested(env, |parser, env| parser.parse_unary(env))?;
             return Ok(v.wrapping_neg());
         }
         if self.eat_op(Op::Plus) {
-            return self.parse_unary(env);
+            return self.parse_nested(env, |parser, env| parser.parse_unary(env));
         }
         if self.eat_op(Op::Not) {
-            let v = self.parse_unary(env)?;
+            let v = self.parse_nested(env, |parser, env| parser.parse_unary(env))?;
             return Ok(if v == 0 { 1 } else { 0 });
         }
         if self.eat_op(Op::BitNot) {
-            let v = self.parse_unary(env)?;
+            let v = self.parse_nested(env, |parser, env| parser.parse_unary(env))?;
             return Ok(!v);
         }
         self.parse_primary(env)
     }
     fn parse_primary(&mut self, env: &mut Environment) -> Result<i32, EvalError> {
         if self.eat_op(Op::LParen) {
-            let v = self.parse_comma(env)?;
+            let v = self.parse_nested(env, |parser, env| parser.parse_comma(env))?;
             if !self.eat_op(Op::RParen) {
                 return Err(EvalError::Parse("expected )".into()));
             }
@@ -414,4 +436,18 @@ fn lookup(env: &Environment, name: &str) -> i32 {
     env.get(name)
         .and_then(|s| s.trim().parse::<i32>().ok())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{eval, EvalError};
+    use crate::env::Environment;
+
+    #[test]
+    fn deeply_nested_parentheses_are_rejected() {
+        let expr = format!("{}1{}", "(".repeat(200), ")".repeat(200));
+        let mut env = Environment::default();
+
+        assert!(matches!(eval(&expr, &mut env), Err(EvalError::Parse(_))));
+    }
 }

@@ -8,7 +8,7 @@ use regex::Regex;
 // Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
 #[expect(clippy::expect_used, reason = "static regex construction")]
 static IF_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)^[\s@(;,]*if\s+(?P<neg>not\s+)?(?P<rest>.*)$").expect("if regex")
+    Regex::new(r"(?i)^[\s@(),;]*if(?:\s+|[,;]+)(?P<neg>not\s+)?(?P<rest>.*)$").expect("if regex")
 });
 
 pub fn h_if(raw: &str, env: &mut Environment) {
@@ -29,9 +29,11 @@ pub fn h_if(raw: &str, env: &mut Environment) {
             }
         }
         None => {
-            env.traits.push(crate::traits::Trait::IfNotResolved {
-                condition: rest.to_string(),
-            });
+            if !crate::should_suppress_scaffold_if_not_resolved(rest) {
+                env.traits.push(crate::traits::Trait::IfNotResolved {
+                    condition: rest.to_string(),
+                });
+            }
             return;
         }
     };
@@ -529,8 +531,50 @@ fn dispatch_if_branch(body: &str, env: &mut Environment) {
                 .push(crate::handlers::cmd::has_v_on_raw(body));
             return;
         }
-        crate::interp::interpret_line(body, env);
+        if if_body_is_inline_set_assignment(body) {
+            crate::interp::interpret_line(body, env);
+            return;
+        }
+        if if_body_is_direct_goto(body) {
+            crate::interp::interpret_line(body, env);
+            return;
+        }
+        if env.enter_child_script(body) {
+            crate::interp::interpret_line(body, env);
+        }
     }
+}
+
+fn if_body_is_inline_set_assignment(body: &str) -> bool {
+    let body = body.trim_start_matches(|c: char| {
+        c == '(' || c == '@' || c == ';' || c == ',' || c.is_whitespace()
+    });
+    if !body
+        .get(..3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("set"))
+    {
+        return false;
+    }
+    let rest = &body[3..];
+    if !rest
+        .as_bytes()
+        .first()
+        .is_some_and(|c| c.is_ascii_whitespace() || *c == b'/' || *c == b'"')
+    {
+        return false;
+    }
+    let rest = rest.trim_start();
+    if rest.is_empty() || rest.starts_with("/a") || rest.starts_with("/A") {
+        return false;
+    }
+    !rest.contains('&') && !rest.contains('|') && !rest.contains('<') && !rest.contains('>')
+}
+
+fn if_body_is_direct_goto(body: &str) -> bool {
+    let body = body.trim_start_matches(|c: char| {
+        c == '(' || c == '@' || c == ';' || c == ',' || c.is_whitespace()
+    });
+    strip_kw(body, "goto").is_some()
 }
 
 fn unescape_outer_caret_bangs(command: &str) -> String {
@@ -561,5 +605,14 @@ mod tests {
         h_if(r#"@if "a"=="b" echo match"#, &mut env);
 
         assert!(env.suppress_until_eol);
+    }
+
+    #[test]
+    fn if_accepts_wrapper_and_comma_separator() {
+        let mut env = Environment::default();
+
+        h_if(") if,1==1 (set X=ran)", &mut env);
+
+        assert_eq!(env.get("X").as_deref(), Some("ran"));
     }
 }

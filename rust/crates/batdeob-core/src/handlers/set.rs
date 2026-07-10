@@ -1,8 +1,9 @@
 //! `set` command handler. Mirrors batch_interpreter.py:interpret_set.
 
 use crate::env::{Environment, FsEntry};
-use crate::handlers::util::starts_with_ascii_case_insensitive;
+use crate::handlers::util::{filesystem_storage_key, starts_with_ascii_case_insensitive};
 use crate::traits::Trait;
+use crate::util::contains_ascii_case_insensitive;
 use crate::{arith, redirect};
 
 pub fn h_set(raw: &str, env: &mut Environment) {
@@ -39,7 +40,7 @@ pub fn h_set(raw: &str, env: &mut Environment) {
     // Quoted form: set "NAME=VALUE"
     if let Some(inner) = quoted_form(body) {
         if let Some((name, value)) = split_eq(inner) {
-            env.set(name, value);
+            set_assignment(name, value, env);
         }
         return;
     }
@@ -70,8 +71,70 @@ pub fn h_set(raw: &str, env: &mut Environment) {
     };
 
     if let Some((name, value)) = split_eq(body) {
-        env.set(name, value);
+        set_assignment(name, value, env);
     }
+}
+
+fn set_assignment(name: &str, value: &str, env: &mut Environment) {
+    if unresolved_self_substitution_value(name, value, env) {
+        return;
+    }
+    let value = materialize_direct_self_reference(name, value, env);
+    env.set(name, &value);
+}
+
+/// `set PATH=prefix;%PATH%` resolves `%PATH%` before assigning the new value.
+/// Raw pre-dispatch paths bypass the normal command renderer, so preserve that
+/// CMD behavior here rather than storing a recursive variable definition.
+pub(crate) fn materialize_direct_self_reference(
+    name: &str,
+    value: &str,
+    env: &mut Environment,
+) -> String {
+    if !has_direct_self_reference(name, value, env) {
+        return value.to_string();
+    }
+    crate::normalize::normalize_to_string(&crate::lex::lex(value), env)
+}
+
+pub(crate) fn has_direct_self_reference(name: &str, value: &str, env: &Environment) -> bool {
+    let name = name.trim();
+    if name.is_empty() {
+        return false;
+    }
+    let percent_ref = format!("%{name}%");
+    let delayed_ref = format!("!{name}!");
+    contains_ascii_case_insensitive(value, &percent_ref)
+        || (env.delayed_expansion && contains_ascii_case_insensitive(value, &delayed_ref))
+}
+
+fn unresolved_self_substitution_value(name: &str, value: &str, env: &Environment) -> bool {
+    if let Some(existing) = env.get(name) {
+        if !existing.contains('%') && !existing.contains('!') {
+            return false;
+        }
+    }
+    let name = name.trim();
+    if name.is_empty() {
+        return false;
+    }
+    let value = value.trim_start();
+    if value
+        .get(..name.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(name))
+        && value[name.len()..].starts_with(':')
+        && value[name.len() + 1..].contains('"')
+        && value.ends_with('=')
+    {
+        return true;
+    }
+    let Some(rest) = value.strip_prefix('%').or_else(|| value.strip_prefix('!')) else {
+        return false;
+    };
+    let Some((candidate, _op)) = rest.split_once(':') else {
+        return false;
+    };
+    candidate.eq_ignore_ascii_case(name)
 }
 
 fn do_set_p(raw: &str, env: &mut Environment) {
@@ -89,8 +152,11 @@ fn do_set_p(raw: &str, env: &mut Environment) {
         return;
     }
     let raw_body = raw_after_flag[2..].trim_start();
+    let stdout = redirections.stdout.clone();
     let stdin = redirections
         .stdin
+        .clone()
+        .or_else(|| set_p_inline_stdin(raw_body))
         .or_else(|| set_p_attached_stdin(raw_body));
     let body = strip_set_prefix(&cleaned)
         .and_then(|rest| {
@@ -99,6 +165,18 @@ fn do_set_p(raw: &str, env: &mut Environment) {
                 .then(|| after_flag[2..].trim_start())
         })
         .unwrap_or(raw_body);
+    if stdin
+        .as_deref()
+        .is_some_and(|path| path.eq_ignore_ascii_case("nul"))
+    {
+        if let (Some(target), Some(prompt)) = (stdout, set_p_prompt_payload(body)) {
+            write_set_p_prompt_redirect(target, prompt.into_bytes(), env);
+            if let Some(tail) = unquoted_pipeline_tail(raw) {
+                crate::interp::interpret_line(tail, env);
+            }
+            return;
+        }
+    }
     let Some(name) = set_p_name(body) else {
         return;
     };
@@ -110,6 +188,91 @@ fn do_set_p(raw: &str, env: &mut Environment) {
         return;
     };
     env.set(name, &value);
+}
+
+fn set_p_prompt_payload(body: &str) -> Option<String> {
+    let (_, prompt) = body.split_once('=')?;
+    let prompt = prompt.trim_start();
+    if prompt.is_empty() {
+        return Some(String::new());
+    }
+    if let Some(rest) = prompt.strip_prefix('"') {
+        let end = rest.find('"').unwrap_or(rest.len());
+        return Some(rest[..end].to_string());
+    }
+    if let Some(rest) = prompt.strip_prefix('\'') {
+        let end = rest.find('\'').unwrap_or(rest.len());
+        return Some(rest[..end].to_string());
+    }
+    let end = prompt.find(['<', '>', '&', '|']).unwrap_or(prompt.len());
+    Some(prompt[..end].trim_end().to_string())
+}
+
+fn write_set_p_prompt_redirect(
+    target: crate::redirect::RedirTarget,
+    content: Vec<u8>,
+    env: &mut Environment,
+) {
+    let path = target.path().to_string();
+    let append = target.append();
+    let cap = env.limits.max_output_bytes as usize;
+    let redirected_chunk = if cap > 0 && content.len() > cap {
+        env.note_output_capped(cap as u64);
+        content[..cap].to_vec()
+    } else {
+        content.clone()
+    };
+    env.traits.push(Trait::EchoRedirect {
+        content: redirected_chunk,
+        target: path.clone(),
+        append,
+    });
+
+    let key = filesystem_storage_key(&path);
+    if append {
+        if let Some(FsEntry::Content {
+            content: prior,
+            append: prior_append,
+        }) = env.modified_filesystem.get_mut(&key)
+        {
+            let room = cap.saturating_sub(prior.len());
+            let take = content.len().min(room);
+            if take > 0 {
+                prior.extend_from_slice(&content[..take]);
+            }
+            *prior_append = true;
+            return;
+        }
+    }
+
+    let mut bounded = content;
+    if bounded.len() > cap {
+        bounded.truncate(cap);
+    }
+    env.modified_filesystem.insert(
+        key,
+        FsEntry::Content {
+            content: bounded,
+            append,
+        },
+    );
+}
+
+fn unquoted_pipeline_tail(raw: &str) -> Option<&str> {
+    let mut in_double = false;
+    let mut in_single = false;
+    for (idx, ch) in raw.char_indices() {
+        match ch {
+            '"' if !in_single => in_double = !in_double,
+            '\'' if !in_double => in_single = !in_single,
+            '|' if !in_double && !in_single => {
+                let tail = raw[idx + ch.len_utf8()..].trim();
+                return (!tail.is_empty()).then_some(tail);
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn set_p_attached_stdin(body: &str) -> Option<String> {
@@ -126,6 +289,37 @@ fn set_p_attached_stdin(body: &str) -> Option<String> {
         .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '&' | '|'))
         .unwrap_or(target.len());
     (end > 0).then(|| target[..end].to_string())
+}
+
+fn set_p_inline_stdin(body: &str) -> Option<String> {
+    let mut in_double = false;
+    let mut in_single = false;
+    for (idx, ch) in body.char_indices() {
+        match ch {
+            '"' if !in_single => in_double = !in_double,
+            '\'' if !in_double => in_single = !in_single,
+            '<' if !in_double && !in_single => {
+                let target = body[idx + ch.len_utf8()..].trim_start();
+                if target.is_empty() {
+                    return None;
+                }
+                if let Some(rest) = target.strip_prefix('"') {
+                    let end = rest.find('"')?;
+                    return Some(rest[..end].to_string());
+                }
+                if let Some(rest) = target.strip_prefix('\'') {
+                    let end = rest.find('\'')?;
+                    return Some(rest[..end].to_string());
+                }
+                let end = target
+                    .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '&' | '|'))
+                    .unwrap_or(target.len());
+                return (end > 0).then(|| target[..end].to_string());
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn set_p_name(body: &str) -> Option<&str> {
@@ -227,7 +421,8 @@ fn split_eq(s: &str) -> Option<(&str, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_set_prefix;
+    use super::{h_set, strip_set_prefix};
+    use crate::env::{Config, Environment};
 
     #[test]
     fn strip_set_prefix_accepts_ascii_separators() {
@@ -240,5 +435,24 @@ mod tests {
     fn strip_set_prefix_rejects_non_separator_suffix() {
         assert_eq!(strip_set_prefix("setx"), None);
         assert_eq!(strip_set_prefix("setα"), None);
+    }
+
+    #[test]
+    fn raw_self_referential_path_assignment_uses_prior_value() {
+        let mut env = Environment::new(&Config::default());
+        env.set("BASEDIR", r"C:\Cache");
+
+        h_set(r"set PATH=%BASEDIR%;%BASEDIR%\Scripts;%PATH%", &mut env);
+
+        assert!(env.get("PATH").is_some(), "PATH must remain defined");
+        let path = env.get("PATH").unwrap_or_default();
+        assert!(
+            path.starts_with(r"C:\Cache;C:\Cache\Scripts;C:\WINDOWS\system32"),
+            "self-referential assignment retained an unresolved value: {path}"
+        );
+        assert!(
+            !path.contains("%PATH%"),
+            "self-referential assignment must not store a recursive reference: {path}"
+        );
     }
 }

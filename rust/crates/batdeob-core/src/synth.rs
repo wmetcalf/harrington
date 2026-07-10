@@ -895,6 +895,9 @@ fn synth_cmd(rest: &str, input: Vec<String>, env: &mut Environment) -> Vec<Strin
     let Some(child) = cmd_child_after_switch(rest) else {
         return input;
     };
+    if !env.enter_child_script(child) {
+        return Vec::new();
+    }
     run_pipeline(child, env)
 }
 

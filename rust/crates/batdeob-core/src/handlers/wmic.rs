@@ -43,11 +43,18 @@ pub(crate) fn wmic_process_create_inner(raw: &str) -> Option<String> {
 }
 
 fn wmic_create_commandline_argument(tail: &str) -> Option<String> {
-    let tail = tail.trim();
-    if let Some(value_start) = wmic_commandline_value_start(tail) {
-        return wmic_create_commandline_argument(&tail[value_start..]);
+    const MAX_COMMANDLINE_UNWRAPS: usize = 8;
+    let mut tail = tail.trim();
+    for _ in 0..MAX_COMMANDLINE_UNWRAPS {
+        let Some(value_start) = wmic_commandline_value_start(tail) else {
+            return wmic_create_commandline_tail(tail);
+        };
+        tail = tail[value_start..].trim();
     }
+    None
+}
 
+fn wmic_create_commandline_tail(tail: &str) -> Option<String> {
     let mut in_dq = false;
     let mut in_sq = false;
     let mut end = tail.len();
@@ -152,6 +159,12 @@ mod tests {
                 .as_deref(),
             Some("cmd /c echo named")
         );
+    }
+
+    #[test]
+    fn create_argument_named_commandline_unwrap_is_bounded() {
+        let nested = format!("{}\"cmd /c echo hi\"", "CommandLine=".repeat(32));
+        assert_eq!(wmic_create_commandline_argument(&nested), None);
     }
 
     #[test]

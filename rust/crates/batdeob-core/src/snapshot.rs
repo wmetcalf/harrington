@@ -30,20 +30,19 @@ pub struct Snapshot {
     pub r#where: BTreeMap<String, String>,
 }
 
+const WIN7_JSON: &str = include_str!("../data/win7.json");
+const WIN10_JSON: &str = include_str!("../data/win10.json");
 const WIN11_JSON: &str = include_str!("../data/win11.json");
 
+static WIN7: Lazy<Option<Snapshot>> = Lazy::new(|| serde_json::from_str(WIN7_JSON).ok());
+static WIN10: Lazy<Option<Snapshot>> = Lazy::new(|| serde_json::from_str(WIN10_JSON).ok());
 static WIN11: Lazy<Option<Snapshot>> = Lazy::new(|| serde_json::from_str(WIN11_JSON).ok());
 
-/// Get the snapshot for a given winver. We currently ship only the
-/// Win11 dataset; Win7/Win10 callers fall through to it because
-/// assoc/ftype tables are largely stable across recent versions, and
-/// the Win11 snapshot carries entries (`Microsoft.PowerShellConsole.1`,
-/// `Microsoft.PowerShellCmdletDefinitionXML.1`, …) that the FE
-/// DOSfuscation `ftype^|findstr lCo` family of FOR /F gadgets keys
-/// off. The bare hardcoded fallback in `synth.rs::synth_assoc` /
-/// `synth_ftype` is missing these.
+/// Get the snapshot for a given winver.
 pub fn get(winver: WinVer) -> Option<&'static Snapshot> {
     match winver {
-        WinVer::Win11 | WinVer::Win10 | WinVer::Win7 => WIN11.as_ref(),
+        WinVer::Win7 => WIN7.as_ref().or_else(|| WIN11.as_ref()),
+        WinVer::Win10 => WIN10.as_ref().or_else(|| WIN11.as_ref()),
+        WinVer::Win11 => WIN11.as_ref(),
     }
 }

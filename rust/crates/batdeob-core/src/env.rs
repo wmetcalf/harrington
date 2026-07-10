@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+const MAX_EXTRACTED_PS1_PAYLOAD_BYTES: usize = 256 * 1024;
+
 /// Control-flow signal returned (via `env.pending_action`) by command handlers.
 /// Lives here (not in `interp.rs`) to avoid a circular import.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,9 +99,11 @@ pub struct Limits {
     pub iterations: u64,
     pub max_child_scripts: u32,
     pub child_scripts: u32,
+    pub extracted_payloads: u32,
     pub deadline: Option<Instant>,
     pub max_output_bytes: u64,
     pub output_bytes: u64,
+    pub extracted_payload_bytes: u64,
     pub max_output_line_bytes: u64,
 }
 
@@ -157,6 +161,11 @@ pub struct Environment {
     // ===== Output accumulators =====
     /// IOC events emitted during deobfuscation.
     pub traits: Vec<Trait>,
+    /// True number of AdminCommand events observed. The trait vector keeps
+    /// only the report cap live to avoid spending time/memory on thousands
+    /// of cleanup commands that will be discarded at report finalization.
+    pub admin_command_total: u64,
+    pub max_traits_per_kind: u32,
     /// Queue of child cmd-scripts to recurse into (drained after each command).
     pub exec_cmd: Vec<String>,
     /// Parallel to `exec_cmd`: whether each child needs `delayed_expansion=true`.
@@ -208,6 +217,7 @@ pub const GOTO_LOOP_ELIDE_AFTER: u32 = 4;
 /// well above the elision threshold so analysts still see distinct goto
 /// targets execute their handlers a reasonable number of times.
 pub const GOTO_LOOP_HARD_CAP: u32 = 256;
+const MAX_SETLOCAL_SNAPSHOTS: usize = 1024;
 
 impl Default for Limits {
     fn default() -> Self {
@@ -218,9 +228,11 @@ impl Default for Limits {
             iterations: 0,
             max_child_scripts: 64,
             child_scripts: 0,
+            extracted_payloads: 0,
             deadline: None,
             max_output_bytes: 10 * 1024 * 1024,
             output_bytes: 0,
+            extracted_payload_bytes: 0,
             max_output_line_bytes: 0,
         }
     }
@@ -245,6 +257,8 @@ impl Default for Environment {
             label_index: HashMap::new(),
             call_stack: Vec::new(),
             traits: Vec::new(),
+            admin_command_total: 0,
+            max_traits_per_kind: Config::default().max_traits_per_kind,
             exec_cmd: Vec::new(),
             exec_cmd_delayed: Vec::new(),
             exec_ps1: Vec::new(),
@@ -272,6 +286,7 @@ impl Environment {
                 iterations: 0,
                 max_child_scripts: cfg.max_child_scripts,
                 child_scripts: 0,
+                extracted_payloads: 0,
                 deadline: if cfg.timeout_secs == 0 {
                     None
                 } else {
@@ -279,8 +294,10 @@ impl Environment {
                 },
                 max_output_bytes: cfg.max_output_bytes,
                 output_bytes: 0,
+                extracted_payload_bytes: 0,
                 max_output_line_bytes: cfg.max_output_line_bytes,
             },
+            max_traits_per_kind: cfg.max_traits_per_kind,
             ..Default::default()
         };
         e.load_baseline();
@@ -382,7 +399,179 @@ impl Environment {
         self.vars.iter()
     }
 
+    pub fn push_extracted_ps1(&mut self, payload: Vec<u8>) -> bool {
+        self.push_extracted_ps1_with_limit(payload, MAX_EXTRACTED_PS1_PAYLOAD_BYTES)
+    }
+
+    pub(crate) fn push_extracted_ps1_with_limit(
+        &mut self,
+        payload: Vec<u8>,
+        max_payload_bytes: usize,
+    ) -> bool {
+        if payload.len() > max_payload_bytes {
+            self.traits.push(Trait::LineTruncated {
+                original_len: payload.len() as u64,
+            });
+            return false;
+        }
+        if self
+            .all_extracted_ps1
+            .iter()
+            .any(|existing| existing == &payload)
+        {
+            return true;
+        }
+        if !self.reserve_extracted_payload(payload.len()) {
+            return false;
+        }
+        self.all_extracted_ps1.push(payload);
+        true
+    }
+
+    pub fn push_extracted_vbs(&mut self, payload: Vec<u8>) -> bool {
+        if self
+            .all_extracted_vbs
+            .iter()
+            .any(|existing| existing == &payload)
+        {
+            return true;
+        }
+        if !self.reserve_extracted_payload(payload.len()) {
+            return false;
+        }
+        self.all_extracted_vbs.push(payload);
+        true
+    }
+
+    pub fn push_extracted_jscript(&mut self, payload: Vec<u8>) -> bool {
+        if self
+            .all_extracted_jscript
+            .iter()
+            .any(|existing| existing == &payload)
+        {
+            return true;
+        }
+        if !self.reserve_extracted_payload(payload.len()) {
+            return false;
+        }
+        self.all_extracted_jscript.push(payload);
+        true
+    }
+
+    pub fn push_admin_command(&mut self, name: &str, cmd: &str) {
+        self.admin_command_total = self.admin_command_total.saturating_add(1);
+        if self.admin_command_total <= u64::from(self.max_traits_per_kind) {
+            self.traits.push(Trait::AdminCommand {
+                name: name.to_string(),
+                cmd: cmd.to_string(),
+            });
+        }
+    }
+
+    pub fn note_child_scripts_capped(&mut self) {
+        if !self
+            .traits
+            .iter()
+            .any(|t| matches!(t, Trait::ChildScriptsCapped))
+        {
+            self.traits.push(Trait::ChildScriptsCapped);
+        }
+    }
+
+    pub fn note_output_capped(&mut self, bytes_at_cap: u64) {
+        if !self
+            .traits
+            .iter()
+            .any(|t| matches!(t, Trait::OutputCapped { .. }))
+        {
+            self.traits.push(Trait::OutputCapped { bytes_at_cap });
+        }
+    }
+
+    pub fn note_timeout(&mut self) {
+        if !self.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)) {
+            self.traits.push(Trait::TimeoutHit);
+        }
+    }
+
+    pub fn deadline_expired(&self) -> bool {
+        self.limits
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+    }
+
+    pub fn check_timeout(&mut self) -> bool {
+        if self.deadline_expired() {
+            self.note_timeout();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn enter_child_script(&mut self, command: &str) -> bool {
+        let used_children = self
+            .limits
+            .child_scripts
+            .saturating_add(self.limits.extracted_payloads);
+        if used_children >= self.limits.max_child_scripts {
+            self.note_child_scripts_capped();
+            return false;
+        }
+        if self.check_timeout() {
+            return false;
+        }
+        if self.limits.depth >= self.limits.max_depth {
+            self.traits.push(Trait::DepthCapped {
+                command: command.to_string(),
+            });
+            return false;
+        }
+        self.limits.child_scripts = self.limits.child_scripts.saturating_add(1);
+        true
+    }
+
+    fn reserve_extracted_payload(&mut self, payload_len: usize) -> bool {
+        let used_children = self
+            .limits
+            .child_scripts
+            .saturating_add(self.limits.extracted_payloads);
+        if used_children >= self.limits.max_child_scripts {
+            self.note_child_scripts_capped();
+            return false;
+        }
+        if self.limits.max_output_bytes > 0 {
+            let next = self
+                .limits
+                .extracted_payload_bytes
+                .saturating_add(payload_len as u64);
+            if next > self.limits.max_output_bytes {
+                self.note_output_capped(self.limits.extracted_payload_bytes);
+                return false;
+            }
+        }
+        self.limits.extracted_payloads = self.limits.extracted_payloads.saturating_add(1);
+        self.limits.extracted_payload_bytes = self
+            .limits
+            .extracted_payload_bytes
+            .saturating_add(payload_len as u64);
+        true
+    }
+
     pub fn push_setlocal(&mut self, enable_delayed: bool) {
+        if self.setlocal_stack.len() >= MAX_SETLOCAL_SNAPSHOTS {
+            if !self.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::DepthCapped { command } if command == "setlocal"
+                )
+            }) {
+                self.traits.push(Trait::DepthCapped {
+                    command: "setlocal".to_string(),
+                });
+            }
+            return;
+        }
         self.setlocal_stack.push(SetlocalSnapshot {
             vars: self.vars.clone(),
             delayed_expansion: self.delayed_expansion,

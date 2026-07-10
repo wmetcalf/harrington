@@ -81,6 +81,7 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
             }
         })();
         if let Some(d) = decoded {
+            publish_printable_decoded_payload(&dst, &d, env);
             env.modified_filesystem.insert(
                 filesystem_storage_key(&dst),
                 FsEntry::Decoded {
@@ -93,7 +94,70 @@ pub fn h_certutil(raw: &str, env: &mut Environment) {
     }
 }
 
-fn decode_certutil_hex_text(text: &str) -> Option<Vec<u8>> {
+fn publish_printable_decoded_payload(dst: &str, bytes: &[u8], env: &mut Environment) {
+    if !is_printable_text_payload(bytes) {
+        return;
+    }
+    let lower_dst = dst.to_ascii_lowercase();
+    let text = String::from_utf8_lossy(bytes);
+    let lower_text = text.to_ascii_lowercase();
+    if lower_dst.ends_with(".bat") || lower_dst.ends_with(".cmd") {
+        return;
+    }
+    if lower_dst.ends_with(".ps1") || looks_like_powershell_text(&lower_text) {
+        env.push_extracted_ps1(bytes.to_vec());
+    } else if lower_dst.ends_with(".vbs")
+        || lower_dst.ends_with(".vbe")
+        || looks_like_vbs_text(&lower_text)
+    {
+        env.push_extracted_vbs(bytes.to_vec());
+    } else if lower_dst.ends_with(".js")
+        || lower_dst.ends_with(".jse")
+        || lower_dst.ends_with(".hta")
+        || looks_like_js_text(&lower_text)
+    {
+        env.push_extracted_jscript(bytes.to_vec());
+    }
+}
+
+fn is_printable_text_payload(bytes: &[u8]) -> bool {
+    if bytes.is_empty() || bytes.len() > 4 * 1024 * 1024 {
+        return false;
+    }
+    std::str::from_utf8(bytes).is_ok()
+        && bytes
+            .iter()
+            .all(|b| matches!(*b, b'\t' | b'\n' | b'\r' | 0x20..=0x7e))
+}
+
+fn looks_like_powershell_text(lower: &str) -> bool {
+    lower.contains("powershell")
+        || lower.contains("invoke-webrequest")
+        || lower.contains("invoke-expression")
+        || lower.contains("new-object net.webclient")
+        || lower.contains("frombase64string")
+}
+
+fn looks_like_vbs_text(lower: &str) -> bool {
+    lower.contains("createobject")
+        || lower.contains("wscript")
+        || lower.contains("xmlhttp")
+        || lower.contains("option explicit")
+        || lower.contains("\ndim ")
+        || lower.starts_with("dim ")
+}
+
+fn looks_like_js_text(lower: &str) -> bool {
+    lower.contains("activexobject")
+        || lower.contains("getobject(")
+        || lower.contains("function ")
+        || lower.contains("var ")
+        || lower.contains("eval(")
+        || lower.contains("document.")
+        || lower.contains("window.")
+}
+
+pub(crate) fn decode_certutil_hex_text(text: &str) -> Option<Vec<u8>> {
     let mut dump_bytes = Vec::new();
     let mut saw_offset_dump = false;
 
@@ -215,7 +279,7 @@ fn content_from_entry(entry: Option<&FsEntry>) -> Option<Vec<u8>> {
     }
 }
 
-fn extract_pem_base64(text: &str) -> Option<String> {
+pub(crate) fn extract_pem_base64(text: &str) -> Option<String> {
     const BOUNDARIES: &[(&str, &str)] = &[
         ("-----BEGIN CERTIFICATE-----", "-----END CERTIFICATE-----"),
         (
@@ -226,6 +290,7 @@ fn extract_pem_base64(text: &str) -> Option<String> {
             "-----BEGIN NEW CERTIFICATE REQUEST-----",
             "-----END NEW CERTIFICATE REQUEST-----",
         ),
+        ("-----BEGIN X509 CRL-----", "-----END X509 CRL-----"),
     ];
     BOUNDARIES
         .iter()

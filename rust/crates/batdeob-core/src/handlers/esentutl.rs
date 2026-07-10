@@ -22,7 +22,7 @@ pub fn h_esentutl(raw: &str, env: &mut Environment) {
         });
     }
     push_ntds_copy(raw, &src, &dst, env);
-    let entry = copied_entry(&src, env).unwrap_or(FsEntry::Copy { src: src.clone() });
+    let entry = copied_entry(&src, env).unwrap_or_else(|| FsEntry::Copy { src: src.clone() });
     insert_copied_entry(env, &src, &dst, entry);
 }
 
@@ -99,11 +99,12 @@ fn push_ntds_copy(raw: &str, src: &str, dst: &str, env: &mut Environment) {
 
 fn copied_entry(src: &str, env: &Environment) -> Option<FsEntry> {
     if let Some(entry) = filesystem_entry_for_path(env, src) {
-        return Some(entry.clone());
+        return Some(copy_reference_for_entry(src, entry));
     }
     if let Some(stripped) = strip_current_dir_prefix(src) {
         if stripped.contains(['\\', '/']) {
-            return filesystem_entry_for_path(env, stripped).cloned();
+            return filesystem_entry_for_path(env, stripped)
+                .map(|entry| copy_reference_for_entry(stripped, entry));
         }
     }
     if let Some(name) = current_dir_basename(src) {
@@ -123,8 +124,17 @@ fn copied_entry_by_basename(src: &str, env: &Environment) -> Option<FsEntry> {
         .find_map(|(tracked_path, entry)| {
             windows_basename(tracked_path)
                 .filter(|tracked| tracked.eq_ignore_ascii_case(basename))
-                .map(|_| entry.clone())
+                .map(|_| copy_reference_for_entry(tracked_path, entry))
         })
+}
+
+fn copy_reference_for_entry(src: &str, entry: &FsEntry) -> FsEntry {
+    match entry {
+        FsEntry::Content { .. } | FsEntry::Decoded { .. } | FsEntry::Copy { .. } => FsEntry::Copy {
+            src: filesystem_storage_key(src),
+        },
+        FsEntry::Directory | FsEntry::Download { .. } => entry.clone(),
+    }
 }
 
 fn current_dir_basename(path: &str) -> Option<&str> {

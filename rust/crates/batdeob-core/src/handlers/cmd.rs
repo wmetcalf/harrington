@@ -385,7 +385,9 @@ pub fn h_start(raw: &str, env: &mut Environment) {
         return;
     }
     // Recurse: interpret the inner command inline.
-    crate::interp::interpret_line(inner.as_ref(), env);
+    if env.enter_child_script(inner.as_ref()) {
+        crate::interp::interpret_line(inner.as_ref(), env);
+    }
 }
 
 fn unescape_outer_caret_bangs(command: &str) -> String {

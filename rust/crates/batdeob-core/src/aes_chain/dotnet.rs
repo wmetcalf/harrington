@@ -10,6 +10,7 @@ const MAX_STRINGS: usize = 256;
 const MAX_STRING_BYTES: usize = 8 * 1024;
 const MAX_STRIDE_RC4_FIELDS: usize = 64;
 const MAX_STRIDE_RC4_OUTPUT: usize = 2 * 1024 * 1024;
+const MAX_STRIDE_RC4_ATTEMPTS: usize = 1024;
 /// Realistic PE files have ~10 sections; benign images stay under 96.
 /// A malicious header could advertise 65535 sections to force expensive
 /// walking — cap defensively.
@@ -367,12 +368,25 @@ fn looks_like_pe(bytes: &[u8]) -> bool {
     pe_off.checked_add(4).and_then(|end| bytes.get(pe_off..end)) == Some(b"PE\0\0".as_slice())
 }
 
-pub(crate) fn recover_stride_rc4_pes(bytes: &[u8]) -> Result<Vec<Vec<u8>>, DotnetError> {
+pub(crate) fn recover_stride_rc4_pes_until(
+    bytes: &[u8],
+    deadline: Option<std::time::Instant>,
+) -> Result<Vec<Vec<u8>>, DotnetError> {
     let fields = extract_field_rva_blobs(bytes)?;
-    Ok(recover_stride_rc4_pes_from_static_blobs(&fields))
+    Ok(recover_stride_rc4_pes_from_static_blobs_until(
+        &fields, deadline,
+    ))
 }
 
+#[cfg(test)]
 fn recover_stride_rc4_pes_from_static_blobs(fields: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    recover_stride_rc4_pes_from_static_blobs_until(fields, None)
+}
+
+fn recover_stride_rc4_pes_from_static_blobs_until(
+    fields: &[Vec<u8>],
+    deadline: Option<std::time::Instant>,
+) -> Vec<Vec<u8>> {
     let large_fields = fields
         .iter()
         .filter(|field| field.len() >= 32 * 1024 && field.len() <= MAX_STRIDE_RC4_OUTPUT * 8);
@@ -382,6 +396,7 @@ fn recover_stride_rc4_pes_from_static_blobs(fields: &[Vec<u8>]) -> Vec<Vec<u8>> 
         .map(|field| &field[..32])
         .collect();
     let mut out: Vec<Vec<u8>> = Vec::new();
+    let mut attempts = 0usize;
 
     for large in large_fields {
         let sampled: Vec<u8> = large.iter().step_by(5).copied().collect();
@@ -390,6 +405,13 @@ fn recover_stride_rc4_pes_from_static_blobs(fields: &[Vec<u8>]) -> Vec<Vec<u8>> 
         }
         for key_field in &key_fields {
             for mask in 0u8..=u8::MAX {
+                if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                    return out;
+                }
+                if attempts >= MAX_STRIDE_RC4_ATTEMPTS {
+                    return out;
+                }
+                attempts += 1;
                 let key_material: Vec<u8> = key_field.iter().map(|b| b ^ mask).collect();
                 let key = sha256(&key_material);
                 let decrypted = rc4_crypt(&sampled, &key);
@@ -814,5 +836,44 @@ mod tests {
         let recovered = recover_stride_rc4_pes_from_static_blobs(&fields);
 
         assert_eq!(recovered, vec![inner]);
+    }
+
+    #[test]
+    fn stride_rc4_static_blob_recovery_has_work_budget() {
+        let key_xor = 0x4au8;
+        let key_plain = [0x33u8; 32];
+        let key_blob: Vec<u8> = key_plain.iter().map(|b| b ^ key_xor).collect();
+        let mut inner = vec![0u8; 0x90];
+        inner[0..2].copy_from_slice(b"MZ");
+        inner[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        inner[0x80..0x84].copy_from_slice(b"PE\0\0");
+        inner.resize(0x9000, 0);
+
+        let key = sha256(&key_plain);
+        let encrypted = rc4_crypt(&inner, &key);
+        let mut large_blob = Vec::with_capacity(encrypted.len() * 5);
+        for byte in encrypted {
+            large_blob.extend_from_slice(&[byte, 0xaa, 0xbb, 0xcc, 0xdd]);
+        }
+
+        let mut fields = vec![large_blob];
+        for marker in 0..4u8 {
+            fields.push((0..32u8).map(|idx| marker.wrapping_add(idx)).collect());
+        }
+        fields.push(key_blob);
+
+        let recovered = recover_stride_rc4_pes_from_static_blobs(&fields);
+
+        assert!(recovered.is_empty());
+    }
+
+    #[test]
+    fn stride_rc4_static_blob_recovery_honors_expired_deadline() {
+        let fields = vec![vec![0x41; 32], vec![0x42; 32], vec![0x55; 256 * 1024]];
+        let deadline = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+
+        let recovered = recover_stride_rc4_pes_from_static_blobs_until(&fields, deadline);
+
+        assert!(recovered.is_empty());
     }
 }

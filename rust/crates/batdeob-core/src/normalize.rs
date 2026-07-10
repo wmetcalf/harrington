@@ -453,80 +453,35 @@ fn expand_var(
     } else {
         name
     };
-    let raw = match env.get(name) {
+    let raw = match noisy_non_ascii_env_get(env, name, op.is_some()) {
         Some(v) => v,
         None => {
-            // Obfuscator noise fallback: AbObUsObfuscator-style packers
-            // wrap defined variable references with non-ASCII prefix /
-            // suffix garbage, e.g. `%<emoji-junk>豆埃阿埃%`. The full
-            // name lookup misses, but the trailing ASCII/CJK-letter suffix
-            // is the real variable. Try the longest defined suffix (only
-            // when the missed name contains non-ASCII chars, so legit
-            // unset ASCII vars like `%SOMEVAR%` still collapse to empty).
-            let has_non_ascii = !name.is_ascii();
-            let mut found = None;
-            if has_non_ascii {
-                let mut starts: Vec<usize> = name.char_indices().map(|(i, _)| i).collect();
-                starts.push(name.len());
-                // Try suffix-strip first (longest defined suffix wins).
-                for &start in starts.iter().skip(1) {
-                    if start >= name.len() {
-                        break;
-                    }
-                    let candidate = &name[start..];
-                    if candidate.is_empty() {
-                        continue;
-                    }
-                    if let Some(v) = env.get(candidate) {
-                        found = Some(v);
-                        break;
-                    }
-                }
-                // Then try prefix-strip from the other end.
-                if found.is_none() {
-                    let ends: Vec<usize> = name.char_indices().map(|(i, _)| i).collect();
-                    for &end in ends.iter().rev().skip(1) {
-                        let candidate = &name[..end];
-                        if candidate.is_empty() {
-                            continue;
-                        }
-                        if let Some(v) = env.get(candidate) {
-                            found = Some(v);
-                            break;
-                        }
-                    }
+            // Known runtime-only vars (errorlevel etc.) are intentionally
+            // unset in the baseline so we don't fold conditional logic
+            // to constants. Render them as the source `%name%` literal
+            // so the analyst can still see what was being checked,
+            // rather than letting the deob collapse `if %errorlevel%
+            // NEQ 0` to `if  NEQ 0`.
+            let lc = name.to_ascii_lowercase();
+            if matches!(
+                lc.as_str(),
+                "errorlevel"
+                    | "cmdcmdline"
+                    | "cmdextversion"
+                    | "dirstack"
+                    | "highestnumanodenumber"
+            ) {
+                if _is_bang {
+                    out.push('!');
+                    out.push_str(name);
+                    out.push('!');
+                } else {
+                    out.push('%');
+                    out.push_str(name);
+                    out.push('%');
                 }
             }
-            if let Some(v) = found {
-                v
-            } else {
-                // Known runtime-only vars (errorlevel etc.) are intentionally
-                // unset in the baseline so we don't fold conditional logic
-                // to constants. Render them as the source `%name%` literal
-                // so the analyst can still see what was being checked,
-                // rather than letting the deob collapse `if %errorlevel%
-                // NEQ 0` to `if  NEQ 0`.
-                let lc = name.to_ascii_lowercase();
-                if matches!(
-                    lc.as_str(),
-                    "errorlevel"
-                        | "cmdcmdline"
-                        | "cmdextversion"
-                        | "dirstack"
-                        | "highestnumanodenumber"
-                ) {
-                    if _is_bang {
-                        out.push('!');
-                        out.push_str(name);
-                        out.push('!');
-                    } else {
-                        out.push('%');
-                        out.push_str(name);
-                        out.push('%');
-                    }
-                }
-                return;
-            }
+            return;
         }
     };
     let value = match op {
@@ -597,6 +552,121 @@ fn expand_var(
     }
 }
 
+fn noisy_non_ascii_env_get(
+    env: &Environment,
+    name: &str,
+    allow_ascii_marker_alias: bool,
+) -> Option<String> {
+    if let Some(value) = env.get(name) {
+        return Some(value);
+    }
+
+    let canonical_name = canonical_non_ascii_marker_var_name(name);
+    if canonical_name.len() >= 2 {
+        for (candidate, value) in env.vars_iter() {
+            if canonical_non_ascii_marker_var_name(candidate) == canonical_name {
+                return Some(value.clone());
+            }
+        }
+    }
+    if allow_ascii_marker_alias && name.is_ascii() {
+        return unique_ascii_marker_alphabet_alias(env, &canonical_name);
+    }
+    if name.is_ascii() {
+        return None;
+    }
+
+    // Obfuscator noise fallback: AbObUs-style packers wrap defined variable
+    // references with non-ASCII prefix/suffix garbage, e.g. `%<junk>nv:~1,1%`.
+    // The full lookup misses, but a prefix/suffix strip reveals the real var.
+    let mut starts: Vec<usize> = name.char_indices().map(|(idx, _)| idx).collect();
+    starts.push(name.len());
+    for &start in starts.iter().skip(1) {
+        if start >= name.len() {
+            break;
+        }
+        let candidate = &name[start..];
+        if candidate.is_empty() {
+            continue;
+        }
+        if let Some(value) = env.get(candidate) {
+            return Some(value);
+        }
+    }
+
+    let ends: Vec<usize> = name.char_indices().map(|(idx, _)| idx).collect();
+    for &end in ends.iter().rev().skip(1) {
+        let candidate = &name[..end];
+        if candidate.is_empty() {
+            continue;
+        }
+        if let Some(value) = env.get(candidate) {
+            return Some(value);
+        }
+    }
+
+    None
+}
+
+pub(crate) fn env_get_for_var_expansion(
+    env: &Environment,
+    name: &str,
+    allow_ascii_marker_alias: bool,
+) -> Option<String> {
+    noisy_non_ascii_env_get(env, name, allow_ascii_marker_alias)
+}
+
+fn unique_ascii_marker_alphabet_alias(env: &Environment, canonical_name: &str) -> Option<String> {
+    if canonical_name.is_empty() {
+        return None;
+    }
+    let mut matched: Option<&String> = None;
+    for (candidate, value) in env.vars_iter() {
+        if candidate.is_ascii() {
+            continue;
+        }
+        if canonical_non_ascii_marker_var_name(candidate) != canonical_name {
+            continue;
+        }
+        if !looks_like_marker_alphabet_env_value(value) {
+            continue;
+        }
+        if matched.is_some() {
+            return None;
+        }
+        matched = Some(value);
+    }
+    matched.cloned()
+}
+
+fn looks_like_marker_alphabet_env_value(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if !(32..=256).contains(&bytes.len()) {
+        return false;
+    }
+
+    let mut seen = [false; 128];
+    let mut distinct = 0usize;
+    for &byte in bytes {
+        if !(byte == b' ' || (0x21..=0x7e).contains(&byte)) {
+            return false;
+        }
+        if !seen[byte as usize] {
+            seen[byte as usize] = true;
+            distinct += 1;
+        }
+    }
+
+    distinct >= 24 && distinct * 2 >= bytes.len()
+}
+
+fn canonical_non_ascii_marker_var_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 fn value_likely_has_nested_ref(s: &str) -> bool {
     // Look for `%<name>%` or `!<name>!` patterns. A bare `%%` (with no
     // closing `%`) is the percent-escape literal — don't re-lex that.
@@ -625,6 +695,103 @@ fn value_likely_has_nested_ref(s: &str) -> bool {
         i += 1;
     }
     false
+}
+
+fn expand_repeated_bang_wrapped_ref(
+    s: &str,
+    bytes: &[u8],
+    i: usize,
+    env: &mut Environment,
+    depth: u32,
+) -> Option<(String, usize)> {
+    let mut open_end = i;
+    while bytes.get(open_end) == Some(&b'!') {
+        open_end += 1;
+    }
+    if open_end.saturating_sub(i) < 2 {
+        return None;
+    }
+
+    let mut cursor = open_end;
+    let mut out = String::new();
+    loop {
+        let body_start = cursor;
+        let mut close = body_start;
+        while let Some(&b) = bytes.get(close) {
+            if b == b'!' {
+                break;
+            }
+            if matches!(b, b'\r' | b'\n') {
+                return None;
+            }
+            close += 1;
+        }
+        if close >= bytes.len() || close == body_start {
+            return None;
+        }
+
+        let body = &s[body_start..close];
+        if !is_repeated_bang_ref_body(body) {
+            return None;
+        }
+
+        let mut next = close;
+        while bytes.get(next) == Some(&b'!') {
+            next += 1;
+        }
+        if next.saturating_sub(close) < 2 {
+            return None;
+        }
+
+        out.push_str(&resolve_var_ref(body, env, true, depth));
+        if repeated_bang_body_follows(s, bytes, next) {
+            cursor = next;
+        } else {
+            return Some((out, next));
+        }
+    }
+}
+
+fn is_repeated_bang_ref_body(body: &str) -> bool {
+    body.len() <= 256
+        && body
+            .bytes()
+            .all(|b| !matches!(b, b'!' | b'"' | b'&' | b'|' | b'<' | b'>' | b'\r' | b'\n'))
+        && body.bytes().any(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+fn repeated_bang_body_follows(s: &str, bytes: &[u8], start: usize) -> bool {
+    let Some(&first) = bytes.get(start) else {
+        return false;
+    };
+    if !(first.is_ascii_alphanumeric() || first == b'_' || first == b'%') {
+        return false;
+    }
+
+    let mut close = start;
+    while let Some(&b) = bytes.get(close) {
+        if b == b'!' {
+            break;
+        }
+        if matches!(b, b'\r' | b'\n') {
+            return false;
+        }
+        close += 1;
+    }
+    if close >= bytes.len() || close == start {
+        return false;
+    }
+
+    let body = &s[start..close];
+    if !is_repeated_bang_ref_body(body) {
+        return false;
+    }
+
+    let mut next = close;
+    while bytes.get(next) == Some(&b'!') {
+        next += 1;
+    }
+    next.saturating_sub(close) >= 2
 }
 
 /// Variable expansion that walks a string char-by-char, expanding `%VAR%` and
@@ -721,17 +888,15 @@ fn expand_vars_in_string(s: &str, env: &mut Environment, depth: u32) -> String {
                 }
                 // Find matching %; if not found, emit the % literally and advance.
                 let mut j = i + 1;
-                let mut name = String::new();
                 while let Some(&b) = bytes.get(j) {
                     if b == b'%' {
                         break;
                     }
-                    name.push(b as char);
                     j += 1;
                 }
-                if j < bytes.len() && !name.is_empty() {
+                if j < bytes.len() && j > i + 1 {
                     // Got a closing %; resolve VAR (with possible :op)
-                    let value = resolve_var_ref(&name, env, false, depth);
+                    let value = resolve_var_ref(&s[i + 1..j], env, false, depth);
                     out.push_str(&value);
                     i = j + 1;
                 } else {
@@ -741,16 +906,22 @@ fn expand_vars_in_string(s: &str, env: &mut Environment, depth: u32) -> String {
                 }
             }
             '!' if env.delayed_expansion => {
+                if let Some((value, next)) =
+                    expand_repeated_bang_wrapped_ref(s, bytes, i, env, depth)
+                {
+                    out.push_str(&value);
+                    i = next;
+                    continue;
+                }
+
                 let mut j = i + 1;
-                let mut name = String::new();
                 while let Some(&b) = bytes.get(j) {
                     if b == b'!' {
                         break;
                     }
-                    name.push(b as char);
                     j += 1;
                 }
-                if j < bytes.len() && !name.is_empty() {
+                if j < bytes.len() && j > i + 1 {
                     // Pre-expand any nested `%X%` / `!X!` refs in the var
                     // NAME. AbObUs-family char-substitution packers build the
                     // delayed-expansion var name itself from a chain of
@@ -760,12 +931,13 @@ fn expand_vars_in_string(s: &str, env: &mut Environment, depth: u32) -> String {
                     // lookup key and env.get always fails, dropping all
                     // chars assembled by the fragment-var concat that the
                     // line then performs.
+                    let name = &s[i + 1..j];
                     let resolved_name = if (name.contains('%') || name.contains('!'))
                         && depth + 1 < MAX_REEXPAND_DEPTH
                     {
-                        expand_vars_in_string(&name, env, depth + 1)
+                        expand_vars_in_string(name, env, depth + 1)
                     } else {
-                        name.clone()
+                        name.to_string()
                     };
                     let value = resolve_var_ref(&resolved_name, env, true, depth);
                     out.push_str(&value);
@@ -791,7 +963,7 @@ fn resolve_var_ref(body: &str, env: &mut Environment, _is_bang: bool, depth: u32
         Some(p) => (&body[..p], Some(&body[p + 1..])),
         None => (body, None),
     };
-    let raw = match env.get(name) {
+    let raw = match noisy_non_ascii_env_get(env, name, op_str.is_some()) {
         Some(v) => v,
         None => return String::new(),
     };
@@ -1403,6 +1575,19 @@ mod dosfuscation_tests {
         env.set("VAR2", "worAAld");
         let out = normalize_to_string(&lex(r#"echo "!VAR:XYZ=!!VAR2:AA=/!""#), &mut env);
         assert_eq!(out, r#"echo "hellowor/ld""#);
+    }
+
+    #[test]
+    fn adjacent_repeated_bang_refs_expand_as_concat_with_delayed() {
+        let mut env = Environment::new(&Config::default());
+        env.delayed_expansion = true;
+        env.set("part_0", "power");
+        env.set("part_1", "shell ");
+        env.set("part_2", "-Command");
+
+        let out = normalize_to_string(&lex(r#"echo "!!part_0!!part_1!!part_2!!""#), &mut env);
+
+        assert_eq!(out, r#"echo "powershell -Command""#);
     }
 
     #[test]

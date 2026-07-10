@@ -110,6 +110,12 @@ enum Command {
     Report {
         /// Input script (`-` for stdin).
         file: String,
+        /// Write deobfuscated output, extracted children, and recovered artifacts to this directory.
+        #[arg(short = 'o', long = "out-dir")]
+        out_dir: Option<PathBuf>,
+        /// Replace batdeob-generated files in an existing output directory.
+        #[arg(long)]
+        force: bool,
         /// Embed the raw input bytes as a JSON string (lossy UTF-8).
         #[arg(long)]
         include_source: bool,
@@ -169,6 +175,9 @@ fn read_input(path: &str) -> Result<Vec<u8>> {
     } else {
         // Cap on-disk reads too — symlinks could point at /dev/zero etc.
         let meta = fs::metadata(path).with_context(|| format!("stat {:?}", path))?;
+        if !meta.file_type().is_file() {
+            anyhow::bail!("{:?}: input is not a regular file", path);
+        }
         if meta.len() > MAX_INPUT_BYTES {
             anyhow::bail!(
                 "{:?}: {} bytes exceeds the {}-byte input cap",
@@ -764,7 +773,250 @@ fn safe_write(path: &Path, bytes: &[u8], force: bool) -> Result<()> {
     }
 }
 
-fn write_report_files(report: &batdeob_core::Report, out_dir: &Path, force: bool) -> Result<()> {
+fn basic_output_file(kind: &str, name: &str, path: &Path, size: usize) -> serde_json::Value {
+    serde_json::json!({
+        "kind": kind,
+        "name": name,
+        "path": path.display().to_string(),
+        "size": size,
+    })
+}
+
+fn extracted_output_file(
+    kind: &str,
+    name: &str,
+    path: &Path,
+    size: usize,
+    sha256_prefix: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "kind": kind,
+        "name": name,
+        "path": path.display().to_string(),
+        "size": size,
+        "sha256_prefix": sha256_prefix,
+    })
+}
+
+struct RecoveredOutputFile<'a> {
+    origin: &'a str,
+    format: &'a str,
+    name: &'a str,
+    path: &'a Path,
+    meta_name: &'a str,
+    meta_path: &'a Path,
+    size: usize,
+    sha256_prefix: &'a str,
+}
+
+fn recovered_output_file(file: RecoveredOutputFile<'_>) -> serde_json::Value {
+    serde_json::json!({
+        "kind": recovered_artifact_kind(file.format, file.origin),
+        "format": file.format,
+        "origin": file.origin,
+        "name": file.name,
+        "path": file.path.display().to_string(),
+        "meta_name": file.meta_name,
+        "meta_path": file.meta_path.display().to_string(),
+        "size": file.size,
+        "sha256_prefix": file.sha256_prefix,
+    })
+}
+
+fn recovered_artifact_kind(format: &str, origin: &str) -> &'static str {
+    if origin.contains("shellcode") {
+        return "shellcode";
+    }
+    match format {
+        "exe" => "pe",
+        "py" => "script",
+        "cab" => "cab",
+        "zip" | "rar" | "7z" => "archive",
+        "pdf" => "pdf",
+        "png" | "gif" | "jpg" => "image",
+        _ => "blob",
+    }
+}
+
+fn report_traits_json_value(report: &batdeob_core::Report) -> Result<serde_json::Value> {
+    let bindings = deob_set_bindings(&report.deobfuscated);
+    traits_json_value_with_bindings(&report.traits, &bindings)
+}
+
+fn traits_json_value_with_bindings(
+    traits: &[batdeob_core::Trait],
+    bindings: &std::collections::BTreeMap<String, String>,
+) -> Result<serde_json::Value> {
+    traits
+        .iter()
+        .map(|trait_| trait_json_value_with_bindings(trait_, bindings))
+        .collect::<Result<Vec<_>>>()
+        .map(serde_json::Value::Array)
+}
+
+fn trait_json_value(trait_: &batdeob_core::Trait) -> Result<serde_json::Value> {
+    trait_json_value_with_bindings(trait_, &std::collections::BTreeMap::new())
+}
+
+fn trait_json_value_with_bindings(
+    trait_: &batdeob_core::Trait,
+    bindings: &std::collections::BTreeMap<String, String>,
+) -> Result<serde_json::Value> {
+    let mut value = serde_json::to_value(trait_)?;
+    stringify_printable_byte_arrays(&mut value);
+    render_known_trait_strings(&mut value, bindings);
+    summarize_bulk_trait_content(&mut value);
+    summarize_large_json_strings(&mut value);
+    Ok(value)
+}
+
+fn render_known_trait_strings(
+    value: &mut serde_json::Value,
+    bindings: &std::collections::BTreeMap<String, String>,
+) {
+    if bindings.is_empty() {
+        return;
+    }
+    match value {
+        serde_json::Value::Object(obj) => {
+            for (key, child) in obj {
+                if matches!(
+                    key.as_str(),
+                    "src" | "dst" | "target" | "cmd" | "command" | "inner_cmd"
+                ) {
+                    if let Some(text) = child.as_str() {
+                        *child = serde_json::Value::String(render_known_variables(text, bindings));
+                        continue;
+                    }
+                }
+                render_known_trait_strings(child, bindings);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                render_known_trait_strings(item, bindings);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn summarize_bulk_trait_content(value: &mut serde_json::Value) {
+    const MAX_INLINE_CONTENT_BYTES: usize = 1024;
+    let serde_json::Value::Object(obj) = value else {
+        return;
+    };
+    let Some(kind) = obj.get("kind").and_then(serde_json::Value::as_str) else {
+        return;
+    };
+    if kind != "EchoRedirect" {
+        return;
+    }
+    let Some(content) = obj.get_mut("content") else {
+        return;
+    };
+    if let Some(text) = content.as_str() {
+        if text.len() > MAX_INLINE_CONTENT_BYTES {
+            let preview: String = text.chars().take(256).collect();
+            *content = serde_json::json!({
+                "omitted": true,
+                "size": text.len(),
+                "sha256_prefix": short_sha(text.as_bytes()),
+                "preview": preview,
+            });
+        }
+        return;
+    }
+    if let Some(bytes) = json_byte_array(content) {
+        if bytes.len() > MAX_INLINE_CONTENT_BYTES {
+            *content = serde_json::json!({
+                "omitted": true,
+                "size": bytes.len(),
+                "sha256_prefix": short_sha(&bytes),
+            });
+        }
+    }
+}
+
+fn summarize_large_json_strings(value: &mut serde_json::Value) {
+    const MAX_INLINE_STRING_BYTES: usize = 8 * 1024;
+    match value {
+        serde_json::Value::String(text) if text.len() > MAX_INLINE_STRING_BYTES => {
+            let preview: String = text.chars().take(256).collect();
+            *value = serde_json::json!({
+                "omitted": true,
+                "size": text.len(),
+                "sha256_prefix": short_sha(text.as_bytes()),
+                "preview": preview,
+            });
+        }
+        serde_json::Value::Object(obj) => {
+            for child in obj.values_mut() {
+                summarize_large_json_strings(child);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                summarize_large_json_strings(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn stringify_printable_byte_arrays(value: &mut serde_json::Value) {
+    if let Some(text) = printable_json_byte_array(value) {
+        *value = serde_json::Value::String(text);
+        return;
+    }
+    match value {
+        serde_json::Value::Object(obj) => {
+            for child in obj.values_mut() {
+                stringify_printable_byte_arrays(child);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                stringify_printable_byte_arrays(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn printable_json_byte_array(value: &serde_json::Value) -> Option<String> {
+    let bytes = json_byte_array(value)?;
+    if bytes.is_empty() {
+        return None;
+    }
+    printable_text_bytes(&bytes)
+}
+
+fn json_byte_array(value: &serde_json::Value) -> Option<Vec<u8>> {
+    value
+        .as_array()?
+        .iter()
+        .map(|item| item.as_u64().and_then(|byte| u8::try_from(byte).ok()))
+        .collect()
+}
+
+fn printable_text_bytes(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    if text
+        .bytes()
+        .all(|byte| matches!(byte, b'\t' | b'\n' | b'\r' | 0x20..=0x7e))
+    {
+        Some(text.to_string())
+    } else {
+        None
+    }
+}
+
+fn write_report_files(
+    report: &batdeob_core::Report,
+    out_dir: &Path,
+    force: bool,
+) -> Result<serde_json::Value> {
     fs::create_dir_all(out_dir).with_context(|| format!("mkdir {:?}", out_dir))?;
     let canonical_out =
         fs::canonicalize(out_dir).with_context(|| format!("canonicalize {:?}", out_dir))?;
@@ -772,11 +1024,18 @@ fn write_report_files(report: &batdeob_core::Report, out_dir: &Path, force: bool
         remove_stale_generated_outputs(&canonical_out)?;
     }
 
-    safe_write(
-        &safe_join(&canonical_out, "deobfuscated.bat")?,
-        report.deobfuscated.as_bytes(),
-        force,
-    )?;
+    let mut extracted_files = Vec::new();
+    let mut recovered_files = Vec::new();
+
+    let deob_name = "deobfuscated.bat";
+    let deob_path = safe_join(&canonical_out, deob_name)?;
+    safe_write(&deob_path, report.deobfuscated.as_bytes(), force)?;
+    let deobfuscated_file = basic_output_file(
+        "deobfuscated",
+        deob_name,
+        &deob_path,
+        report.deobfuscated.len(),
+    );
 
     let mut seen = std::collections::HashSet::new();
     for child in &report.extracted_cmd {
@@ -786,7 +1045,15 @@ fn write_report_files(report: &batdeob_core::Report, out_dir: &Path, force: bool
             continue;
         }
         let name = format!("{sha}.bat");
-        safe_write(&safe_join(&canonical_out, &name)?, bytes, force)?;
+        let path = safe_join(&canonical_out, &name)?;
+        safe_write(&path, bytes, force)?;
+        extracted_files.push(extracted_output_file(
+            "cmd",
+            &name,
+            &path,
+            bytes.len(),
+            &sha,
+        ));
     }
     for (idx, child) in report.extracted_ps1.iter().enumerate() {
         let sha = short_sha(child);
@@ -794,17 +1061,29 @@ fn write_report_files(report: &batdeob_core::Report, out_dir: &Path, force: bool
         if !seen.insert(name.clone()) {
             continue;
         }
-        safe_write(&safe_join(&canonical_out, &name)?, child, force)?;
+        let path = safe_join(&canonical_out, &name)?;
+        safe_write(&path, child, force)?;
+        extracted_files.push(extracted_output_file(
+            "powershell",
+            &name,
+            &path,
+            child.len(),
+            &sha,
+        ));
         if let Some(normalized) = report.extracted_ps1_normalized.get(idx) {
             let raw_text = String::from_utf8_lossy(child);
             if normalized != raw_text.as_ref() {
                 let name = format!("{sha}.normalized.ps1");
                 if seen.insert(name.clone()) {
-                    safe_write(
-                        &safe_join(&canonical_out, &name)?,
-                        normalized.as_bytes(),
-                        force,
-                    )?;
+                    let path = safe_join(&canonical_out, &name)?;
+                    safe_write(&path, normalized.as_bytes(), force)?;
+                    extracted_files.push(extracted_output_file(
+                        "powershell_normalized",
+                        &name,
+                        &path,
+                        normalized.len(),
+                        &sha,
+                    ));
                 }
             }
         }
@@ -815,7 +1094,15 @@ fn write_report_files(report: &batdeob_core::Report, out_dir: &Path, force: bool
         if !seen.insert(name.clone()) {
             continue;
         }
-        safe_write(&safe_join(&canonical_out, &name)?, child, force)?;
+        let path = safe_join(&canonical_out, &name)?;
+        safe_write(&path, child, force)?;
+        extracted_files.push(extracted_output_file(
+            "jscript",
+            &name,
+            &path,
+            child.len(),
+            &sha,
+        ));
     }
     for child in &report.extracted_vbs {
         let sha = short_sha(child);
@@ -823,7 +1110,15 @@ fn write_report_files(report: &batdeob_core::Report, out_dir: &Path, force: bool
         if !seen.insert(name.clone()) {
             continue;
         }
-        safe_write(&safe_join(&canonical_out, &name)?, child, force)?;
+        let path = safe_join(&canonical_out, &name)?;
+        safe_write(&path, child, force)?;
+        extracted_files.push(extracted_output_file(
+            "vbs",
+            &name,
+            &path,
+            child.len(),
+            &sha,
+        ));
     }
     for (label, blob) in &report.recovered_pe {
         let bytes = blob.as_slice();
@@ -833,30 +1128,43 @@ fn write_report_files(report: &batdeob_core::Report, out_dir: &Path, force: bool
         if !seen.insert(name.clone()) {
             continue;
         }
-        safe_write(&safe_join(&canonical_out, &name)?, bytes, force)?;
+        let path = safe_join(&canonical_out, &name)?;
+        safe_write(&path, bytes, force)?;
 
         let meta_name = format!("{sha}.meta");
         if seen.insert(meta_name.clone()) {
+            let meta_path = safe_join(&canonical_out, &meta_name)?;
             let meta = format!(
                 "origin: {label}\nsize: {}\nsha256-prefix: {sha}\n",
                 bytes.len()
             );
-            safe_write(
-                &safe_join(&canonical_out, &meta_name)?,
-                meta.as_bytes(),
-                force,
-            )?;
+            safe_write(&meta_path, meta.as_bytes(), force)?;
+            recovered_files.push(recovered_output_file(RecoveredOutputFile {
+                origin: label,
+                format: ext,
+                name: &name,
+                path: &path,
+                meta_name: &meta_name,
+                meta_path: &meta_path,
+                size: bytes.len(),
+                sha256_prefix: &sha,
+            }));
         }
     }
 
-    let traits_json = serde_json::to_string_pretty(&report.traits)?;
-    safe_write(
-        &safe_join(&canonical_out, "traits.json")?,
-        traits_json.as_bytes(),
-        force,
-    )?;
+    let traits_json = serde_json::to_string_pretty(&report_traits_json_value(report)?)?;
+    let traits_name = "traits.json";
+    let traits_path = safe_join(&canonical_out, traits_name)?;
+    safe_write(&traits_path, traits_json.as_bytes(), force)?;
+    let traits_file = basic_output_file("traits", traits_name, &traits_path, traits_json.len());
 
-    Ok(())
+    Ok(serde_json::json!({
+        "out_dir": canonical_out.display().to_string(),
+        "deobfuscated": deobfuscated_file,
+        "traits": traits_file,
+        "extracted": extracted_files,
+        "recovered": recovered_files,
+    }))
 }
 
 fn detect_blob_extension(bytes: &[u8]) -> &'static str {
@@ -887,7 +1195,29 @@ fn detect_blob_extension(bytes: &[u8]) -> &'static str {
     if bytes.starts_with(b"\xFF\xD8\xFF") {
         return "jpg";
     }
+    if looks_like_python_script_bytes(bytes) {
+        return "py";
+    }
     "bin"
+}
+
+fn looks_like_python_script_bytes(bytes: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let lower = text.to_ascii_lowercase();
+    let has_python_import = lower.contains("import ")
+        || lower.contains("__import__(")
+        || lower.contains("from base64 import")
+        || lower.contains("from urllib");
+    let has_python_exec_or_decode = lower.contains("exec(")
+        || lower.contains("marshal.loads")
+        || lower.contains("zlib.decompress")
+        || lower.contains("base64.b64decode")
+        || lower.contains(".b85decode")
+        || lower.contains("requests.")
+        || lower.contains("urllib.request");
+    has_python_import && has_python_exec_or_decode
 }
 
 fn remove_stale_generated_outputs(canonical_out: &Path) -> Result<()> {
@@ -960,7 +1290,6 @@ fn build_summary(
     let mut downloads = Vec::new();
     let mut lolbas: Vec<String> = Vec::new();
     let mut admin_commands: BTreeMap<String, u64> = BTreeMap::new();
-    let mut ps_samples: Vec<String> = Vec::new();
     let mut windows_util: Vec<serde_json::Value> = Vec::new();
     let mut self_extract = false;
     let mut traits_capped: Vec<serde_json::Value> = Vec::new();
@@ -1040,9 +1369,6 @@ fn build_summary(
     }
 
     let ps_count = report.extracted_ps1.len();
-    for s in report.extracted_ps1_normalized.iter().take(3) {
-        ps_samples.push(s.chars().take(500).collect());
-    }
 
     let mut summary = serde_json::json!({
         "input": input_path,
@@ -1052,7 +1378,8 @@ fn build_summary(
         "extracted": {
             "cmd": report.extracted_cmd.len(),
             "powershell": ps_count,
-            "powershell_samples": ps_samples,
+            "jscript": report.extracted_jscript.len(),
+            "vbs": report.extracted_vbs.len(),
         },
         "lolbas": lolbas,
         "admin_commands": admin_commands,
@@ -1081,25 +1408,383 @@ fn extracted_counts(report: &batdeob_core::Report) -> serde_json::Value {
 }
 
 fn lossy_payloads(payloads: &[Vec<u8>]) -> Vec<String> {
+    dedup_strings(
+        payloads
+            .iter()
+            .map(|payload| String::from_utf8_lossy(payload).into_owned()),
+    )
+}
+
+fn dedup_strings(values: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for value in values {
+        if seen.insert(value.clone()) {
+            out.push(value);
+        }
+    }
+    out
+}
+
+fn ps_flag_value(text: &str, flag: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let flag_lower = flag.to_ascii_lowercase();
+    let mut search = 0usize;
+    while let Some(rel) = lower[search..].find(&flag_lower) {
+        let start = search + rel;
+        let end = start + flag_lower.len();
+        let prev_ok = start == 0
+            || lower.as_bytes()[start - 1].is_ascii_whitespace()
+            || matches!(lower.as_bytes()[start - 1], b'{' | b';');
+        let next_ok = lower
+            .as_bytes()
+            .get(end)
+            .map_or(true, |byte| byte.is_ascii_whitespace());
+        if !prev_ok || !next_ok {
+            search = end;
+            continue;
+        }
+
+        let mut value_start = end;
+        while text
+            .as_bytes()
+            .get(value_start)
+            .is_some_and(|byte| byte.is_ascii_whitespace())
+        {
+            value_start += 1;
+        }
+        let first = *text.as_bytes().get(value_start)?;
+        if matches!(first, b'\'' | b'"') {
+            let quote = first;
+            let body_start = value_start + 1;
+            let body_end = text.as_bytes()[body_start..]
+                .iter()
+                .position(|&byte| byte == quote)
+                .map(|idx| body_start + idx)?;
+            return Some(text[body_start..body_end].to_string());
+        }
+        let value_end = text.as_bytes()[value_start..]
+            .iter()
+            .position(|byte| byte.is_ascii_whitespace() || matches!(*byte, b';' | b'}'))
+            .map(|idx| value_start + idx)
+            .unwrap_or(text.len());
+        return Some(text[value_start..value_end].to_string());
+    }
+    None
+}
+
+fn filter_empty_powershell_file_arg_duplicates(payloads: Vec<String>) -> Vec<String> {
+    let mut non_empty_download_uris = std::collections::HashSet::new();
+    for payload in &payloads {
+        let Some(uri) = ps_flag_value(payload, "-Uri") else {
+            continue;
+        };
+        let Some(outfile) = ps_flag_value(payload, "-OutFile") else {
+            continue;
+        };
+        if !uri.is_empty() && !outfile.is_empty() {
+            non_empty_download_uris.insert(uri.to_ascii_lowercase());
+        }
+    }
+
     payloads
-        .iter()
-        .map(|payload| String::from_utf8_lossy(payload).into_owned())
+        .into_iter()
+        .filter(|payload| {
+            if is_empty_expand_archive_preview(payload) {
+                return false;
+            }
+            if let (Some(uri), Some(outfile)) = (
+                ps_flag_value(payload, "-Uri"),
+                ps_flag_value(payload, "-OutFile"),
+            ) {
+                return !outfile.is_empty()
+                    || !non_empty_download_uris.contains(&uri.to_ascii_lowercase());
+            }
+            true
+        })
         .collect()
 }
 
+fn is_empty_expand_archive_preview(payload: &str) -> bool {
+    let lower = payload.to_ascii_lowercase();
+    if !lower.contains("expand-archive") {
+        return false;
+    }
+    let path = ps_flag_value(payload, "-Path").unwrap_or_default();
+    let destination = ps_flag_value(payload, "-DestinationPath").unwrap_or_default();
+    if path.trim().is_empty() && destination.trim().is_empty() {
+        return true;
+    }
+    path.to_ascii_lowercase().contains("-destinationpath")
+        && destination.trim().is_empty()
+        && !payload.contains('\\')
+        && !payload.contains('/')
+}
+
+fn deob_set_bindings(deobfuscated: &str) -> std::collections::BTreeMap<String, String> {
+    let baseline = batdeob_core::env::Environment::new(&batdeob_core::env::Config::default());
+    let mut bindings = baseline
+        .vars_iter()
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for line in deobfuscated.lines() {
+        let line = line.trim().trim_start_matches('@').trim_start();
+        let Some(rest) = line.get(3..) else {
+            continue;
+        };
+        if !line[..3].eq_ignore_ascii_case("set")
+            || rest
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        {
+            continue;
+        }
+        let body = rest.trim_start();
+        let body = body
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .unwrap_or(body);
+        let Some((name, value)) = body.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if !name.is_empty() {
+            bindings.insert(name.to_ascii_lowercase(), value.to_string());
+        }
+    }
+    bindings
+}
+
+fn render_known_batch_variables(
+    text: &str,
+    bindings: &std::collections::BTreeMap<String, String>,
+) -> String {
+    if bindings.is_empty() || !text.contains('%') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0usize;
+    while i < text.len() {
+        let Some(rel) = text[i..].find('%') else {
+            out.push_str(&text[i..]);
+            break;
+        };
+        let start = i + rel;
+        out.push_str(&text[i..start]);
+        let name_start = start + 1;
+        let Some(end_rel) = text[name_start..].find('%') else {
+            out.push_str(&text[start..]);
+            break;
+        };
+        let end = name_start + end_rel;
+        let name = &text[name_start..end];
+        if !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'(' | b')'))
+        {
+            if let Some(value) = bindings.get(&name.to_ascii_lowercase()) {
+                out.push_str(value);
+            } else {
+                out.push_str(&text[start..=end]);
+            }
+        } else {
+            out.push_str(&text[start..=end]);
+        }
+        i = end + 1;
+    }
+    out
+}
+
+fn render_known_delayed_variables(
+    text: &str,
+    bindings: &std::collections::BTreeMap<String, String>,
+) -> String {
+    if bindings.is_empty() || !text.contains('!') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0usize;
+    while i < text.len() {
+        let Some(rel) = text[i..].find('!') else {
+            out.push_str(&text[i..]);
+            break;
+        };
+        let start = i + rel;
+        out.push_str(&text[i..start]);
+        let name_start = start + 1;
+        let Some(end_rel) = text[name_start..].find('!') else {
+            out.push_str(&text[start..]);
+            break;
+        };
+        let end = name_start + end_rel;
+        let name = &text[name_start..end];
+        if !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'(' | b')'))
+        {
+            if let Some(value) = bindings.get(&name.to_ascii_lowercase()) {
+                out.push_str(value);
+            } else {
+                out.push_str(&text[start..=end]);
+            }
+        } else {
+            out.push_str(&text[start..=end]);
+        }
+        i = end + 1;
+    }
+    out
+}
+
+fn render_known_variables(
+    text: &str,
+    bindings: &std::collections::BTreeMap<String, String>,
+) -> String {
+    let rendered = render_known_batch_variables(text, bindings);
+    render_known_delayed_variables(&rendered, bindings)
+}
+
+fn deob_cmd_targets(deobfuscated: &str) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for line in deobfuscated.lines() {
+        let trimmed = line.trim().trim_start_matches('@').trim_start();
+        let lower = trimmed.to_ascii_lowercase();
+        let target = if lower.starts_with("cmd.exe /c ") {
+            trimmed[11..].trim().to_string()
+        } else if lower.starts_with("cmd /c ") {
+            trimmed[7..].trim().to_string()
+        } else {
+            continue;
+        };
+        if !target.is_empty() && seen.insert(target.to_ascii_lowercase()) {
+            out.push(target);
+        }
+    }
+    out
+}
+
+fn unresolved_adjacent_var_path_suffix(text: &str) -> Option<&str> {
+    let text = text.trim();
+    let mut i = usize::from(text.starts_with('"'));
+    let mut consumed_var = false;
+    while i < text.len() {
+        let marker = text.as_bytes()[i];
+        if marker != b'%' && marker != b'!' {
+            break;
+        }
+        let end_rel = text[i + 1..].find(marker as char)?;
+        let end = i + 1 + end_rel;
+        let name = &text[i + 1..end];
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'(' | b')'))
+        {
+            return None;
+        }
+        consumed_var = true;
+        i = end + 1;
+    }
+    let suffix = text.get(i..)?;
+    if consumed_var
+        && suffix.len() >= 4
+        && suffix.bytes().any(|b| b == b'.' || b == b'\\' || b == b'/')
+    {
+        Some(suffix)
+    } else {
+        None
+    }
+}
+
+fn render_cmd_payload(
+    payload: String,
+    bindings: &std::collections::BTreeMap<String, String>,
+    deob_cmd_targets: &[String],
+) -> String {
+    let rendered = render_known_variables(&payload, bindings);
+    if !rendered.contains('%') && !rendered.contains('!') {
+        return rendered;
+    }
+    let Some(suffix) = unresolved_adjacent_var_path_suffix(&rendered) else {
+        return rendered;
+    };
+    let suffix_lower = suffix.to_ascii_lowercase();
+    let matches = deob_cmd_targets
+        .iter()
+        .filter(|target| target.to_ascii_lowercase().ends_with(&suffix_lower))
+        .collect::<Vec<_>>();
+    if matches.len() == 1 {
+        matches[0].to_string()
+    } else {
+        rendered
+    }
+}
+
+fn rendered_cmd_payloads(
+    payloads: &[String],
+    bindings: &std::collections::BTreeMap<String, String>,
+    deob_cmd_targets: &[String],
+) -> Vec<String> {
+    dedup_strings(
+        payloads
+            .iter()
+            .cloned()
+            .map(|payload| render_cmd_payload(payload, bindings, deob_cmd_targets)),
+    )
+}
+
+fn rendered_powershell_payloads(
+    payloads: &[Vec<u8>],
+    bindings: &std::collections::BTreeMap<String, String>,
+) -> Vec<String> {
+    filter_empty_powershell_file_arg_duplicates(dedup_strings(
+        payloads
+            .iter()
+            .map(|payload| render_known_variables(&String::from_utf8_lossy(payload), bindings)),
+    ))
+}
+
+fn rendered_powershell_normalized(
+    payloads: &[String],
+    bindings: &std::collections::BTreeMap<String, String>,
+) -> Vec<String> {
+    filter_empty_powershell_file_arg_duplicates(dedup_strings(
+        payloads
+            .iter()
+            .map(|payload| render_known_variables(payload, bindings)),
+    ))
+}
+
 fn extracted_payloads(report: &batdeob_core::Report) -> serde_json::Value {
+    let bindings = deob_set_bindings(&report.deobfuscated);
+    let deob_cmd_targets = deob_cmd_targets(&report.deobfuscated);
     serde_json::json!({
-        "cmd": report.extracted_cmd.clone(),
-        "powershell": lossy_payloads(&report.extracted_ps1),
-        "powershell_normalized": report.extracted_ps1_normalized.clone(),
+        "cmd": rendered_cmd_payloads(&report.extracted_cmd, &bindings, &deob_cmd_targets),
+        "powershell": rendered_powershell_payloads(&report.extracted_ps1, &bindings),
+        "powershell_normalized": rendered_powershell_normalized(&report.extracted_ps1_normalized, &bindings),
         "jscript": lossy_payloads(&report.extracted_jscript),
         "vbs": lossy_payloads(&report.extracted_vbs),
     })
 }
 
 fn recovered_counts(report: &batdeob_core::Report) -> serde_json::Value {
+    let mut by_format = std::collections::BTreeMap::<&'static str, usize>::new();
+    let mut by_kind = std::collections::BTreeMap::<&'static str, usize>::new();
+    for (origin, blob) in &report.recovered_pe {
+        let format = detect_blob_extension(blob);
+        *by_format.entry(format).or_default() += 1;
+        *by_kind
+            .entry(recovered_artifact_kind(format, origin))
+            .or_default() += 1;
+    }
     serde_json::json!({
-        "pe": report.recovered_pe.len(),
+        "total": report.recovered_pe.len(),
+        "pe": by_kind.get("pe").copied().unwrap_or(0),
+        "by_format": by_format,
+        "by_kind": by_kind,
     })
 }
 
@@ -1438,7 +2123,7 @@ fn analyze_one(
 ) -> Result<bool> {
     let started = Instant::now();
     let input = read_input(file)?;
-    let report = batdeob_core::analyze_with_options(&input, cfg, options);
+    let report = analyze_cli_input(file, &input, cfg, options);
     emit_analyze_profiles(file, started);
     let lolbas_matches = optional_lolbas_matches(&report, lolbas_json)?;
     if jsonl {
@@ -1454,7 +2139,7 @@ fn analyze_one(
             return Ok(false);
         }
         for t in &report.traits {
-            let line = serde_json::json!({"kind": "trait", "trait": t});
+            let line = serde_json::json!({"kind": "trait", "trait": trait_json_value(t)?});
             if !write_json_line(out, &line)? {
                 return Ok(false);
             }
@@ -1474,10 +2159,12 @@ fn analyze_one(
     } else {
         let mut json = serde_json::json!({
             "deobfuscated": report.deobfuscated,
-            "traits": report.traits,
             "extracted": extracted_counts(&report),
             "recovered": recovered_counts(&report),
         });
+        if let serde_json::Value::Object(ref mut obj) = json {
+            obj.insert("traits".to_string(), report_traits_json_value(&report)?);
+        }
         if let Some(matches) = lolbas_matches {
             if let serde_json::Value::Object(ref mut obj) = json {
                 obj.insert(
@@ -1493,6 +2180,19 @@ fn analyze_one(
     Ok(true)
 }
 
+fn analyze_cli_input(
+    file: &str,
+    input: &[u8],
+    cfg: &batdeob_core::Config,
+    options: &batdeob_core::AnalysisOptions,
+) -> batdeob_core::Report {
+    if file == "-" {
+        batdeob_core::analyze_with_options(input, cfg, options)
+    } else {
+        batdeob_core::analyze_with_path_and_options(input, cfg, file, options)
+    }
+}
+
 fn run() -> Result<()> {
     let cli = parse_cli();
     match cli.command {
@@ -1506,7 +2206,7 @@ fn run() -> Result<()> {
             let input = read_input(&file)?;
             let cfg = batdeob_core::Config::default();
             let options = make_analysis_options(&env, &env_file)?;
-            let report = batdeob_core::analyze_with_options(&input, &cfg, &options);
+            let report = analyze_cli_input(&file, &input, &cfg, &options);
             if tldr {
                 print!("{}", build_tldr(&file, &input, &report));
             } else {
@@ -1517,6 +2217,8 @@ fn run() -> Result<()> {
         }
         Command::Report {
             file,
+            out_dir,
+            force,
             include_source,
             include_deob,
             max_depth,
@@ -1543,7 +2245,11 @@ fn run() -> Result<()> {
                 max_traits_per_kind,
             );
             let options = make_analysis_options(&env, &env_file)?;
-            let report = batdeob_core::analyze_with_options(&input, &cfg, &options);
+            let report = analyze_cli_input(&file, &input, &cfg, &options);
+            let output_files = out_dir
+                .as_deref()
+                .map(|out_dir| write_report_files(&report, out_dir, force))
+                .transpose()?;
 
             // Start from the analyst-friendly summary, then layer the full
             // typed trait list and any opt-in raw text on top.
@@ -1559,7 +2265,11 @@ fn run() -> Result<()> {
                     "input_sha256".to_string(),
                     serde_json::Value::String(input_sha256),
                 );
-                obj.insert("traits".to_string(), serde_json::to_value(&report.traits)?);
+                obj.insert("recovered".to_string(), recovered_counts(&report));
+                obj.insert("traits".to_string(), report_traits_json_value(&report)?);
+                if let Some(output_files) = output_files {
+                    obj.insert("output_files".to_string(), output_files);
+                }
                 if include_source {
                     obj.insert(
                         "source".to_string(),
@@ -1667,18 +2377,27 @@ fn run() -> Result<()> {
                 max_traits_per_kind,
             );
             let options = make_analysis_options(&env, &env_file)?;
-            let report = batdeob_core::analyze_with_options(&input, &cfg, &options);
-            if !json_only {
-                write_report_files(&report, &out_dir, force)?;
-            }
+            let report = analyze_cli_input(&file, &input, &cfg, &options);
+            let output_files = if json_only {
+                None
+            } else {
+                Some(write_report_files(&report, &out_dir, force)?)
+            };
             if json || json_only {
                 let lolbas_matches = optional_lolbas_matches(&report, lolbas_json.as_deref())?;
                 let mut val = serde_json::json!({
                     "deobfuscated": report.deobfuscated,
-                    "traits": report.traits,
                     "extracted": extracted_counts(&report),
                     "recovered": recovered_counts(&report),
                 });
+                if let serde_json::Value::Object(ref mut obj) = val {
+                    obj.insert("traits".to_string(), report_traits_json_value(&report)?);
+                }
+                if let Some(output_files) = output_files {
+                    if let serde_json::Value::Object(ref mut obj) = val {
+                        obj.insert("output_files".to_string(), output_files);
+                    }
+                }
                 if let Some(matches) = lolbas_matches {
                     if let serde_json::Value::Object(ref mut obj) = val {
                         obj.insert(
@@ -1703,7 +2422,138 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::safe_write;
+    use super::{
+        deob_set_bindings, read_input, recovered_artifact_kind, safe_write,
+        stringify_printable_byte_arrays, trait_json_value, trait_json_value_with_bindings,
+    };
+
+    #[cfg(unix)]
+    #[test]
+    fn read_input_rejects_non_regular_paths() {
+        assert!(read_input("/dev/null").is_err());
+    }
+
+    #[test]
+    fn printable_byte_array_rendering_is_field_name_agnostic() {
+        let mut value = serde_json::json!({
+            "payload": [65, 66, 67, 13, 10],
+            "nested": {
+                "bytes": [67, 77, 68]
+            },
+            "empty": [],
+            "not_bytes": [300],
+        });
+
+        stringify_printable_byte_arrays(&mut value);
+
+        assert_eq!(value["payload"].as_str(), Some("ABC\r\n"));
+        assert_eq!(value["nested"]["bytes"].as_str(), Some("CMD"));
+        assert!(value["empty"].as_array().is_some());
+        assert!(value["not_bytes"].as_array().is_some());
+    }
+
+    #[test]
+    fn recovered_bin_shellcode_origins_are_typed_as_shellcode() {
+        assert_eq!(
+            recovered_artifact_kind("bin", "ps1-aes-shellcode-1"),
+            "shellcode"
+        );
+        assert_eq!(
+            recovered_artifact_kind("bin", "ps1-xor-shellcode-1"),
+            "shellcode"
+        );
+        assert_eq!(recovered_artifact_kind("bin", "opaque-data-1"), "blob");
+    }
+
+    #[test]
+    fn trait_json_summarizes_large_string_fields() {
+        let command = format!("net user {}", "A".repeat(10_000));
+        let value = trait_json_value(&batdeob_core::Trait::Enumeration {
+            enum_kind: "users".to_string(),
+            command,
+        })
+        .expect("trait json");
+
+        assert_eq!(
+            value["command"]["omitted"].as_bool(),
+            Some(true),
+            "{value:#}"
+        );
+        assert_eq!(value["command"]["size"].as_u64(), Some(10_009), "{value:#}");
+        assert_eq!(
+            value["command"]["preview"].as_str().map(str::len),
+            Some(256),
+            "{value:#}"
+        );
+        assert!(
+            value["command"]["sha256_prefix"].as_str().is_some(),
+            "{value:#}"
+        );
+    }
+
+    #[test]
+    fn trait_json_renders_known_environment_paths_without_expanding_batch_meta() {
+        let bindings = deob_set_bindings("");
+        let value = trait_json_value_with_bindings(
+            &batdeob_core::Trait::Extrac32 {
+                src: "%~f0".to_string(),
+                dst: "%tmp%\\x.exe".to_string(),
+                self_reference: true,
+            },
+            &bindings,
+        )
+        .expect("trait json");
+
+        assert_eq!(value["src"].as_str(), Some("%~f0"), "{value:#}");
+        assert_eq!(
+            value["dst"].as_str(),
+            Some(r"C:\Users\puncher\AppData\Local\Temp\x.exe"),
+            "{value:#}"
+        );
+    }
+
+    #[test]
+    fn trait_json_summarizes_payload_sized_echo_redirect_content() {
+        let content = b"A".repeat(4096);
+        let value = trait_json_value(&batdeob_core::Trait::EchoRedirect {
+            content,
+            target: "payload.tmp".to_string(),
+            append: true,
+        })
+        .expect("trait json");
+
+        assert_eq!(
+            value["content"]["omitted"].as_bool(),
+            Some(true),
+            "{value:#}"
+        );
+        assert_eq!(value["content"]["size"].as_u64(), Some(4096), "{value:#}");
+        assert_eq!(
+            value["content"]["preview"].as_str().map(str::len),
+            Some(256),
+            "{value:#}"
+        );
+        assert!(
+            value["content"]["sha256_prefix"].as_str().is_some(),
+            "{value:#}"
+        );
+    }
+
+    #[test]
+    fn trait_json_keeps_small_printable_echo_redirect_content_inline() {
+        let value = trait_json_value(&batdeob_core::Trait::EchoRedirect {
+            content: b"CreateObject(WScript.Shell).Run calc.exe\r\n".to_vec(),
+            target: "payload.vbs".to_string(),
+            append: true,
+        })
+        .expect("trait json");
+
+        assert_eq!(
+            value["content"].as_str(),
+            Some("CreateObject(WScript.Shell).Run calc.exe\r\n"),
+            "{value:#}"
+        );
+    }
 
     #[cfg(unix)]
     #[test]

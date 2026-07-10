@@ -46,13 +46,7 @@ fn queue_inline_script_payload(raw: &str, env: &mut Environment) -> bool {
     if let Some(body) = inline_payload_after(raw, "vbscript:") {
         if body.len() <= MAX_INLINE_SCRIPT_BYTES {
             let payload = body.as_bytes().to_vec();
-            if !env
-                .all_extracted_vbs
-                .iter()
-                .any(|existing| existing == &payload)
-            {
-                env.all_extracted_vbs.push(payload);
-            }
+            env.push_extracted_vbs(payload);
             queued = true;
         }
     }
@@ -61,13 +55,7 @@ fn queue_inline_script_payload(raw: &str, env: &mut Environment) -> bool {
     {
         if body.len() <= MAX_INLINE_SCRIPT_BYTES {
             let payload = body.as_bytes().to_vec();
-            if !env
-                .all_extracted_jscript
-                .iter()
-                .any(|existing| existing == &payload)
-            {
-                env.all_extracted_jscript.push(payload);
-            }
+            env.push_extracted_jscript(payload);
             queued = true;
         }
     }
@@ -136,26 +124,42 @@ fn queue_tracked_hta_content(path: &str, env: &mut Environment) -> bool {
         if !body.is_empty() {
             let payload = body.as_bytes().to_vec();
             let tag = &text[open..=tag_end];
-            if find_ascii_case_insensitive_from(tag, "vbscript", 0).is_some() {
-                if !env
-                    .all_extracted_vbs
-                    .iter()
-                    .any(|existing| existing == &payload)
-                {
-                    env.all_extracted_vbs.push(payload);
-                }
-            } else if !env
-                .all_extracted_jscript
-                .iter()
-                .any(|existing| existing == &payload)
+            let lower_body = body.to_ascii_lowercase();
+            if find_ascii_case_insensitive_from(tag, "vbscript", 0).is_some()
+                || (find_ascii_case_insensitive_from(tag, "jscript", 0).is_none()
+                    && find_ascii_case_insensitive_from(tag, "javascript", 0).is_none()
+                    && find_ascii_case_insensitive_from(tag, "ecmascript", 0).is_none()
+                    && looks_like_vbs_script_body(&lower_body))
             {
-                env.all_extracted_jscript.push(payload);
+                env.push_extracted_vbs(payload);
+            } else {
+                env.push_extracted_jscript(payload);
             }
             queued = true;
         }
         idx = close + "</script>".len();
     }
     queued
+}
+
+fn looks_like_vbs_script_body(lower: &str) -> bool {
+    lower.contains("createobject")
+        || lower.contains("wscript")
+        || lower.contains("xmlhttp")
+        || lower.contains("option explicit")
+        || lower.contains("private function")
+        || lower.contains("\ndim ")
+        || lower.starts_with("dim ")
+        || lower.contains("\nsub ")
+        || lower.starts_with("sub ")
+        || lower.contains("\npublic sub ")
+        || lower.starts_with("public sub ")
+        || lower.contains("\nprivate sub ")
+        || lower.starts_with("private sub ")
+        || lower.contains("\npublic function ")
+        || lower.starts_with("public function ")
+        || ((lower.contains("\nfunction ") || lower.starts_with("function "))
+            && lower.contains("end function"))
 }
 
 fn tracked_hta_content(path: &str, env: &Environment) -> Option<Vec<u8>> {

@@ -19,7 +19,7 @@
 use base64::Engine as _;
 use std::collections::HashMap;
 
-const MAX_SCAN_BYTES: usize = 512 * 1024;
+const MAX_SCAN_BYTES: usize = 64 * 1024;
 const MIN_MARKER_LEN: usize = 3;
 const MAX_MARKER_LEN: usize = 8;
 const MIN_MIXED_CASE_COUNT: usize = 5;
@@ -165,7 +165,177 @@ pub fn strip_line(text: &str) -> String {
             break;
         }
     }
-    out
+    strip_unicode_marker_islands(&out)
+}
+
+pub fn strip_unicode_marker_islands(text: &str) -> String {
+    if text.is_ascii() || text.len() > MAX_SCAN_BYTES {
+        return text.to_string();
+    }
+
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut spans = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i].1.is_ascii_alphanumeric() {
+            i += 1;
+            continue;
+        }
+
+        let start_idx = i;
+        let start = chars[start_idx].0;
+        while i < chars.len() && !chars[i].1.is_ascii_alphanumeric() {
+            i += 1;
+        }
+        let end = chars.get(i).map(|(idx, _)| *idx).unwrap_or(text.len());
+        let prev = start_idx.checked_sub(1).and_then(|idx| chars.get(idx));
+        let next = chars.get(i);
+        let candidate = &text[start..end];
+        for (marker_start, marker_end) in unicode_marker_subspans(candidate) {
+            if marker_subspan_is_probable_assignment_name(candidate, marker_end) {
+                continue;
+            }
+            let marker_abs_start = start + marker_start;
+            let marker_abs_end = start + marker_end;
+
+            if (prev.is_some_and(|(_, ch)| ch.is_ascii_alphanumeric())
+                || next.is_some_and(|(_, ch)| ch.is_ascii_alphanumeric()))
+                && is_unicode_marker_island(&text[marker_abs_start..marker_abs_end])
+            {
+                spans.push((marker_abs_start, marker_abs_end));
+            }
+        }
+    }
+
+    if spans.is_empty() {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+    for (start, end) in &spans {
+        out.push_str(&text[cursor..*start]);
+        cursor = *end;
+    }
+    out.push_str(&text[cursor..]);
+    if spans.len() >= 2 || has_batch_command_signal_after_unicode_strip(&out) {
+        out
+    } else {
+        text.to_string()
+    }
+}
+
+fn unicode_marker_subspans(candidate: &str) -> Vec<(usize, usize)> {
+    if candidate.starts_with('%') && candidate.ends_with('%') && candidate.len() >= 2 {
+        return vec![(0, candidate.len())];
+    }
+
+    let mut spans = Vec::new();
+    let mut segment_start: Option<usize> = None;
+    let mut first_non_ascii: Option<usize> = None;
+    let mut last_non_ascii: Option<usize> = None;
+
+    for (idx, ch) in candidate.char_indices() {
+        if ch.is_ascii_alphanumeric() || is_structural_ascii_separator(ch) {
+            if let (Some(first), Some(last)) = (first_non_ascii, last_non_ascii) {
+                spans.push((first, last));
+            }
+            segment_start = None;
+            first_non_ascii = None;
+            last_non_ascii = None;
+            continue;
+        }
+
+        if segment_start.is_none() {
+            segment_start = Some(idx);
+        }
+        if !ch.is_ascii() {
+            first_non_ascii.get_or_insert(segment_start.unwrap_or(idx));
+            last_non_ascii = Some(idx + ch.len_utf8());
+        }
+    }
+    if let (Some(first), Some(last)) = (first_non_ascii, last_non_ascii) {
+        spans.push((first, last));
+    }
+    spans
+}
+
+fn is_structural_ascii_separator(ch: char) -> bool {
+    matches!(
+        ch,
+        '&' | '|' | '<' | '>' | '=' | '"' | '\'' | ',' | ';' | ':' | '[' | ']'
+    )
+}
+
+fn marker_subspan_is_probable_assignment_name(candidate: &str, marker_end: usize) -> bool {
+    candidate
+        .get(marker_end..)
+        .is_some_and(|tail| tail.trim_start().starts_with('='))
+}
+
+fn is_unicode_marker_island(candidate: &str) -> bool {
+    if candidate.len() > 4096 {
+        return false;
+    }
+    let mut non_ascii_bytes = 0usize;
+    for ch in candidate.chars() {
+        if ch.is_ascii_alphanumeric() {
+            return false;
+        }
+        if matches!(ch, '&' | '|' | '<' | '>' | '=' | '"' | '\'') {
+            return false;
+        }
+        if !ch.is_ascii() {
+            non_ascii_bytes += ch.len_utf8();
+        }
+    }
+    non_ascii_bytes >= 3
+}
+
+fn has_batch_command_signal_after_unicode_strip(text: &str) -> bool {
+    let trimmed = text.trim_start_matches(|c: char| c == '@' || c == '(' || c.is_whitespace());
+    let command = trimmed
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .unwrap_or("");
+    matches_any_ascii_case_insensitive(
+        command,
+        &[
+            "assoc",
+            "attrib",
+            "bitsadmin",
+            "call",
+            "cd",
+            "certutil",
+            "chcp",
+            "cls",
+            "cmd",
+            "copy",
+            "cscript",
+            "curl",
+            "del",
+            "echo",
+            "erase",
+            "exit",
+            "find",
+            "for",
+            "if",
+            "mkdir",
+            "move",
+            "mshta",
+            "pause",
+            "powershell",
+            "reg",
+            "ren",
+            "rmdir",
+            "rundll32",
+            "set",
+            "start",
+            "type",
+            "wmic",
+            "wscript",
+        ],
+    )
 }
 
 /// Find byte spans within `text` that look like ASCII-alphanumeric base64
@@ -293,6 +463,17 @@ mod tests {
     }
 
     #[test]
+    fn long_single_line_marker_noise_is_not_scanned() {
+        let mut noisy = String::new();
+        for i in 0..20_000 {
+            noisy.push((b'a' + (i % 26) as u8) as char);
+            noisy.push_str("XYZ");
+        }
+
+        assert_eq!(strip_line(&noisy), noisy);
+    }
+
+    #[test]
     fn repeated_plain_token_is_not_stripped() {
         let noisy = "abcabcabcabc";
         assert_eq!(strip_line(noisy), noisy);
@@ -309,5 +490,42 @@ mod tests {
         assert!(!candidate_has_multiple_distinct_bytes(b"AAA"));
         assert!(candidate_has_multiple_distinct_bytes(b"AaA"));
         assert!(candidate_has_multiple_distinct_bytes(b"ABC"));
+    }
+
+    #[test]
+    fn unicode_marker_islands_inside_ascii_tokens_are_stripped() {
+        let noisy = "ec┌( ಠ_ಠ)┘ho ofヾ(⌐■_■)ノf & s已法製et X=1 & if noﮕ◯t def字神ined X exit";
+        assert_eq!(
+            strip_line(noisy),
+            "echo off & set X=1 & if not defined X exit"
+        );
+    }
+
+    #[test]
+    fn unicode_marker_islands_at_command_token_boundaries_are_stripped() {
+        let noisy = "set \"x=⟀ ⻉ ䷥ ⻮ ┋powershellExecutionPolicyBypassWindowStyle HiddenCommand⟀ ⻉ ䷥ ⻮ ┋\"";
+        assert_eq!(
+            strip_line(noisy),
+            "set \"x=powershellExecutionPolicyBypassWindowStyle HiddenCommand\""
+        );
+    }
+
+    #[test]
+    fn standalone_unicode_variable_names_are_preserved() {
+        let line = r#"set "豆饿色德=value""#;
+        assert_eq!(strip_line(line), line);
+    }
+
+    #[test]
+    fn percent_wrapped_unicode_marker_islands_inside_ascii_tokens_are_stripped() {
+        let noisy = "e%┌( ಠ_ಠ)┘ヾ(⌐■_■)ノ%cho of%◯س﷽تﯤس%f";
+        assert_eq!(strip_line(noisy), "echo off");
+    }
+
+    #[test]
+    fn long_percent_wrapped_unicode_marker_islands_are_stripped() {
+        let marker = "%┌( ಠ_ಠ)┘ヾ(⌐■_■)ノ(◕‿◕)(⊙ω⊙)%".repeat(12);
+        let noisy = format!("e{marker}cho of{marker}f");
+        assert_eq!(strip_line(&noisy), "echo off");
     }
 }

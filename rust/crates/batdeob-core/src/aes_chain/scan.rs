@@ -47,11 +47,10 @@ fn trim_trailing(url: &str) -> &str {
     ])
 }
 
-pub fn scan_urls(bytes: &[u8], limit: usize) -> Vec<String> {
+pub fn scan_ascii_urls(bytes: &[u8], limit: usize) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // UTF-8 / ASCII pass.
     for m in URL_UTF8_RE.find_iter(bytes) {
         if let Ok(s) = std::str::from_utf8(m.as_bytes()) {
             let cleaned = trim_trailing(s).to_string();
@@ -69,6 +68,16 @@ pub fn scan_urls(bytes: &[u8], limit: usize) -> Vec<String> {
             }
         }
     }
+
+    out
+}
+
+pub fn scan_urls(bytes: &[u8], limit: usize) -> Vec<String> {
+    let mut out = scan_ascii_urls(bytes, limit);
+    if out.len() >= limit {
+        return out;
+    }
+    let mut seen: std::collections::HashSet<String> = out.iter().cloned().collect();
 
     // UTF-16LE pass: convert pairs to bytes, then scan that as a string.
     // Scan both alignments because strings embedded in PE data are not
@@ -163,6 +172,20 @@ mod tests {
         }
         let urls = scan_urls(&bytes, 16);
         assert!(urls.iter().any(|u| u == s), "got: {:?}", urls);
+    }
+
+    #[test]
+    fn ascii_scan_does_not_decode_utf16le_url_literals() {
+        let s = "https://utf16-ascii-only.example.org/p";
+        let mut bytes = Vec::new();
+        for c in s.chars() {
+            let cp = c as u32;
+            bytes.push((cp & 0xff) as u8);
+            bytes.push(((cp >> 8) & 0xff) as u8);
+        }
+
+        assert!(scan_ascii_urls(&bytes, 16).is_empty());
+        assert!(scan_urls(&bytes, 16).iter().any(|url| url == s));
     }
 
     #[test]

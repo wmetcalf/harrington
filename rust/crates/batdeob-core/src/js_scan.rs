@@ -86,7 +86,7 @@ static JS_FROMCHARCODE_MEMBER_BIND_RE: Lazy<Regex> = Lazy::new(|| {
 #[expect(clippy::expect_used, reason = "static regex construction")]
 static JS_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:^|[;\r\n])\s*(?:(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]{0,127})\s*=\s*([^;\r\n]{1,4096})"#,
+        r#"(?is)(?:^|[;{}\r\n])\s*(?:(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]{0,127})\s*=\s*([^;{}\r\n]{1,4096})"#,
     )
     .expect("js string assign")
 });
@@ -94,7 +94,7 @@ static JS_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 #[expect(clippy::expect_used, reason = "static regex construction")]
 static JS_STRING_APPEND_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?is)(?:^|[;\r\n])\s*([A-Za-z_$][A-Za-z0-9_$]{0,127})\s*\+=\s*([^;\r\n]{1,4096})"#,
+        r#"(?is)(?:^|[;{}\r\n])\s*([A-Za-z_$][A-Za-z0-9_$]{0,127})\s*\+=\s*([^;{}\r\n]{1,4096})"#,
     )
     .expect("js string append")
 });
@@ -116,14 +116,30 @@ pub fn scan_js_payloads(env: &mut Environment) {
         // Second pass: collapse "a"+"b"+"c" concat
         let concat_resolved = expand_js_string_concat(&decoded);
         let mut candidates = vec![concat_resolved.clone()];
-        candidates.extend(decoded_js_percent_literals(&concat_resolved));
-        candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
-        candidates.extend(decoded_js_array_join_literals(&concat_resolved));
-        candidates.extend(decoded_js_atob_literals(&concat_resolved));
-        candidates.extend(decoded_js_custom_base64_decoder_calls(&concat_resolved));
-        candidates.extend(decoded_js_textdecoder_literals(&concat_resolved));
-        candidates.extend(decoded_js_buffer_literals(&concat_resolved));
-        candidates.extend(decoded_js_variable_string_bindings(&concat_resolved));
+        if may_contain_js_percent_decode(&concat_resolved) {
+            candidates.extend(decoded_js_percent_literals(&concat_resolved));
+        }
+        if may_contain_js_fromcharcode_decode(&concat_resolved) {
+            candidates.extend(decoded_js_fromcharcode_literals(&concat_resolved));
+        }
+        if may_contain_js_array_join_decode(&concat_resolved) {
+            candidates.extend(decoded_js_array_join_literals(&concat_resolved));
+        }
+        if may_contain_js_atob_decode(&concat_resolved) {
+            candidates.extend(decoded_js_atob_literals(&concat_resolved));
+        }
+        if may_contain_js_custom_base64_decoder(&concat_resolved) {
+            candidates.extend(decoded_js_custom_base64_decoder_calls(&concat_resolved));
+        }
+        if may_contain_js_textdecoder_decode(&concat_resolved) {
+            candidates.extend(decoded_js_textdecoder_literals(&concat_resolved));
+        }
+        if may_contain_js_buffer_decode(&concat_resolved) {
+            candidates.extend(decoded_js_buffer_literals(&concat_resolved));
+        }
+        if may_contain_js_variable_string_decode(&concat_resolved) {
+            candidates.extend(decoded_js_variable_string_bindings(&concat_resolved));
+        }
 
         // Now scan for URLs
         for candidate in candidates {
@@ -145,34 +161,160 @@ pub fn scan_js_payloads(env: &mut Environment) {
                     &mut seen,
                 );
             }
+            if find_ascii_case_insensitive_from(&candidate, "getobject", 0).is_some() {
+                let bindings = collect_js_string_literal_bindings(&candidate);
+                push_downloads_from_js_getobject_calls(
+                    env,
+                    idx,
+                    &concat_resolved,
+                    &candidate,
+                    &bindings,
+                    &mut seen,
+                );
+            }
             for caps in URL_IN_JS_RE.captures_iter(&candidate) {
                 let Some(m) = caps.get(1) else { continue };
-                let mut url = m.as_str().to_string();
-                // Strip "script:" prefix that GetObject uses
-                if starts_with_ascii_case_insensitive(&url, "script:") {
-                    url = url["script:".len()..].to_string();
-                }
-                url.truncate(
-                    url.trim_end_matches([',', '.', ';', ':', ')', ']', '}', '"', '\'', '!', '?'])
-                        .len(),
-                );
-                let Some(url) = crate::deob_scan::normalize_liberal_url_token(&url) else {
-                    continue;
-                };
-                if crate::deob_scan::is_noise_url(&url) {
-                    continue;
-                }
-                if !seen.insert((idx, url.clone())) {
-                    continue;
-                }
-                let snippet = snippet_prefix(&concat_resolved, 120);
-                env.traits.push(Trait::Download {
-                    cmd: format!("(js #{idx}) {snippet}"),
-                    src: url,
-                    dst: None,
-                });
+                push_js_download_url(env, idx, &concat_resolved, m.as_str(), &mut seen);
             }
         }
+    }
+}
+
+fn contains_ci(text: &str, needle: &str) -> bool {
+    find_ascii_case_insensitive_from(text, needle, 0).is_some()
+}
+
+fn contains_byte(text: &str, needle: u8) -> bool {
+    text.as_bytes().contains(&needle)
+}
+
+fn may_contain_js_percent_decode(text: &str) -> bool {
+    contains_byte(text, b'%')
+        && (contains_ci(text, "decodeuri")
+            || contains_ci(text, "unescape")
+            || contains_ci(text, "window"))
+}
+
+fn may_contain_js_fromcharcode_decode(text: &str) -> bool {
+    contains_ci(text, "charcode")
+        || contains_ci(text, "codepoint")
+        || (contains_ci(text, "String") && contains_byte(text, b'['))
+}
+
+fn may_contain_js_array_join_decode(text: &str) -> bool {
+    contains_ci(text, "join") && (contains_byte(text, b'[') || contains_ci(text, "Array"))
+}
+
+fn may_contain_js_atob_decode(text: &str) -> bool {
+    contains_ci(text, "atob") || contains_ci(text, "tob")
+}
+
+fn may_contain_js_custom_base64_decoder(text: &str) -> bool {
+    contains_ci(text, "function")
+        && contains_ci(text, "charat")
+        && contains_ci(text, "substring")
+        && contains_ci(text, "fromcharcode")
+}
+
+fn may_contain_js_textdecoder_decode(text: &str) -> bool {
+    contains_ci(text, "textdecoder")
+}
+
+fn may_contain_js_buffer_decode(text: &str) -> bool {
+    contains_ci(text, "Buffer")
+}
+
+fn may_contain_js_variable_string_decode(text: &str) -> bool {
+    contains_byte(text, b'=') && (contains_byte(text, b'"') || contains_byte(text, b'\''))
+}
+
+fn push_js_download_url(
+    env: &mut Environment,
+    idx: usize,
+    snippet_source: &str,
+    raw_url: &str,
+    seen: &mut std::collections::HashSet<(usize, String)>,
+) {
+    let mut url = raw_url.to_string();
+    // Strip "script:" prefix that GetObject uses.
+    if starts_with_ascii_case_insensitive(&url, "script:") {
+        url = url["script:".len()..].to_string();
+    }
+    url.truncate(
+        url.trim_end_matches([',', '.', ';', ':', ')', ']', '}', '"', '\'', '!', '?'])
+            .len(),
+    );
+    let Some(url) = crate::deob_scan::normalize_liberal_url_token(&url) else {
+        return;
+    };
+    if crate::deob_scan::is_noise_url(&url) {
+        return;
+    }
+    if !seen.insert((idx, url.clone())) {
+        return;
+    }
+    let snippet = snippet_prefix(snippet_source, 120);
+    env.traits.push(Trait::Download {
+        cmd: format!("(js #{idx}) {snippet}"),
+        src: url,
+        dst: None,
+    });
+}
+
+fn push_downloads_from_js_getobject_calls(
+    env: &mut Environment,
+    idx: usize,
+    snippet_source: &str,
+    text: &str,
+    bindings: &std::collections::HashMap<String, String>,
+    seen: &mut std::collections::HashSet<(usize, String)>,
+) {
+    let mut cursor = 0usize;
+    while let Some(call_start) = find_ascii_case_insensitive_from(text, "getobject", cursor) {
+        let call_end = call_start + "getobject".len();
+        if !is_js_identifier_boundary_before(text, call_start)
+            || !is_js_identifier_boundary_at(text, call_end)
+        {
+            cursor = call_end;
+            continue;
+        }
+        let Some(open) = consume_js_call_open(text, call_end) else {
+            cursor = call_end;
+            continue;
+        };
+        let Some(close) = find_js_balanced_paren_close(text, open + 1) else {
+            cursor = open + 1;
+            continue;
+        };
+        let arg_start = skip_ascii_ws(text, open + 1);
+        let arg_end = find_js_call_comma(text, arg_start)
+            .filter(|comma| *comma < close)
+            .unwrap_or(close);
+        let Some(expr) = text.get(arg_start..arg_end).map(str::trim) else {
+            cursor = close + 1;
+            continue;
+        };
+        if let Some(url) = eval_js_string_expr(expr, bindings) {
+            push_js_download_url(env, idx, snippet_source, &url, seen);
+        }
+        cursor = close + 1;
+    }
+}
+
+fn is_js_identifier_boundary_at(text: &str, idx: usize) -> bool {
+    match text.as_bytes().get(idx) {
+        Some(byte) => !is_js_ident_continue_byte(*byte),
+        None => true,
+    }
+}
+
+fn is_js_identifier_boundary_before(text: &str, idx: usize) -> bool {
+    if idx == 0 {
+        return true;
+    }
+    match text.as_bytes().get(idx - 1) {
+        Some(byte) => !is_js_ident_continue_byte(*byte),
+        None => true,
     }
 }
 

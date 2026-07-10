@@ -2,7 +2,7 @@
 
 use super::util::{
     filesystem_entry_for_path, flag_url_value_after, normalize_url_like_token, split_words,
-    windows_basename,
+    windows_basename, MAX_FILESYSTEM_FALLBACK_SCAN_ENTRIES,
 };
 use crate::env::{Environment, FsEntry};
 use crate::traits::Trait;
@@ -78,6 +78,9 @@ fn prior_download_url(path: &str, env: &Environment) -> Option<String> {
 }
 
 fn prior_download_url_by_basename(path: &str, env: &Environment) -> Option<String> {
+    if env.modified_filesystem.len() > MAX_FILESYSTEM_FALLBACK_SCAN_ENTRIES {
+        return None;
+    }
     env.modified_filesystem
         .iter()
         .find_map(|(tracked_path, entry)| {

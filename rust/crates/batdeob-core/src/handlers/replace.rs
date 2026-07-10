@@ -6,7 +6,6 @@ use crate::handlers::util::{
     normalize_filesystem_storage_path, normalize_wildcard_path, split_words, strip_outer_quotes,
     wildcard_match,
 };
-use crate::traits::Trait;
 
 pub fn h_replace(raw: &str, env: &mut Environment) {
     let tokens = split_words(raw);
@@ -14,10 +13,7 @@ pub fn h_replace(raw: &str, env: &mut Environment) {
         return;
     };
 
-    env.traits.push(Trait::AdminCommand {
-        name: "replace".to_string(),
-        cmd: raw.to_string(),
-    });
+    env.push_admin_command("replace", raw);
 
     if src.contains(['*', '?']) {
         copy_wildcard_sources(&src, &dst_dir, env);

@@ -160,6 +160,11 @@ pub enum Trait {
     GotoLoopCapped {
         label: String,
     },
+    ControlFlowObfuscation {
+        pattern: String,
+        arithmetic_count: u64,
+        goto_count: u64,
+    },
     OutputCapped {
         bytes_at_cap: u64,
     },
@@ -171,6 +176,11 @@ pub enum Trait {
     AdminCommand {
         name: String,
         cmd: String,
+    },
+    AdminCommandSummary {
+        category: String,
+        total: u64,
+        kept: u64,
     },
     /// Local account or group membership change. Examples:
     /// `net user <account> <password> /add` and
@@ -274,6 +284,15 @@ pub enum Trait {
     DefenderEvasion {
         action: String,
         target: String,
+    },
+    /// Sandbox / VM awareness or anti-analysis guard. Examples:
+    /// `Get-WmiObject Win32_ComputerSystem` followed by `Model -match
+    /// 'Virtual'`, or guard strings such as `VirtualBox`, `VMware`,
+    /// `QEMU`, and `BOCHS` used to exit under analysis.
+    AntiAnalysis {
+        technique: String,
+        target: String,
+        command: String,
     },
     /// `[Reflection.Assembly]::Load($bytes)` — loads a .NET assembly
     /// from a byte array entirely in memory, bypassing disk write and

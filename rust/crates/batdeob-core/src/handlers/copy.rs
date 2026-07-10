@@ -37,16 +37,21 @@ pub fn h_copy(raw: &str, env: &mut Environment) {
         // Try to concatenate content from modified_filesystem
         let mut combined: Vec<u8> = Vec::new();
         let mut all_resolved = true;
+        let mut capped = false;
+        let cap = env.limits.max_output_bytes as usize;
         for src in sources {
             let key = src.to_ascii_lowercase();
             match env.modified_filesystem.get(&key) {
                 Some(FsEntry::Content { content, .. }) | Some(FsEntry::Decoded { content, .. }) => {
-                    combined.extend_from_slice(content);
+                    capped |= append_capped(&mut combined, content, cap);
                 }
                 _ => {
                     all_resolved = false;
                 }
             }
+        }
+        if capped {
+            env.note_output_capped(combined.len() as u64);
         }
         if all_resolved && !combined.is_empty() {
             insert_filesystem_entry(
@@ -168,10 +173,7 @@ pub fn h_xcopy(raw: &str, env: &mut Environment) {
 }
 
 pub fn h_move(raw: &str, env: &mut Environment) {
-    env.traits.push(Trait::AdminCommand {
-        name: "move".to_string(),
-        cmd: raw.to_string(),
-    });
+    env.push_admin_command("move", raw);
 
     track_rename_like(raw, env, &["/y", "/-y"], true);
 }
@@ -343,13 +345,18 @@ fn copy_wildcard_sources_as_concat(env: &mut Environment, src_pattern: &str, dst
     }
     matched.sort_by(|(left, _), (right, _)| left.cmp(right));
     let mut combined = Vec::new();
+    let mut capped = false;
+    let cap = env.limits.max_output_bytes as usize;
     for (_, entry) in matched {
         match entry {
             FsEntry::Content { content, .. } | FsEntry::Decoded { content, .. } => {
-                combined.extend_from_slice(&content);
+                capped |= append_capped(&mut combined, &content, cap);
             }
             _ => return false,
         }
+    }
+    if capped {
+        env.note_output_capped(combined.len() as u64);
     }
     insert_filesystem_entry(
         env,
@@ -360,6 +367,15 @@ fn copy_wildcard_sources_as_concat(env: &mut Environment, src_pattern: &str, dst
         },
     );
     true
+}
+
+fn append_capped(out: &mut Vec<u8>, content: &[u8], cap: usize) -> bool {
+    let room = cap.saturating_sub(out.len());
+    let take = content.len().min(room);
+    if take > 0 {
+        out.extend_from_slice(&content[..take]);
+    }
+    take < content.len()
 }
 
 fn copy_wildcard_sources(

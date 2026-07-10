@@ -27,13 +27,18 @@ pub fn h_echo(raw: &str, env: &mut Environment) {
     let mut content = payload.into_bytes();
     content.extend_from_slice(b"\r\n");
     let key = filesystem_storage_key(&path);
-    let redirected_chunk = content.clone();
+    let cap = env.limits.max_output_bytes as usize;
+    let redirected_chunk = if cap > 0 && content.len() > cap {
+        env.note_output_capped(cap as u64);
+        content[..cap].to_vec()
+    } else {
+        content.clone()
+    };
     env.traits.push(Trait::EchoRedirect {
         content: redirected_chunk,
         target: path,
         append,
     });
-    let cap = env.limits.max_output_bytes as usize;
     if append {
         if let Some(FsEntry::Content {
             content: prior,

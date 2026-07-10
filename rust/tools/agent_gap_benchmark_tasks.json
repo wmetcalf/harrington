@@ -1,0 +1,32 @@
+[
+  {
+    "id": "goto-state-progress",
+    "title": "State-changing backward goto loops",
+    "problem": "The script `set N=0; :loop; set /a N=N+1; if %N% LSS 3 goto loop; echo %N%` currently deobfuscates to `echo 1` and emits GotoUnresolved for `loop`. The interpreter rejects every backward goto after a target has been visited, even though it already has output-elision and hard-loop caps.",
+    "source_files": [
+      {
+        "path": "rust/crates/batdeob-core/src/handlers/goto.rs",
+        "ranges": [[1, 80]]
+      },
+      {
+        "path": "rust/crates/batdeob-core/src/env.rs",
+        "ranges": [[191, 210]]
+      },
+      {
+        "path": "rust/crates/batdeob-core/src/lib.rs",
+        "ranges": [[10708, 10860]]
+      }
+    ],
+    "expected_files": [
+      "rust/crates/batdeob-core/src/handlers/goto.rs",
+      "rust/crates/batdeob-core/src/env.rs"
+    ],
+    "expected_terms": [
+      "line_visit_count",
+      "GotoUnresolved",
+      "GOTO_LOOP_HARD_CAP"
+    ],
+    "counterexample": "A backward polling loop that never changes state must still fall through to later static IOCs instead of consuming the full loop budget.",
+    "counterexample_terms": ["polling"]
+  }
+]

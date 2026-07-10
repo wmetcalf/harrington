@@ -31,7 +31,7 @@ pub fn h_goto(raw: &str, env: &mut Environment) {
     }
     if let Some(line_idx) = env.label_index.get(&target).copied() {
         let from_line = env.current_line.unwrap_or(0);
-        if line_idx <= from_line {
+        if line_idx <= from_line && env.line_visit_count.contains_key(&line_idx) {
             env.traits.push(Trait::GotoUnresolved {
                 from_line,
                 to_label: target,

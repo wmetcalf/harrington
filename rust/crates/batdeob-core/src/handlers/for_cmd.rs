@@ -14,6 +14,8 @@ use crate::util::find_ascii_case_insensitive_from;
 use once_cell::sync::Lazy;
 use regex::Regex;
 
+const MAX_OUTER_PAREN_STRIP_DEPTH: usize = 64;
+
 // Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
 #[expect(clippy::expect_used, reason = "static regex construction")]
 static FOR_F_RE: Lazy<Regex> = Lazy::new(|| {
@@ -371,6 +373,9 @@ enum ForZone {
 }
 
 fn strip_for_header_noise(raw: &str, env: &Environment) -> String {
+    let raw = raw.trim_start_matches(|c: char| {
+        c == '@' || c == '(' || c == ')' || c == ',' || c == ';' || c.is_whitespace()
+    });
     let mut out = String::with_capacity(raw.len());
     let chars: Vec<(usize, char)> = raw.char_indices().collect();
     let mut i = 0usize;
@@ -562,7 +567,9 @@ pub fn run_for_from_raw(raw: &str, env: &mut Environment) -> bool {
     // strip, so substitution still works.
     let cleaned = strip_for_header_noise(raw, env);
     let raw = cleaned.as_str();
-    let trimmed = raw.trim_start_matches('@').trim();
+    let trimmed = raw.trim_start_matches(|c: char| {
+        c == '@' || c == '(' || c == ')' || c == ',' || c == ';' || c.is_whitespace()
+    });
 
     // /F must be tried first (more specific than plain for).
     if let Some(caps) = FOR_F_RE.captures(trimmed) {
@@ -708,7 +715,7 @@ pub fn h_for(_raw: &str, _env: &mut Environment) {
     // Intentionally empty — all work is done by run_for_from_raw in drive().
 }
 
-fn raw_might_start_with_for(raw: &str) -> bool {
+pub(crate) fn raw_might_start_with_for(raw: &str) -> bool {
     let mut token = [0u8; 3];
     let mut token_len = 0usize;
     let mut chars = raw.chars().peekable();
@@ -728,7 +735,7 @@ fn raw_might_start_with_for(raw: &str) -> bool {
             }
             continue;
         }
-        if token_len == 0 && (c.is_whitespace() || matches!(c, '@' | '(' | ',' | ';')) {
+        if token_len == 0 && (c.is_whitespace() || matches!(c, '@' | '(' | ')' | ',' | ';')) {
             continue;
         }
         if c.is_ascii_alphabetic() {
@@ -794,6 +801,9 @@ fn run_iter_body_multi(
     }
     let body_inner = strip_outer_parens(body);
     for row in values {
+        if crate::for_loop::for_body_budget_exhausted(body, env) {
+            break;
+        }
         if env.limits.iterations >= env.limits.max_iterations {
             if !env
                 .traits
@@ -819,6 +829,9 @@ fn run_iter_body_multi(
         }
         env.iter_output.push_str(&normalized);
         env.iter_output.push_str("\r\n");
+        if crate::for_loop::for_body_budget_exhausted(body, env) {
+            break;
+        }
     }
 }
 
@@ -1030,6 +1043,10 @@ fn run_iter_body_inner(
     // Strip a matching outer pair so iter_output renders the inner
     // statements on their own line.
     let body_inner = strip_outer_parens(body);
+    let saved_delayed = env.delayed_expansion;
+    if body_inner.contains('!') {
+        env.delayed_expansion = true;
+    }
     run_body(body_inner, var, values, env, |env, iter_cmd| {
         // Lex + normalize + interpret each iteration's substituted command.
         let toks = crate::lex::lex(iter_cmd);
@@ -1046,6 +1063,7 @@ fn run_iter_body_inner(
             env.iter_output.push_str("\r\n");
         }
     });
+    env.delayed_expansion = saved_delayed;
 }
 
 fn strip_outer_parens(s: &str) -> &str {
@@ -1057,7 +1075,11 @@ fn strip_outer_parens(s: &str) -> &str {
     // first `(` after our header-zone strip switches to body
     // passthrough mode).
     let mut cur = s;
+    let mut stripped = 0usize;
     loop {
+        if stripped >= MAX_OUTER_PAREN_STRIP_DEPTH {
+            return cur;
+        }
         let t = cur
             .trim_start_matches(|c: char| c.is_whitespace() || c == ',' || c == ';')
             .trim_end_matches(|c: char| c.is_whitespace() || c == ',' || c == ';');
@@ -1089,12 +1111,18 @@ fn strip_outer_parens(s: &str) -> &str {
             return cur;
         }
         cur = &t[1..t.len() - 1];
+        stripped += 1;
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{raw_might_start_with_for, strip_carets};
+    use super::{
+        raw_might_start_with_for, run_for_from_raw, strip_carets, strip_for_header_noise,
+        strip_outer_parens, FOR_PLAIN_RE,
+    };
+    use crate::env::{Config, Environment};
+    use crate::traits::Trait;
 
     #[test]
     fn strip_carets_preserves_unicode_and_removes_ascii_carets() {
@@ -1104,11 +1132,71 @@ mod tests {
     }
 
     #[test]
+    fn for_body_stops_when_iter_output_cap_is_reached() {
+        let mut env = Environment::new(&Config {
+            max_output_bytes: 64,
+            ..Config::default()
+        });
+
+        assert!(run_for_from_raw(
+            "for /L %%A in (1,1,1000) do echo %%A-abcdefghijklmnopqrstuvwxyz",
+            &mut env
+        ));
+
+        assert!(
+            env.limits.iterations < 1000,
+            "FOR body ignored output cap and ran all iterations"
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::OutputCapped { .. })),
+            "expected OutputCapped trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wrapped_forcoding_with_seeded_source_assembles_final_value() {
+        let mut env = Environment::default();
+        env.seed("unique", "OnBeFtUsS C/AaToE ");
+        let raw = ") ,; fo^R;,;%%^a,;; i^N;,,;( ,+1; 3 5 7 +5 1^3 +5,,9 11 +1^3 +1;;+15 ^+13^37;,),;,;d^O,,(;(;s^Et fI^Nal=!finAl!!uni^Que:~ %%^a,1!))";
+        let cleaned = strip_for_header_noise(raw, &env);
+        let cleaned_trimmed = cleaned.trim_start_matches(|c: char| {
+            c == '@' || c == '(' || c == ')' || c == ',' || c == ';' || c.is_whitespace()
+        });
+
+        assert!(
+            FOR_PLAIN_RE.is_match(cleaned_trimmed),
+            "cleaned FORcoding header did not match plain FOR regex:\n{cleaned_trimmed}"
+        );
+        assert!(run_for_from_raw(raw, &mut env));
+
+        assert_eq!(env.get("final").as_deref(), Some("netstat /ano"));
+    }
+
+    #[test]
+    fn deeply_wrapped_for_body_stripping_is_bounded() {
+        let mut body = String::from("echo ok");
+        for _ in 0..200 {
+            body = format!("({body})");
+        }
+
+        let stripped = strip_outer_parens(&body);
+
+        assert!(
+            stripped.starts_with('('),
+            "deep wrapper stripping should stop before peeling every layer: {stripped}"
+        );
+    }
+
+    #[test]
     fn for_prefix_rejects_longer_command_names() {
         assert!(!raw_might_start_with_for("forest /q"));
         assert!(!raw_might_start_with_for("format /q"));
         assert!(!raw_might_start_with_for("for1 /q"));
         assert!(!raw_might_start_with_for("for_ /q"));
         assert!(raw_might_start_with_for("for /f %%A in (x) do echo hi"));
+        assert!(raw_might_start_with_for(") ,; foR %%A in (x) do echo hi"));
     }
 }

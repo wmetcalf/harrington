@@ -7,6 +7,8 @@ pub(crate) use crate::util::{
     starts_with_ascii_case_insensitive, strip_outer_quotes,
 };
 
+pub(crate) const MAX_FILESYSTEM_FALLBACK_SCAN_ENTRIES: usize = 2048;
+
 /// Split a whitespace-separated command line into tokens, keeping
 /// double-quoted and single-quoted spans as single tokens. Quote
 /// characters are retained in the output tokens (callers strip as needed).
@@ -125,6 +127,15 @@ pub(crate) fn filesystem_entry_for_path<'a>(
     if let Some(entry) = env.modified_filesystem.get(&key) {
         return Some(entry);
     }
+    let storage_key = filesystem_storage_key(path);
+    if storage_key != key {
+        if let Some(entry) = env.modified_filesystem.get(&storage_key) {
+            return Some(entry);
+        }
+    }
+    if env.modified_filesystem.len() > MAX_FILESYSTEM_FALLBACK_SCAN_ENTRIES {
+        return None;
+    }
     let normalized = normalize_windows_path(path);
     env.modified_filesystem
         .iter()
@@ -213,7 +224,8 @@ fn strip_ascii_case_prefix<'a>(token: &'a str, prefix: &str) -> Option<&'a str> 
     if token.len() < prefix_len {
         return None;
     }
-    let (head, tail) = token.split_at(prefix_len);
+    let head = token.get(..prefix_len)?;
+    let tail = token.get(prefix_len..)?;
     head.eq_ignore_ascii_case(prefix).then_some(tail)
 }
 

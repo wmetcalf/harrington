@@ -4,6 +4,9 @@
 
 use once_cell::sync::Lazy;
 
+const MAX_ALIAS_EXPANSION_BYTES: usize = 64 * 1024;
+const MAX_ALIAS_EXPANSION_MATCHES: usize = 8192;
+
 // Source: PowerShell 5.1 default aliases (Get-Alias)
 // https://learn.microsoft.com/en-us/powershell/scripting/learn/shell/using-aliases
 const ALIAS_TABLE: &[(&str, &str)] = &[
@@ -146,6 +149,9 @@ pub fn looks_like_powershell(text: &str) -> bool {
 /// Alias expansion gated by a PowerShell-context check. Returns the text
 /// unchanged when `looks_like_powershell` says no.
 pub fn expand_aliases_if_ps(text: &str) -> String {
+    if text.len() > MAX_ALIAS_EXPANSION_BYTES {
+        return text.to_string();
+    }
     if !looks_like_powershell(text) {
         return text.to_string();
     }
@@ -155,6 +161,9 @@ pub fn expand_aliases_if_ps(text: &str) -> String {
 /// Replace standalone alias tokens with their canonical cmdlet names.
 /// Word-boundary aware; case-insensitive match; preserves the rest verbatim.
 pub fn expand_aliases(text: &str) -> String {
+    if text.len() > MAX_ALIAS_EXPANSION_BYTES {
+        return text.to_string();
+    }
     use regex::Regex;
     // Match a PS token (word) at a position where it could be a command:
     // - start of input, OR
@@ -166,13 +175,22 @@ pub fn expand_aliases(text: &str) -> String {
     });
     let mut out = String::with_capacity(text.len());
     let mut last_end = 0;
+    let mut scan_pos = 0;
+    let mut string_state = PsStringState::default();
+    let mut matches_seen = 0usize;
     let bytes = text.as_bytes();
     for caps in ALIAS_RE.captures_iter(text) {
+        matches_seen = matches_seen.saturating_add(1);
+        if matches_seen > MAX_ALIAS_EXPANSION_MATCHES {
+            break;
+        }
         let m = match caps.get(0) {
             Some(m) => m,
             None => continue,
         };
-        if is_inside_ps_string(text, m.start()) {
+        string_state.advance(text, scan_pos, m.start());
+        scan_pos = m.start();
+        if string_state.is_inside_string() {
             continue;
         }
         out.push_str(&text[last_end..m.start()]);
@@ -208,44 +226,53 @@ pub fn expand_aliases(text: &str) -> String {
     out
 }
 
+#[derive(Default)]
+struct PsStringState {
+    in_single: bool,
+    in_double: bool,
+    double_is_command_arg: bool,
+}
+
+impl PsStringState {
+    fn advance(&mut self, text: &str, from: usize, to: usize) {
+        let bytes = text.as_bytes();
+        let mut idx = from.min(bytes.len());
+        let end = to.min(bytes.len());
+        while idx < end {
+            match bytes[idx] {
+                b'\'' if !self.in_double => {
+                    if self.in_single && bytes.get(idx + 1) == Some(&b'\'') {
+                        idx += 2;
+                        continue;
+                    }
+                    self.in_single = !self.in_single;
+                }
+                b'"' if !self.in_single => {
+                    if self.in_double {
+                        self.in_double = false;
+                        self.double_is_command_arg = false;
+                    } else {
+                        self.in_double = true;
+                        self.double_is_command_arg = is_powershell_command_arg(text, idx);
+                    }
+                }
+                b'`' => {
+                    idx += 1;
+                }
+                _ => {}
+            }
+            idx += 1;
+        }
+    }
+
+    fn is_inside_string(&self) -> bool {
+        self.in_single || (self.in_double && !self.double_is_command_arg)
+    }
+}
+
 fn is_foreach_language_statement(after_token: &str) -> bool {
     let after = after_token.trim_start();
     after.starts_with('(')
-}
-
-fn is_inside_ps_string(text: &str, pos: usize) -> bool {
-    let bytes = text.as_bytes();
-    let mut idx = 0usize;
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut double_start = None;
-    while idx < pos && idx < bytes.len() {
-        match bytes[idx] {
-            b'\'' if !in_double => {
-                if in_single && bytes.get(idx + 1) == Some(&b'\'') {
-                    idx += 2;
-                    continue;
-                }
-                in_single = !in_single;
-            }
-            b'"' if !in_single => {
-                if in_double {
-                    in_double = false;
-                    double_start = None;
-                } else {
-                    in_double = true;
-                    double_start = Some(idx);
-                }
-            }
-            b'`' => {
-                idx += 1;
-            }
-            _ => {}
-        }
-        idx += 1;
-    }
-    in_single
-        || (in_double && !double_start.is_some_and(|start| is_powershell_command_arg(text, start)))
 }
 
 fn is_powershell_command_arg(text: &str, quote_start: usize) -> bool {

@@ -734,7 +734,12 @@ pub fn lex(input: &str) -> Vec<Token> {
                         i += 1;
                         continue;
                     }
-                    word.push(next);
+                    if next == '^' {
+                        word.push('^');
+                        word.push('^');
+                    } else {
+                        word.push(next);
+                    }
                     i += 2;
                 } else {
                     word.push('^');
@@ -1159,6 +1164,20 @@ mod tests {
     #[test]
     fn many_carets_in_word() {
         assert_eq!(lex("s^e^t"), vec![Token::Word("set".into())]);
+    }
+
+    #[test]
+    fn doubled_caret_survives_for_postprocess() {
+        assert_eq!(
+            lex("b ^^ key"),
+            vec![
+                Token::Word("b".into()),
+                Token::Whitespace,
+                Token::Word("^^".into()),
+                Token::Whitespace,
+                Token::Word("key".into())
+            ]
+        );
     }
 
     #[test]

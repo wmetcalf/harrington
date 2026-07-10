@@ -21,6 +21,9 @@ pub struct PreDispatch {
     pub child_cmd_to_push: Option<String>,
     /// If a child cmd is being pushed, should it run with delayed_expansion=true?
     pub child_cmd_delayed: bool,
+    /// The command is only a launcher for a non-trivial child that will be
+    /// rendered recursively; suppress the launcher line in deob output.
+    pub suppress_normalized_output: bool,
 }
 
 /// Single pre-normalize dispatch entry point for `drive()`.
@@ -29,6 +32,18 @@ pub struct PreDispatch {
 /// that tells `drive()` whether to skip normal dispatch and/or enqueue a child.
 pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
     let mut result = PreDispatch::default();
+    if let Some(pre) = pre_dispatch_raw_marker_set(raw, env) {
+        return pre;
+    }
+    if !raw_may_need_pre_dispatch(raw, env) {
+        return result;
+    }
+
+    if raw_invokes_powershell(raw) {
+        crate::handlers::powershell::h_powershell(raw, env);
+        result.consumed = true;
+        return result;
+    }
 
     // for handler: operates on raw text because lex strips %%A
     if crate::handlers::for_cmd::run_for_from_raw(raw, env) {
@@ -43,6 +58,8 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
             return result;
         }
         if let Some(inner) = crate::handlers::cmd::extract_cmd_inner(&child) {
+            result.suppress_normalized_output =
+                !crate::handlers::cmd::child_is_trivial_for_dedup(&inner);
             result.child_cmd_to_push = Some(inner);
             result.child_cmd_delayed = crate::handlers::cmd::has_v_on_raw(&child);
             result.consumed = true;
@@ -74,6 +91,8 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
 
     // cmd /c handler: extract child from raw text so var refs aren't expanded
     if let Some(inner) = crate::handlers::cmd::extract_cmd_inner(raw) {
+        result.suppress_normalized_output =
+            !crate::handlers::cmd::child_is_trivial_for_dedup(&inner);
         result.child_cmd_to_push = Some(inner);
         result.child_cmd_delayed = crate::handlers::cmd::has_v_on_raw(raw);
         // We still want interpret_line to run on the normalized text below
@@ -99,7 +118,11 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         }
     }
 
-    if crate::handlers::cmd::start_child_command(raw).is_some() {
+    if let Some(inner) = crate::handlers::cmd::start_child_command(raw) {
+        if let Some(child) = crate::handlers::cmd::extract_cmd_inner(inner) {
+            result.suppress_normalized_output =
+                !crate::handlers::cmd::child_is_trivial_for_dedup(&child);
+        }
         crate::handlers::cmd::h_start(raw, env);
         result.consumed = true;
         return result;
@@ -184,12 +207,322 @@ pub fn pre_dispatch(raw: &str, env: &mut Environment) -> PreDispatch {
         }
     }
 
-    if raw_invokes_powershell(raw) {
-        crate::handlers::powershell::h_powershell(raw, env);
-        result.consumed = true;
+    result
+}
+
+pub(crate) fn pre_dispatch_raw_marker_set(raw: &str, env: &mut Environment) -> Option<PreDispatch> {
+    if consume_raw_caret_percent_marker_set(raw, env) || consume_raw_self_substitution_set(raw, env)
+    {
+        Some(PreDispatch {
+            consumed: true,
+            suppress_normalized_output: true,
+            ..PreDispatch::default()
+        })
+    } else if consume_marker_polluted_set_command(raw, env) {
+        Some(PreDispatch {
+            consumed: true,
+            ..PreDispatch::default()
+        })
+    } else {
+        None
+    }
+}
+
+fn consume_marker_polluted_set_command(raw: &str, env: &mut Environment) -> bool {
+    let trimmed = raw.trim_start_matches(|c: char| {
+        c == '(' || c == '@' || c == ';' || c == ',' || c.is_whitespace()
+    });
+    let Some((token, rest)) = split_marker_polluted_command_token(trimmed) else {
+        return false;
+    };
+    if token.eq_ignore_ascii_case("set") || token.is_ascii() {
+        return false;
+    }
+    let cleaned: String = token
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .collect();
+    if !cleaned.eq_ignore_ascii_case("set") {
+        return false;
+    }
+    let body = rest.trim_start();
+    if body.is_empty()
+        || body
+            .as_bytes()
+            .first()
+            .is_some_and(|b| *b == b'/' || *b == b'?')
+    {
+        return false;
+    }
+    let synthetic = format!("set{rest}");
+    crate::handlers::set::h_set(&synthetic, env);
+    true
+}
+
+fn split_marker_polluted_command_token(command: &str) -> Option<(&str, &str)> {
+    let mut end = None;
+    for (idx, ch) in command.char_indices() {
+        if ch.is_whitespace() || matches!(ch, '"' | '/' | '<' | '>' | '&' | '|') {
+            end = Some(idx);
+            break;
+        }
+    }
+    let end = end.unwrap_or(command.len());
+    (end > 0).then_some((&command[..end], &command[end..]))
+}
+
+fn consume_raw_caret_percent_marker_set(raw: &str, env: &mut Environment) -> bool {
+    let Some((command, rest)) = caret_percent_marker_command_prefix(raw) else {
+        return false;
+    };
+    if !command.eq_ignore_ascii_case("set") {
+        return false;
+    }
+    let trimmed = rest.trim_start();
+    if trimmed.is_empty()
+        || !(trimmed.starts_with('"')
+            || trimmed
+                .get(..2)
+                .is_some_and(|flag| flag.eq_ignore_ascii_case("/a"))
+            || trimmed
+                .get(..2)
+                .is_some_and(|flag| flag.eq_ignore_ascii_case("/p")))
+    {
+        return false;
     }
 
-    result
+    let synthetic = format!("set{rest}");
+    crate::handlers::set::h_set(&synthetic, env);
+    true
+}
+
+pub(crate) fn decode_caret_percent_marker_command(raw: &str) -> Option<String> {
+    let (command, rest) = caret_percent_marker_command_prefix(raw)?;
+    Some(format!("{command}{rest}"))
+}
+
+fn caret_percent_marker_command_prefix(raw: &str) -> Option<(String, &str)> {
+    let prefix_len = raw
+        .char_indices()
+        .find(|(_, ch)| !matches!(ch, '@' | '(' | ';' | ',' if ch.is_ascii()))
+        .map_or(raw.len(), |(idx, _)| idx);
+    let leading = &raw[..prefix_len];
+    if !leading
+        .chars()
+        .all(|ch| matches!(ch, '@' | '(' | ';' | ',' | ' ' | '\t'))
+    {
+        return None;
+    }
+    let mut cursor = prefix_len;
+    let mut command = String::new();
+    loop {
+        let rest = raw.get(cursor..)?;
+        let after_marker = rest.strip_prefix("%^%")?;
+        let mut chars = after_marker.char_indices();
+        let (_, letter) = chars.next()?;
+        if !letter.is_ascii_alphabetic() {
+            return None;
+        }
+        command.push(letter);
+        let letter_len = letter.len_utf8();
+        let noise_start = cursor + "%^%".len() + letter_len;
+        let noise = raw.get(noise_start..)?;
+        if let Some(next_pos) = noise.find("%%^%") {
+            cursor = noise_start + next_pos + 1;
+            if command.len() > 16 {
+                return None;
+            }
+            continue;
+        }
+        let end_pos = noise.char_indices().find_map(|(idx, ch)| {
+            (ch == '%')
+                .then(|| noise[idx + 1..].chars().next())
+                .flatten()
+                .filter(|next| {
+                    next.is_ascii_whitespace()
+                        || matches!(*next, '"' | '/' | '-' | ':' | '>' | '<' | '&' | '|')
+                })
+                .map(|_| idx)
+        })?;
+        let rest_start = noise_start + end_pos + 1;
+        let tail = raw.get(rest_start..)?;
+        return (command.len() >= 2).then_some((command, tail));
+    }
+}
+
+fn consume_raw_self_substitution_set(raw: &str, env: &mut Environment) -> bool {
+    let Some(rest) = strip_raw_set_prefix(raw) else {
+        return false;
+    };
+    let body = rest.trim_start();
+    if body
+        .as_bytes()
+        .first()
+        .is_some_and(|b| *b == b'/' || *b == b'?')
+    {
+        return false;
+    }
+    let Some(inner) = raw_set_quoted_body(body) else {
+        return false;
+    };
+    let Some((target, value)) = inner.split_once('=') else {
+        return false;
+    };
+    let target = target.trim();
+    if target.is_empty() {
+        return false;
+    }
+    let value = value.trim();
+    if !target.is_ascii() {
+        let cleaned_target = crate::marker_noise::strip_line(target);
+        if cleaned_target != target
+            && !cleaned_target.is_empty()
+            && cleaned_target
+                .bytes()
+                .all(|b| !matches!(b, b'%' | b'!' | b'^' | b'&' | b'|' | b'<' | b'>' | b'"'))
+        {
+            env.set(&cleaned_target, value);
+            return true;
+        }
+    }
+    if should_preserve_raw_marker_set_value(value) {
+        env.set(target, value);
+        return true;
+    }
+    if !value.starts_with('%') || !value.ends_with('%') || value.len() < 3 {
+        return false;
+    }
+    let body = &value[1..value.len() - 1];
+    let Some((source, op)) = body.split_once(':') else {
+        return false;
+    };
+    if !source.eq_ignore_ascii_case(target) {
+        return false;
+    }
+    let Some(crate::lex::VarOp::Substitute {
+        needle,
+        replacement,
+        leading_wildcard,
+    }) = crate::lex::parse_substitute(op)
+    else {
+        return false;
+    };
+    let Some(raw_value) = env.get(source) else {
+        return false;
+    };
+    let cleaned =
+        crate::normalize::apply_substitute(&raw_value, &needle, &replacement, leading_wildcard);
+    if cleaned == raw_value {
+        return false;
+    }
+    env.set(target, &cleaned);
+    true
+}
+
+fn should_preserve_raw_marker_set_value(value: &str) -> bool {
+    value.len() <= 64 * 1024
+        && !value.is_ascii()
+        && (value.contains('$')
+            || value.contains("::")
+            || value.contains('[')
+            || value.contains(']')
+            || value.contains('(')
+            || value.contains(')')
+            || value.contains(".")
+            || value.contains("<<BASE64_")
+            || crate::util::contains_ascii_case_insensitive(value, "powershell"))
+}
+
+fn strip_raw_set_prefix(raw: &str) -> Option<&str> {
+    let raw = raw.trim_start_matches(|c: char| {
+        c == '(' || c == '@' || c == ';' || c == ',' || c.is_whitespace()
+    });
+    let prefix = raw.get(..3)?;
+    if !prefix.eq_ignore_ascii_case("set") {
+        return None;
+    }
+    let rest = &raw[3..];
+    if rest.is_empty()
+        || rest
+            .as_bytes()
+            .first()
+            .is_some_and(|c| c.is_ascii_whitespace() || *c == b'/' || *c == b'"')
+    {
+        Some(rest)
+    } else {
+        None
+    }
+}
+
+fn raw_set_quoted_body(body: &str) -> Option<&str> {
+    let body = body.trim_start();
+    let rest = body.strip_prefix('"')?;
+    let end = rest.rfind('"')?;
+    Some(&rest[..end])
+}
+
+fn raw_may_need_pre_dispatch(raw: &str, env: &Environment) -> bool {
+    if crate::handlers::for_cmd::raw_might_start_with_for(raw) {
+        return true;
+    }
+    let Some(name) = command_name(raw) else {
+        return false;
+    };
+    if command_basename_is(&name, "powershell")
+        || command_basename_is(&name, "pwsh")
+        || command_basename_is(&name, "for")
+        || command_basename_is(&name, "forfiles")
+        || command_basename_is(&name, "conhost")
+        || command_basename_is(&name, "cmd")
+        || command_basename_is(&name, "if")
+        || command_basename_is(&name, "wmic")
+        || command_basename_is(&name, "start")
+        || command_basename_is(&name, "bitsadmin")
+        || command_basename_is(&name, "at")
+        || command_basename_is(&name, "call")
+        || command_basename_is(&name, "psexec")
+        || command_basename_is(&name, "winrs")
+        || command_basename_is(&name, "winrm")
+        || command_basename_is(&name, "sc")
+    {
+        return true;
+    }
+    let lower_name = name.to_ascii_lowercase();
+    if lower_name == "%comspec%"
+        || lower_name == "!comspec!"
+        || lower_name.contains("comspec:")
+        || lower_name.ends_with(r"\cmd.exe")
+        || lower_name.ends_with("/cmd.exe")
+    {
+        return true;
+    }
+    if !has_copied_pre_dispatch_alias_source(env) {
+        return false;
+    }
+    command_matches_copied_alias(&name, env, &["robocopy", "robocopy.exe"])
+        || command_matches_copied_alias(&name, env, &["replace", "replace.exe"])
+        || command_matches_copied_alias(&name, env, &["xcopy", "xcopy.exe"])
+        || command_matches_copied_alias(&name, env, &["at", "at.exe"])
+}
+
+fn has_copied_pre_dispatch_alias_source(env: &Environment) -> bool {
+    env.traits.iter().any(|t| {
+        let crate::traits::Trait::WindowsUtilManip { src, .. } = t else {
+            return false;
+        };
+        let src_base = command_basename_lower(src);
+        matches!(
+            src_base.as_str(),
+            "robocopy"
+                | "robocopy.exe"
+                | "replace"
+                | "replace.exe"
+                | "xcopy"
+                | "xcopy.exe"
+                | "at"
+                | "at.exe"
+        )
+    })
 }
 
 pub fn should_preserve_raw_at_schedule(raw: &str, env: &Environment) -> bool {
@@ -368,7 +701,7 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
     if let Some(tail) = xcopy_pipeline_tail(line) {
         crate::handlers::copy::h_xcopy(tail, env);
     }
-    if let Some(payload) = piped_echo_powershell_stdin_payload(line) {
+    if let Some(payload) = piped_echo_powershell_stdin_payload(line, env) {
         let payload = payload.into_bytes();
         if !env.exec_ps1.iter().any(|existing| existing == &payload) {
             env.exec_ps1.push(payload);
@@ -402,7 +735,9 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
         .traits
         .iter()
         .any(|t| matches!(t, crate::traits::Trait::Lolbas { name: n, .. } if n == "hh"));
-    if let Some(ext) = script_host_extension(&name) {
+    if let Some(ext) =
+        script_host_extension(&name).filter(|_| implicit_script_target_is_plausible(&name))
+    {
         match ext {
             "js" | "jse" | "wsf" | "wsh" | "vbs" | "vbe" if !has_wscript_exec => {
                 push_implicit_download_source_url(&name, env);
@@ -430,6 +765,25 @@ pub fn interpret_line(line: &str, env: &mut Environment) {
     }
     capture_synthetic_stdout_redirect(line, env);
     capture_synthetic_option_output(line, env);
+}
+
+fn implicit_script_target_is_plausible(name: &str) -> bool {
+    let target = name.trim_matches(['"', '\'']).trim();
+    if target.is_empty()
+        || target.starts_with('=')
+        || target.starts_with("://")
+        || target.starts_with('-')
+    {
+        return false;
+    }
+    if let Some(idx) = target.find("://") {
+        let scheme = &target[..idx];
+        return matches!(
+            scheme.to_ascii_lowercase().as_str(),
+            "http" | "https" | "file"
+        );
+    }
+    true
 }
 
 fn push_implicit_download_source_url(path: &str, env: &mut Environment) {
@@ -499,24 +853,26 @@ fn queue_implicit_script_content(path: &str, ext: &str, env: &mut Environment) {
     };
     match ext {
         "js" | "jse" => {
-            push_unique_payload(&mut env.all_extracted_jscript, content.clone());
-            push_unique_payload(&mut env.exec_jscript, content);
+            if env.push_extracted_jscript(content.clone()) {
+                push_unique_payload(&mut env.exec_jscript, content);
+            }
         }
         "vbs" | "vbe" => {
-            push_unique_payload(&mut env.all_extracted_vbs, content.clone());
-            push_unique_payload(&mut env.exec_vbs, content);
+            if env.push_extracted_vbs(content.clone()) {
+                push_unique_payload(&mut env.exec_vbs, content);
+            }
         }
         _ => {}
     }
 }
 
 fn tracked_script_content(path: &str, env: &Environment) -> Option<Vec<u8>> {
-    if let Some(content) = content_from_entry(filesystem_entry_for_path(env, path)) {
+    if let Some(content) = content_for_path_following_copy(path, env) {
         return Some(content);
     }
     if let Some(stripped) = strip_current_dir_prefix(path) {
         if stripped.contains(['\\', '/']) {
-            return content_from_entry(filesystem_entry_for_path(env, stripped));
+            return content_for_path_following_copy(stripped, env);
         }
     }
     if let Some(name) = current_dir_basename(path) {
@@ -534,18 +890,32 @@ fn tracked_script_content_by_basename(path: &str, env: &Environment) -> Option<V
             continue;
         };
         if name.eq_ignore_ascii_case(path) {
-            return content_from_entry(Some(entry));
+            return content_from_entry_following_copy(Some(entry), env);
         }
     }
     None
 }
 
-fn content_from_entry(entry: Option<&crate::env::FsEntry>) -> Option<Vec<u8>> {
-    match entry {
-        Some(crate::env::FsEntry::Content { content, .. })
-        | Some(crate::env::FsEntry::Decoded { content, .. }) => Some(content.clone()),
-        _ => None,
+fn content_for_path_following_copy(path: &str, env: &Environment) -> Option<Vec<u8>> {
+    content_from_entry_following_copy(filesystem_entry_for_path(env, path), env)
+}
+
+fn content_from_entry_following_copy(
+    entry: Option<&crate::env::FsEntry>,
+    env: &Environment,
+) -> Option<Vec<u8>> {
+    let mut entry = entry;
+    for _ in 0..8 {
+        match entry {
+            Some(crate::env::FsEntry::Content { content, .. })
+            | Some(crate::env::FsEntry::Decoded { content, .. }) => return Some(content.clone()),
+            Some(crate::env::FsEntry::Copy { src }) => {
+                entry = filesystem_entry_for_path(env, src);
+            }
+            _ => return None,
+        }
     }
+    None
 }
 
 fn push_unique_payload(payloads: &mut Vec<Vec<u8>>, payload: Vec<u8>) {
@@ -601,7 +971,7 @@ fn xcopy_pipeline_tail(line: &str) -> Option<&str> {
     }
 }
 
-fn piped_echo_powershell_stdin_payload(line: &str) -> Option<String> {
+fn piped_echo_powershell_stdin_payload(line: &str, env: &Environment) -> Option<String> {
     let (head, tail) = line.split_once('|')?;
     let payload = echo_payload(head)?;
     let tail = tail.trim();
@@ -609,7 +979,7 @@ fn piped_echo_powershell_stdin_payload(line: &str) -> Option<String> {
     if !raw_invokes_powershell(&command) || !powershell_reads_stdin(&command) {
         return None;
     }
-    Some(payload.to_string())
+    Some(expand_piped_powershell_env_refs(payload, env))
 }
 
 fn echo_payload(command: &str) -> Option<&str> {
@@ -629,11 +999,152 @@ fn echo_payload(command: &str) -> Option<&str> {
 }
 
 fn powershell_reads_stdin(command: &str) -> bool {
-    split_words(command)
-        .iter()
-        .skip(1)
-        .map(|token| strip_outer_quotes(token))
-        .any(|token| token == "-")
+    let tokens = split_words(command);
+    if tokens.len() <= 1 {
+        return true;
+    }
+
+    let mut saw_non_mode_arg = false;
+    let mut skip_next_value = false;
+    for token in tokens.iter().skip(1).map(|token| strip_outer_quotes(token)) {
+        if skip_next_value {
+            skip_next_value = false;
+            continue;
+        }
+        if token == "-" {
+            return true;
+        }
+        let lower = token.to_ascii_lowercase();
+        if matches!(
+            lower.as_str(),
+            "-command"
+                | "-c"
+                | "/command"
+                | "/c"
+                | "-encodedcommand"
+                | "-enc"
+                | "-e"
+                | "/encodedcommand"
+                | "/enc"
+                | "/e"
+                | "-file"
+                | "-f"
+                | "/file"
+                | "/f"
+        ) {
+            return false;
+        }
+        if powershell_option_takes_plain_value(&lower) {
+            skip_next_value = true;
+            continue;
+        }
+        if !lower.starts_with('-') && !lower.starts_with('/') {
+            saw_non_mode_arg = true;
+        }
+    }
+    !saw_non_mode_arg
+}
+
+fn powershell_option_takes_plain_value(token: &str) -> bool {
+    matches!(
+        token,
+        "-windowstyle"
+            | "-w"
+            | "/windowstyle"
+            | "/w"
+            | "-executionpolicy"
+            | "-ep"
+            | "/executionpolicy"
+            | "/ep"
+            | "-inputformat"
+            | "-input"
+            | "/inputformat"
+            | "/input"
+            | "-outputformat"
+            | "-output"
+            | "/outputformat"
+            | "/output"
+            | "-configurationname"
+            | "-config"
+            | "/configurationname"
+            | "/config"
+    )
+}
+
+fn expand_piped_powershell_env_refs(payload: &str, env: &Environment) -> String {
+    let payload = expand_piped_powershell_batch_refs(payload, env);
+    let mut out = String::with_capacity(payload.len());
+    let mut i = 0usize;
+    while i < payload.len() {
+        let Some(rel) = payload[i..].to_ascii_lowercase().find("$env:") else {
+            out.push_str(&payload[i..]);
+            break;
+        };
+        let start = i + rel;
+        out.push_str(&payload[i..start]);
+        let name_start = start + "$env:".len();
+        let mut name_end = name_start;
+        for (offset, ch) in payload[name_start..].char_indices() {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                name_end = name_start + offset + ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if name_end == name_start {
+            out.push_str("$env:");
+            i = name_start;
+            continue;
+        }
+        let name = &payload[name_start..name_end];
+        if let Some(value) = env.get(name) {
+            out.push('\'');
+            out.push_str(&value.replace('\'', "''"));
+            out.push('\'');
+        } else {
+            out.push_str(&payload[start..name_end]);
+        }
+        i = name_end;
+    }
+    out
+}
+
+fn expand_piped_powershell_batch_refs(payload: &str, env: &Environment) -> String {
+    let Some(_) = payload.as_bytes().iter().position(|b| *b == b'%') else {
+        return payload.to_string();
+    };
+    let mut out = String::with_capacity(payload.len());
+    let mut i = 0usize;
+    while i < payload.len() {
+        let Some(rel) = payload[i..].find('%') else {
+            out.push_str(&payload[i..]);
+            break;
+        };
+        let start = i + rel;
+        out.push_str(&payload[i..start]);
+        let name_start = start + 1;
+        let Some(end_rel) = payload[name_start..].find('%') else {
+            out.push_str(&payload[start..]);
+            break;
+        };
+        let end = name_start + end_rel;
+        let name = &payload[name_start..end];
+        if !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'(' | b')'))
+        {
+            if let Some(value) = env.get(name) {
+                out.push_str(&value);
+            } else {
+                out.push_str(&payload[start..=end]);
+            }
+        } else {
+            out.push_str(&payload[start..=end]);
+        }
+        i = end + 1;
+    }
+    out
 }
 
 fn capture_synthetic_stdout_redirect(line: &str, env: &mut Environment) {
@@ -753,13 +1264,13 @@ fn is_block_delimiter(command: &str) -> bool {
 /// Handles leading redirections by skipping past them to find the actual command.
 pub fn command_name(line: &str) -> Option<String> {
     // CMD treats leading `@` (echo-suppress), `;` and `,` (token delimiters),
-    // `(` (block open), and whitespace as ignorable prefix before the command
+    // parens from wrapper blocks, and whitespace as ignorable prefix before the command
     // token. Obfuscators interleave them (e.g. `@;@@@set …`), so all must be
     // stripped — stripping only `@`/`(` left `;@@@set` and broke dispatch,
     // which silently dropped `set`-defined alphabet vars in char-substitution
     // packers (mangling the recovered URL).
     let trimmed = line.trim_start_matches(|c: char| {
-        c == '@' || c == '(' || c == ';' || c == ',' || c.is_whitespace()
+        c == '@' || c == '(' || c == ')' || c == ';' || c == ',' || c.is_whitespace()
     });
     if trimmed.is_empty() {
         return None;
@@ -814,6 +1325,8 @@ pub fn command_name(line: &str) -> Option<String> {
         for c in s.chars() {
             if c.is_whitespace()
                 || (c == '/' && !name.ends_with(':') && !name.contains(":/"))
+                || c == ','
+                || c == ';'
                 || c == '<'
                 || c == '>'
                 || c == '&'
@@ -857,5 +1370,122 @@ fn leading_redirection_operator(s: &str) -> Option<(usize, usize)> {
         Some((idx, ch.len_utf8()))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod pre_dispatch_gate_tests {
+    use super::{command_name, pre_dispatch, raw_may_need_pre_dispatch};
+    use crate::{Config, Environment};
+
+    #[test]
+    fn plain_set_and_percent_substitution_lines_skip_pre_dispatch() {
+        let env = Environment::new(&Config::default());
+
+        assert!(!raw_may_need_pre_dispatch("set X=value", &env));
+        assert!(!raw_may_need_pre_dispatch(
+            r#"%KCUR:JBUQBBdafyQknrwjyDMNqXNKxHuQhdYuHwOUWHNN=%"CBda==""#,
+            &env
+        ));
+    }
+
+    #[test]
+    fn child_launchers_still_need_pre_dispatch() {
+        let env = Environment::new(&Config::default());
+
+        assert!(raw_may_need_pre_dispatch("cmd /c echo hi", &env));
+        assert!(raw_may_need_pre_dispatch(
+            "powershell -nop -c Write-Host hi",
+            &env
+        ));
+        assert!(raw_may_need_pre_dispatch(
+            "for %%A in (*) do echo %%A",
+            &env
+        ));
+    }
+
+    #[test]
+    fn wrapped_for_with_leading_close_paren_needs_pre_dispatch() {
+        let env = Environment::new(&Config::default());
+
+        assert!(raw_may_need_pre_dispatch(
+            ") foR %a iN (1 2 3) dO (sEt X=!X!!Y:~ %a,1!)",
+            &env
+        ));
+    }
+
+    #[test]
+    fn caret_obfuscated_for_needs_pre_dispatch() {
+        let env = Environment::new(&Config::default());
+
+        assert!(raw_may_need_pre_dispatch(
+            ",; fo^R;,;%%^a,;; i^N;,,;(1 2 3),;,;d^O,,echo %%^a",
+            &env
+        ));
+    }
+
+    #[test]
+    fn raw_self_substitution_set_preserves_powershell_punctuation() {
+        let mut env = Environment::new(&Config::default());
+        let marker = "⎱ ㉁ ❏ ㇎ ⫼";
+        env.set(
+            "frag",
+            &format!("{marker}$url = [System.Text.Encoding]::UTF8.GetString({marker}$bytes);"),
+        );
+
+        let pre = pre_dispatch(&format!(r#"set "frag=%frag:{marker}=%""#), &mut env);
+
+        assert!(pre.consumed);
+        assert!(pre.suppress_normalized_output);
+        assert_eq!(
+            env.get("frag").as_deref(),
+            Some("$url = [System.Text.Encoding]::UTF8.GetString($bytes);")
+        );
+    }
+
+    #[test]
+    fn raw_marker_literal_set_defers_payload_fragment_normalization() {
+        let mut env = Environment::new(&Config::default());
+        let marker = "⎱ ㉁ ❏ ㇎ ⫼";
+
+        let pre = pre_dispatch(
+            &format!(
+                r#"set "frag={marker}$url = [System.Text.Encoding]::UTF8.GetString({marker}$bytes);""#
+            ),
+            &mut env,
+        );
+
+        assert!(pre.consumed);
+        assert!(pre.suppress_normalized_output);
+        assert_eq!(
+            env.get("frag").as_deref(),
+            Some("⎱ ㉁ ❏ ㇎ ⫼$url = [System.Text.Encoding]::UTF8.GetString(⎱ ㉁ ❏ ㇎ ⫼$bytes);")
+        );
+    }
+
+    #[test]
+    fn raw_marker_set_name_is_stored_under_clean_name() {
+        let mut env = Environment::new(&Config::default());
+        let marker = "⎱ ㉁ ❏ ㇎ ⫼";
+
+        let pre = pre_dispatch(
+            &format!(r#"set "{marker}ur{marker}lBase64=aHR0cHM6Ly9leGFtcGxlLmNvbS8=""#),
+            &mut env,
+        );
+
+        assert!(pre.consumed);
+        assert_eq!(
+            env.get("urlBase64").as_deref(),
+            Some("aHR0cHM6Ly9leGFtcGxlLmNvbS8=")
+        );
+    }
+
+    #[test]
+    fn command_name_stops_at_cmd_separator_punctuation() {
+        assert_eq!(
+            command_name("( iF,%a==+1337,(CalL;%fInAl:~-12%))").as_deref(),
+            Some("iF")
+        );
+        assert_eq!(command_name("(CalL;netstat /ano)").as_deref(), Some("CalL"));
     }
 }

