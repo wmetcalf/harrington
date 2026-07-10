@@ -1,7 +1,7 @@
 //! Pass-through admin commands — emits an AdminCommand trait so analysts
 //! can filter on these without inspecting the deobfuscated text.
 
-#![expect(clippy::expect_used, reason = "static regex construction")]
+#![allow(clippy::expect_used)]
 
 use crate::env::{Environment, FsEntry};
 use crate::handlers::util::{

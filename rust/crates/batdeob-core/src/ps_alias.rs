@@ -127,7 +127,7 @@ const ALIAS_TABLE: &[(&str, &str)] = &[
 /// Verb-Noun, and no literal `powershell` substring.
 pub fn looks_like_powershell(text: &str) -> bool {
     use regex::Regex;
-    #[expect(clippy::expect_used, reason = "static regex construction")]
+    #[allow(clippy::expect_used)]
     static MARKERS_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r"(?ix)
@@ -169,7 +169,7 @@ pub fn expand_aliases(text: &str) -> String {
     // - start of input, OR
     // - after whitespace, `;`, `|`, `(`, `{`, `&`, or `\n`
     // Capture the lead char and the token.
-    #[expect(clippy::expect_used, reason = "static regex construction")]
+    #[allow(clippy::expect_used)]
     static ALIAS_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r#"(?P<lead>^|[\s;|(){}&"'`])(?P<tok>[A-Za-z]+)\b"#).expect("alias re")
     });

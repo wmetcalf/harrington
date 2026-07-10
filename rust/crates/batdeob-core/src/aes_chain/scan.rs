@@ -6,7 +6,7 @@
 use once_cell::sync::Lazy;
 use regex::bytes::Regex as ByteRegex;
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static URL_UTF8_RE: Lazy<ByteRegex> = Lazy::new(|| {
     ByteRegex::new(r"(?i)(?:https?|ftp|file)://[\x21-\x7e]{4,300}").expect("url utf8 re")
 });

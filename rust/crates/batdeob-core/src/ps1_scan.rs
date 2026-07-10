@@ -20,7 +20,7 @@ use regex::Regex;
 // Patterns target common cmdlet/method invocations. Whitespace-tolerant,
 // case-insensitive, supports single+double quoted strings.
 
-#[expect(clippy::expect_used, reason = "static regex construction")] // regex literals — compile-time constants
+#[allow(clippy::expect_used)] // regex literals — compile-time constants
 static PS_CMDLET_QUOTED_DQ_URL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)(?:Invoke-WebRequest|Invoke-RestMethod|iwr|irm|wget|curl)\b[^\n|;]*?(?:-(?:Uri|Ur)(?:\s+|:|=)|\s)\(?\s*"((?:https?|ftp|file):[\x2f\x5c]+[^"\r\n]+)""#,
@@ -28,7 +28,7 @@ static PS_CMDLET_QUOTED_DQ_URL_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps cmdlet quoted double url")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_CMDLET_QUOTED_SQ_URL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)(?:Invoke-WebRequest|Invoke-RestMethod|iwr|irm|wget|curl)\b[^\n|;]*?(?:-(?:Uri|Ur)(?:\s+|:|=)|\s)\(?\s*'((?:https?|ftp|file):[\x2f\x5c]+[^'\r\n]+)'"#,
@@ -36,7 +36,7 @@ static PS_CMDLET_QUOTED_SQ_URL_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps cmdlet quoted single url")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static IWR_RE: Lazy<Regex> = Lazy::new(|| {
     // Invoke-WebRequest / iwr / wget / curl (PS alias) — optional -Uri, quoted or unquoted URL
     Regex::new(
@@ -44,7 +44,7 @@ static IWR_RE: Lazy<Regex> = Lazy::new(|| {
     ).expect("iwr")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static IRM_RE: Lazy<Regex> = Lazy::new(|| {
     // Invoke-RestMethod / irm — optional -Uri, quoted or unquoted URL
     Regex::new(
@@ -52,11 +52,11 @@ static IRM_RE: Lazy<Regex> = Lazy::new(|| {
     ).expect("irm")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_ENV_REF_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"(?i)\$env:([A-Za-z0-9_.-]+)"#).expect("ps env ref"));
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_SCHEMELESS_IP_CMDLET_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)(?:Invoke-WebRequest|Invoke-RestMethod|iwr|irm|wget|curl)\b(?:[^\n|;]*?-(?:Uri|Ur)(?:\s+|:|=)|(?:\s+-[A-Za-z][\w-]*)*\s+)(?:['"])?((?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:/[^\s"'\);]*)?)(?:['"])?"#,
@@ -64,7 +64,7 @@ static PS_SCHEMELESS_IP_CMDLET_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps schemeless ip cmdlet")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_SCHEMELESS_DOMAIN_CMDLET_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?ix)
@@ -84,7 +84,7 @@ static PS_SCHEMELESS_DOMAIN_CMDLET_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps schemeless domain cmdlet")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static CURL_EXE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)(?:^|[\s;"'])[\w:./\\-]*curl\.exe\b(?:\s+-[A-Za-z][\w-]*(?:\s+["']?[^"'\s]+["']?)?)*\s+["']?((?:https?|ftp|file):[\x2f\x5c]+[^\s"'\)]+)["']?"#,
@@ -92,54 +92,54 @@ static CURL_EXE_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("curl exe")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static MSHTA_URL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\bmshta(?:\.exe)?\s+["']?((?:https?|ftp|file):[\x2f\x5c]+[^\s"';\)]+)["']?"#)
         .expect("mshta url")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_GENERIC_URL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\b((?:https?|ftp|file):[\x2f\x5c]+[^\s"'`;,<>\)\]\}]+)"#)
         .expect("ps generic url")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_URL_ASSIGNMENT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)^\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*="#).expect("ps url assignment")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static BATCH_SET_URL_ASSIGNMENT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)^\s*@?set\s+"?([A-Za-z_][A-Za-z0-9_]*)\s*="#)
         .expect("batch set url assignment in ps scan")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static DOWNLOADSTRING_RE: Lazy<Regex> = Lazy::new(|| {
     // (New-Object Net.WebClient).DownloadString('url') or .DownloadFile('url', 'dst')
     Regex::new(r#"(?i)\.Download(?:String|File|Data)\s*\(\s*["']([^"']+)["']"#).expect("ds")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static DOWNLOADFILE_DST_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)(?:\.|\b)DownloadFile\s*\(\s*["'][^"']+["']\s*,\s*(?:"([^"]+)"|'([^']+)')"#)
         .expect("downloadfile dst")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static BARE_DOWNLOADSTRING_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\bDownload(?:String|File|Data)\s*\(\s*["']([^"']+)["']"#)
         .expect("bare downloadstring")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static DOWNLOADSTRING_FRAGMENT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\b(?:loadString|ADSTRING)\s*\(\s*'{1,2}(https?://[^'")]+)"#)
         .expect("downloadstring fragment")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static DAMAGED_WEBCLIENT_CONSTRUCTOR_METHOD_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)(New-Object\s+(?:-TypeName\s+)?(?:System\.)?Net\.WebClient)\.(Download(?:File|String|Data)\s*\()"#,
@@ -147,19 +147,19 @@ static DAMAGED_WEBCLIENT_CONSTRUCTOR_METHOD_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("damaged webclient constructor method")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static CALLBYNAME_DOWNLOADSTRING_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)CallByname\s*\([^)]*?["']DownloadString["'][^)]*?["'](https?://[^"']+)["']"#)
         .expect("callbyname downloadstring")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static SELF_B64_MATCH_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)-match\s*['"]([^'"]{4,200}?)\(\[A-Za-z0-9\+/=(?:\{\})?\]\+\)['"]"#)
         .expect("self b64 match regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static FILE_B64_XOR_LOADER_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d{1,3})\s*;.*?\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\(?\s*(?:gc|cat|Get-Content)\b(?:\s+-(?:Raw|Path|LiteralPath))*\s+['"]([^'"]+)['"](?:\s+-(?:Raw))*\s*\)?(?:\s*-join\s*['"]{2})?.*?\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\).*?-bxor\s*\$([A-Za-z_][A-Za-z0-9_]*)"#,
@@ -167,13 +167,13 @@ static FILE_B64_XOR_LOADER_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("file b64 xor loader regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static INLINE_XOR_KEY_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:\[[A-Za-z0-9_.]+(?:\[\])?\]\s*)?@?\(\s*((?:\d{1,3}\s*,\s*)*\d{1,3})\s*\)"#)
         .expect("inline xor key array regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static INLINE_XOR_FUNCTION_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\b.*?-bxor\s*\$([A-Za-z_][A-Za-z0-9_]*)"#,
@@ -181,13 +181,13 @@ static INLINE_XOR_FUNCTION_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("inline xor function regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static INLINE_XOR_CALL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)\b([A-Za-z_][A-Za-z0-9_]*)\s+['"]([A-Za-z0-9+/=]{32,})['"]"#)
         .expect("inline xor call regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static FILE_B64_LOADER_PATH_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:\bgc\b|\bGet-Content\b)\s+(?:\$([A-Za-z_][A-Za-z0-9_]*)|['"]([^'"]+)['"])"#,
@@ -195,13 +195,13 @@ static FILE_B64_LOADER_PATH_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("file b64 loader path regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_ANY_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:'([^']{1,1024})'|"([^"]{1,1024})")"#)
         .expect("ps any string assign regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_PATH_COMBINE_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\[(?:System\.)?IO\.Path\]::Combine\s*\(\s*([^,\r\n;]{1,512})\s*,\s*(?:'([^']{1,255})'|"([^"]{1,255})")\s*\)"#,
@@ -209,18 +209,18 @@ static PS_PATH_COMBINE_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps path combine assign regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_EMPTY_REPLACE_OPERATOR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)-replace\s*['"]([^'"]{1,128})['"]\s*,\s*['"]{2}"#)
         .expect("ps empty replace operator regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static START_BITS_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)Start-BitsTransfer\s+(?:[^|]*?-Source\s+)?["']([^"']+)["']"#).expect("bits")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static START_BITS_SCHEMELESS_SOURCE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?ix)
@@ -240,14 +240,14 @@ static START_BITS_SCHEMELESS_SOURCE_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("bits schemeless source")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static NET_REQ_RE: Lazy<Regex> = Lazy::new(|| {
     // [Net.WebRequest]::Create('url')  /  [System.Net.WebRequest]::Create('url')
     Regex::new(r#"(?i)\[(?:System\.)?Net\.WebRequest\]::Create\s*\(\s*["']([^"']+)["']"#)
         .expect("netreq")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static DYNAMIC_DOWNLOAD_INVOKE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\.\s*\(?\s*["'](?:Download(?:String(?:Task)?Async|String|File|Data)|OpenReadAsync|Down)["']\s*\)?\s*\.Invoke\s*\(\s*(?:\$([A-Za-z_][A-Za-z0-9_]*)|["']([^"']+)["'])"#,
@@ -255,7 +255,7 @@ static DYNAMIC_DOWNLOAD_INVOKE_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("dynamic download invoke")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static DYNAMIC_VAR_METHOD_INVOKE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\.\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\.Invoke\s*\(\s*(?:\$([A-Za-z_][A-Za-z0-9_]*)|["']([^"']+)["'])"#,
@@ -263,19 +263,19 @@ static DYNAMIC_VAR_METHOD_INVOKE_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("dynamic variable method invoke")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static FOREACH_LITERAL_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)foreach\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s+in\s+@\(\s*(.*?)\s*\)\s*\)"#)
         .expect("foreach literal array")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_ARRAY_LITERAL_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*@\(\s*(.*?)\s*\)"#)
         .expect("ps array literal assignment")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static FOREACH_ARRAY_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)foreach\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s+in\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
@@ -283,12 +283,12 @@ static FOREACH_ARRAY_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("foreach array variable")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_QUOTED_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?s)'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)""#).expect("ps quoted literal")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static OUTFILE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)-Out(?:F(?:ile)?)?(?:\s+|:|=)(?:`"([^"`\r\n;]+)`"|"([^"\r\n;]+)"?|'([^'\r\n;]+)'?|([^"'\s;]+))"#,
@@ -296,7 +296,7 @@ static OUTFILE_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("outfile")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static CURL_OUTPUT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)(?:^|\s)(?:--output(?:\s+|:|=)|-o\s+)(?:'([^'\r\n;]+)'?|"([^"\r\n;]+)"?|([^"'\s;]+))|(?:^|\s)-[A-Za-z]*o(?:'([^'\r\n;]+)'?|"([^"\r\n;]+)"?|((?:[A-Za-z]:|[\\/])[^"'\s;]+))"#,
@@ -304,7 +304,7 @@ static CURL_OUTPUT_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("curl output")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static BITS_DESTINATION_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)-Dest(?:ination)?(?:\s+|:|=)(?:"([^"\r\n;]+)"?|'([^'\r\n;]+)'?|([^"'\s;]+))"#)
         .expect("bits destination")
@@ -460,14 +460,14 @@ pub(crate) fn ps_download_side_effects_until(
     (out, false)
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static CHAR_CONCAT_RE: Lazy<Regex> = Lazy::new(|| {
     // Must have at least two + separators (3+ [char] terms) to avoid matching plain [char]N
     Regex::new(r"(?i)(?:\[char\]\s*\(?\s*(?:0x[0-9a-f]+|\d+)(?:\s*[+-]\s*(?:0x[0-9a-f]+|\d+))*\s*\)?\s*\+\s*){2,}\[char\]\s*\(?\s*(?:0x[0-9a-f]+|\d+)(?:\s*[+-]\s*(?:0x[0-9a-f]+|\d+))*\s*\)?")
         .expect("char concat regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static CHAR_INNER_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r"(?i)\[char\]\s*\(?\s*((?:0x[0-9a-f]+|\d+)(?:\s*[+-]\s*(?:0x[0-9a-f]+|\d+))*)\s*\)?",
@@ -475,7 +475,7 @@ static CHAR_INNER_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("inner char regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static CHAR_LITERAL_CONCAT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)\[char\]\s*\(?\s*((?:0x[0-9a-f]+|\d+)(?:\s*[+-]\s*(?:0x[0-9a-f]+|\d+))*)\s*\)?\s*\+\s*(?:'((?:''|[^'])*)'|"([^"`$\\]*(?:\\.[^"`$\\]*)*)")"#,
@@ -606,14 +606,14 @@ mod char_concat_prefilter_tests {
     }
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static STR_CONCAT_RE: Lazy<Regex> = Lazy::new(|| {
     // Match runs of (quoted-string + )+ quoted-string.
     Regex::new(r#"(?:(?:\(\s*'(?:[^'\\]|\\.)*'\s*\)|'(?:[^'\\]|\\.)*')\s*\+\s*)+(?:\(\s*'(?:[^'\\]|\\.)*'\s*\)|'(?:[^'\\]|\\.)*')"#)
         .expect("str concat regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static STR_PART_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"'((?:[^'\\]|\\.)*)'"#).expect("string part regex"));
 
@@ -655,13 +655,13 @@ mod string_concat_prefilter_tests {
     }
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static DQ_STR_CONCAT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?:\"(?:[^\"\\]|\\.)*\"\s*\+\s*)+\"(?:[^\"\\]|\\.)*\""#)
         .expect("double quoted str concat regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static DQ_STR_PART_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"\"((?:[^\"\\]|\\.)*)\""#).expect("double string part regex"));
 
@@ -700,7 +700,7 @@ fn is_string_concat_start(text: &str, pos: usize) -> bool {
     }
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static DOUBLED_QUOTE_LITERAL_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"''([^'\r\n]{1,8192})''"#).expect("doubled quote literal"));
 
@@ -737,7 +737,7 @@ mod doubled_quote_literal_tests {
     }
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static FORMAT_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"\(?\s*(?:'([^']*)'|"([^"]*)")\s*\)?\s*-f\s*((?:(?:'[^']*'|"[^"]*")\s*,\s*)*(?:'[^']*'|"[^"]*"))"#,
@@ -745,17 +745,17 @@ static FORMAT_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("format literal")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static FORMAT_CONCAT_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"\(?\s*((?:'[^']*'\s*\+\s*)+'[^']*')\s*\)?\s*-f\s*((?:'[^']*'\s*,\s*)*'[^']*')"#)
         .expect("format concat literal")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static FORMAT_ARG_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"'([^']*)'|"([^"]*)""#).expect("format arg literal"));
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static STRING_FORMAT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\[(?:System\.)?String\]::Format\s*\(\s*(?:'([^']*)'|"([^"]*)")\s*,\s*((?:(?:'[^']*'|"[^"]*")\s*,\s*)*(?:'[^']*'|"[^"]*"))\s*\)"#,
@@ -885,7 +885,7 @@ fn expand_ps_string_format_static(text: &str) -> String {
     out
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static B64_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*['"]([A-Za-z0-9+/=]+)['"]\s*\)"#,
@@ -893,7 +893,7 @@ static B64_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("b64 literal regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static GETSTRING_B64_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)\[(?:System\.)?(?:Text\.)?Encoding\]::(UTF8|ASCII|Unicode|UTF7|BigEndianUnicode|UTF32)\.GetString\s*\(\s*\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\(*\s*['"]([A-Za-z0-9+/=\s]+)['"]\s*(?:\.\s*Trim(?:Start|End)?\s*\(\s*\))?\s*\)*\s*\)\s*\)"#,
@@ -901,7 +901,7 @@ static GETSTRING_B64_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("getstring b64 literal regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static GETSTRING_B64_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)\[(?:System\.)?(?:Text\.)?Encoding\]::(UTF8|ASCII|Unicode|UTF7|BigEndianUnicode|UTF32)\.GetString\s*\(\s*\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\(*\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\.\s*Trim(?:Start|End)?\s*\(\s*\))?\s*\)*\s*\)\s*\)"#,
@@ -909,7 +909,7 @@ static GETSTRING_B64_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("getstring b64 var regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static GETSTRING_BYTE_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)\[(?:System\.)?(?:Text\.)?Encoding\]::(UTF8|ASCII|Unicode|UTF7|BigEndianUnicode|UTF32)\.GetString\s*\(\s*\[\s*byte\s*\[\]\s*\]\s*@?\(\s*((?:0x[0-9a-f]+|\d+)\s*(?:,\s*(?:0x[0-9a-f]+|\d+)\s*){3,})\)\s*\)"#,
@@ -917,13 +917,13 @@ static GETSTRING_BYTE_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("getstring byte array regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static FROMB64_LONG_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)FromBase64String\s*\(\s*['"]([A-Za-z0-9+/=]{40,})['"]"#)
         .expect("long frombase64 literal regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static GZIP_B64_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\(*\s*['"]([A-Za-z0-9+/=]+)['"]\s*\)*\s*\)"#,
@@ -931,18 +931,18 @@ static GZIP_B64_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("gzip b64 literal regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_LONG_B64_VAR_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']([A-Za-z0-9+/=]{256,})["']"#)
         .expect("ps long b64 var assign regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_FUNCTION_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)\b"#).expect("ps function def regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_GZIP_FUNCTION_GETSTRING_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\[(?:System\.)?(?:Text\.)?Encoding\]::(?:UTF8|ASCII|Unicode|UTF7|BigEndianUnicode|UTF32)\.GetString\s*\(\s*\(*\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\(*\s*\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\)*\s*\)\s*\)*\s*\)\s*(?:\.TrimEnd\s*\([^)]*\))?"#,
@@ -950,17 +950,17 @@ static PS_GZIP_FUNCTION_GETSTRING_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps gzip function getstring var regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_INVOKE_EXPRESSION_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\b(?:iex|invoke-expression)\s+\$([A-Za-z_][A-Za-z0-9_]*)\b"#)
         .expect("ps invoke-expression var regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static READ_TO_END_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"(?i)\.ReadToEnd\s*\(\s*\)"#).expect("readtoend regex"));
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static JSON_SCRIPT_B64_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\(\s*'\{[^']*"Script"\s*:\s*"([A-Za-z0-9+/=]+)"[^']*\}'\s*\|\s*ConvertFrom-Json\s*\)\.Script\s*\)"#,
@@ -1187,7 +1187,7 @@ mod gzip_base64_prefilter_tests {
     }
 
     #[test]
-    #[expect(clippy::expect_used, reason = "infallible in-memory gzip fixture")]
+    #[allow(clippy::expect_used)]
     fn normalizes_variable_backed_gzip_stream_iex_stage() {
         let stage = "Invoke-WebRequest -Uri 'https://gzip-variable.example/payload.ps1'";
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -1589,7 +1589,7 @@ mod getstring_base64_prefilter_tests {
     }
 
     #[test]
-    #[expect(clippy::expect_used, reason = "infallible in-memory gzip fixture")]
+    #[allow(clippy::expect_used)]
     fn normalizes_marker_replaced_nested_getstring_base64_literal() {
         let marker = "zvzrdidyvslx";
         let final_stage = "Invoke-WebRequest -Uri 'https://marker-replace.example/payload.ps1'";
@@ -2246,7 +2246,7 @@ fn should_inline_base64_decoded_payload(decoded: &[u8]) -> bool {
     printable * 100 >= decoded.len() * 90 && hard_controls * 100 <= decoded.len()
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_EMBEDDED_SINGLE_QUOTE_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*'''([^'\r\n]{1,8192})'''"#)
         .expect("ps embedded single quote assignment")
@@ -2284,7 +2284,7 @@ mod embedded_single_quote_signal_tests {
     }
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static REGEX_REPLACE_CALL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)\[regex\]::Replace\s*\(\s*'([^']*)'\s*,\s*''?([^']*)''?\s*,\s*''?([^']*)''?\s*\)"#,
@@ -2292,7 +2292,7 @@ static REGEX_REPLACE_CALL_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("regex replace call")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static B64_REGEX_REPLACE_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\[regex\]::Replace\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*'+([^']*)'+\s*,\s*'+([^']*)'+\s*\)\s*\)"#,
@@ -2997,7 +2997,7 @@ fn parse_ps_quoted_argument(text: &str, start: usize) -> Option<(String, usize)>
     None
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static HEX_SPLIT_CHAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)'((?:[0-9a-f]{2}\s+){3,}[0-9a-f]{2})'\s*-Split\s*['"][^'"]*['"]\s*(?:\|\s*)?foreach(?:-object)?\s*\{[^{}]*?toint16\s*\(\s*\$_\s*,\s*16\s*\)[^{}]*?\}"#,
@@ -3045,7 +3045,7 @@ mod hex_split_char_prefilter_tests {
     }
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static GETSTRING_UNWRAP_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r"(?i)\[(?:System\.)?(?:Text\.)?Encoding\]::(?:UTF8|ASCII|Unicode|UTF7|BigEndianUnicode|UTF32)\.GetString\s*\(\s*'([^']*)'\s*\)"
@@ -3082,7 +3082,7 @@ mod getstring_wrapper_prefilter_tests {
     }
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static REPLACE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)(?:'((?:''|[^'])*)'|"([^"]*)")\s*-(i?replace)\s*(?:'((?:''|[^'])*)'|"([^"]*)")\s*,\s*(?:'((?:''|[^'])*)'|"([^"]*)")"#)
         .expect("replace")
@@ -3316,7 +3316,7 @@ mod ps_dot_replace_prefilter_tests {
     }
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     // (?:'a',"b",'c') -join 'sep' or @('a',"b",'c') -join "sep".
     // Outer parens are optional for the bare array form.
@@ -3324,18 +3324,18 @@ static JOIN_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("join")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static UNARY_LITERAL_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"-join\s+@?\(\s*((?:(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")\s*,\s*)+(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"))\s*\)"#)
         .expect("unary literal join")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static JOIN_PART_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)""#).expect("join part")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static STRING_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\[(?:System\.)?String\]::Join\s*\(\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*,\s*@?\(\s*((?:(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")\s*,\s*)*(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"))\s*\)\s*\)"#,
@@ -3343,7 +3343,7 @@ static STRING_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("string join")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static STRING_CONCAT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\[(?:System\.)?String\]::Concat\s*\(\s*((?:(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")\s*,\s*)*(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"))\s*\)"#,
@@ -3351,7 +3351,7 @@ static STRING_CONCAT_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("string concat")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static SINGLE_LITERAL_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"\(\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*-join\s*(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")\s*\)|(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*-join\s*(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")"#,
@@ -3359,7 +3359,7 @@ static SINGLE_LITERAL_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("single literal join")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static SPLIT_JOIN_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\(\s*\(?\s*(?:'((?:''|[^'])*)'|"([^"]*)")\s*-i?split\s*(?:'((?:''|[^'])*)'|"([^"]*)")\s*\)?\s*-join\s*(?:'((?:''|[^'])*)'|"([^"]*)")\s*\)"#,
@@ -3367,7 +3367,7 @@ static SPLIT_JOIN_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("split join literal")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_SUBSTRING_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:'((?:''|[^'])*)'|"([^"]*)")\s*\.\s*Substring\s*\(\s*(\d+)\s*(?:,\s*(\d+)\s*)?\)"#,
@@ -3508,7 +3508,7 @@ mod single_literal_join_prefilter_tests {
     }
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static REVERSE_STRING_SLICE_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"\(\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*\[\s*-1\s*\.\.\s*-(\d+)\s*\]\s*-join\s*(?:''|"")\s*\)|(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*\[\s*-1\s*\.\.\s*-(\d+)\s*\]\s*-join\s*(?:''|"")"#,
@@ -3543,7 +3543,7 @@ fn expand_reverse_string_slice_join(text: &str) -> String {
     out
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static TOCHARARRAY_REVERSE_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:'([^']*)'|"([^"]*)")\s*;\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\.ToCharArray\s*\(\s*\)\s*;\s*\[array\]::Reverse\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*;\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*-join\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)"#,
@@ -3551,7 +3551,7 @@ static TOCHARARRAY_REVERSE_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("tochararray reverse join")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_TOCHARARRAY_REVERSE_JOIN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\$[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:'([^']*)'|"([^"]*)")\s*;.{0,300}?\$[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:'([^']*)'|"([^"]*)")\s*\.ToCharArray\s*\(\s*\)\s*;.{0,200}?\[array\]::Reverse\s*\(\s*(?:'([^']*)'|"([^"]*)")\s*\)\s*;.{0,200}?(\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*-join\s*\(\s*(?:'([^']*)'|"([^"]*)")\s*\))"#,
@@ -3801,7 +3801,7 @@ mod ps_join_prefilter_tests {
     }
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_VAR_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     // $name = 'literal', $name = "literal", or the common no-op subexpression
     // wrapper $name = $('literal'). Double-quoted values with interpolation or
@@ -3812,13 +3812,13 @@ static PS_VAR_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps var assign")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_INT_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\d{1,6})(?:\s*(?:;|\r?\n|$))"#)
         .expect("ps int assign")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_VAR_APPEND_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*\+=\s*(?:'((?:''|[^'])*)'|"([^"`$\\]*(?:\\.[^"`$\\]*)*)")"#,
@@ -3826,25 +3826,25 @@ static PS_VAR_APPEND_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps var append")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*@?\(?\s*((?:(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*")\s*,\s*)+(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"))\s*\)?"#)
         .expect("ps array assign")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_ARGUMENT_ARRAY_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*@?\(?\s*((?:(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"|\$[A-Za-z_][A-Za-z0-9_]*)\s*,\s*)+(?:'[^'\\]*(?:\\.[^'\\]*)*'|"[^"\\]*(?:\\.[^"\\]*)*"|\$[A-Za-z_][A-Za-z0-9_]*))\s*\)?"#)
         .expect("ps argument array assign")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_JOIN_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\(?\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*-join\s*(?:'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)")\s*\)?"#)
         .expect("ps join assign")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_BRACED_DOUBLE_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"\r\n;=]*\$\{[A-Za-z_][A-Za-z0-9_]*\}[^"\r\n;=]*)""#,
@@ -3852,24 +3852,24 @@ static PS_BRACED_DOUBLE_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps braced double assign")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_VAR_REF_RE: Lazy<Regex> = Lazy::new(|| {
     // $name reference
     Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)"#).expect("ps var ref")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_INTERPOLATED_VAR_REF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)"#)
         .expect("ps interpolated var ref")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_SIMPLE_DOUBLE_QUOTED_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#""([^"\r\n;=]*\$[A-Za-z_{][^"\r\n;=]*)""#).expect("ps simple double quoted var")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_INDEX_CONCAT_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*((?:\$[A-Za-z_][A-Za-z0-9_]*\s*\[\s*\d+\s*\]\s*\+\s*)+\$[A-Za-z_][A-Za-z0-9_]*\s*\[\s*\d+\s*\])"#,
@@ -3877,7 +3877,7 @@ static PS_INDEX_CONCAT_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps index concat assign")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_VAR_CONCAT_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*((?:\$[A-Za-z_][A-Za-z0-9_]*\s*\+\s*)+\$[A-Za-z_][A-Za-z0-9_]*)"#,
@@ -3885,7 +3885,7 @@ static PS_VAR_CONCAT_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps var concat assign")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_MIXED_CONCAT_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*((?:(?:\$[A-Za-z_][A-Za-z0-9_]*|'(?:''|[^'])*'|"[^"`$\\]*(?:\\.[^"`$\\]*)*")\s*\+\s*)+(?:\$[A-Za-z_][A-Za-z0-9_]*|'(?:''|[^'])*'|"[^"`$\\]*(?:\\.[^"`$\\]*)*"))"#,
@@ -3893,13 +3893,13 @@ static PS_MIXED_CONCAT_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps mixed concat assign")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_MIXED_CONCAT_PART_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)|'((?:''|[^'])*)'|"([^"`$\\]*(?:\\.[^"`$\\]*)*)""#)
         .expect("ps mixed concat part")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_INDEX_REF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"\$([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*(\d+)\s*\]"#).expect("ps index ref")
 });
@@ -4265,7 +4265,7 @@ fn is_ps_assignment_operator(text: &str) -> bool {
 
 // ---- Space-concat expander (Pattern C) ----
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static SPACE_CONCAT_RE: Lazy<Regex> = Lazy::new(|| {
     // 'a' 'b' 'c' ...  (2+ adjacent single-quoted strings separated by whitespace ONLY,
     // no + or - operator between them)
@@ -4273,7 +4273,7 @@ static SPACE_CONCAT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"'[^']*'(?:\s+'[^']*')+"#).expect("space concat")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static SPACE_PART_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"'([^']*)'").expect("space concat part"));
 
@@ -4365,14 +4365,14 @@ mod space_concat_prefilter_tests {
 
 // ---- Char-array chunk expander (Pattern D) ----
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static CHAR_ARRAY_CHUNK_RE: Lazy<Regex> = Lazy::new(|| {
     // ([char[]]@( N1,N2,N3 )-join '')
     Regex::new(r#"\(\[char\[\]\]\s*@\(\s*((?:\d+\s*,\s*)*\d+)\s*\)\s*-join\s*['"][^'"]*['"]\s*\)"#)
         .expect("char arr chunk")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static STRING_JOIN_CHAR_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)\[(?:System\.)?String\]::Join\s*\(\s*['"]([^'"]*)['"]\s*,\s*\[char\[\]\]\s*@?\(\s*((?:0x[0-9a-f]+|\d+)\s*(?:,\s*(?:0x[0-9a-f]+|\d+)\s*){2,})\)\s*\)"#,
@@ -4380,7 +4380,7 @@ static STRING_JOIN_CHAR_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("string join char array")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static UNARY_JOIN_CHAR_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)-join\s+\[char\[\]\]\s*@?\(\s*((?:0x[0-9a-f]+|\d+)\s*(?:,\s*(?:0x[0-9a-f]+|\d+)\s*){2,})\)\s*"#,
@@ -4631,7 +4631,7 @@ mod literal_trim_extractor_tests {
 
 // ---- Skip-Nth-Char decoder (Invoke-Obfuscation pattern) ----
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static SKIP_NTH_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     // Matches: function NAME(...){ ... } or New-Item function definitions.
     // Captures: group 1 = fn name from `function NAME`, group 2 = fn name from `-n/-Name NAME`
@@ -4641,13 +4641,13 @@ static SKIP_NTH_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     ).expect("skip-nth def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static SKIP_NTH_INIT_RE: Lazy<Regex> = Lazy::new(|| {
     // Extracts: $idx = N (initializer before the loop)
     Regex::new(r#"\$(\w+)\s*=\s*(\d+)"#).expect("skip-nth init")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static INVOKE_EXPRESSION_WRAPPER_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:function\s+(\w+)\s*\([^)]*\)|-(?:n|name)\s+(\w+))\s*[^{]*\{[^{}]*invoke-expression[^{}]*\}"#,
@@ -4691,7 +4691,7 @@ mod invoke_expression_wrapper_prefilter_tests {
     }
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PASSTHROUGH_CALL_WRAPPER_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:function\s+(\w+)\s*\(\s*\$(\w+)\s*\)|-(?:n|name)\s+(\w+))\s*[^{]*\{.{0,4096}?&\s*\(?\s*'([^']+)'\s*\)?\s*\(\s*\$(\w+)\s*\)"#,
@@ -4699,7 +4699,7 @@ static PASSTHROUGH_CALL_WRAPPER_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("passthrough call wrapper def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_REPLACE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s+-i?replace\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)[^{}]*\}"#,
@@ -4707,7 +4707,7 @@ static LITERAL_REPLACE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("literal replace extractor def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_DOT_REPLACE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Replace\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
@@ -4715,7 +4715,7 @@ static LITERAL_DOT_REPLACE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("literal dot-replace extractor def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_SUBSTRING_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+(?:[A-Za-z_][A-Za-z0-9_]*:)?([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?(?:return\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Substring\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
@@ -4723,7 +4723,7 @@ static LITERAL_SUBSTRING_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("literal substring extractor def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_TAIL_SUBSTRING_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+(?:[A-Za-z_][A-Za-z0-9_]*:)?([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?(?:return\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Substring\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
@@ -4731,7 +4731,7 @@ static LITERAL_TAIL_SUBSTRING_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("literal tail substring extractor def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_CONST_SUBSTRING_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+(?:[A-Za-z_][A-Za-z0-9_]*:)?([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?(?:return\s+)?\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Substring\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)[^{}]*\}"#,
@@ -4958,7 +4958,7 @@ fn scan_ps_function_blocks(text: &str, mut visit: impl FnMut(&str)) {
     }
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\(?\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)?\s*\.\s*Trim(Start|End)?\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
@@ -4966,7 +4966,7 @@ static LITERAL_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("literal trim extractor def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_PARAM_BLOCK_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\{\s*param\s*\(([^)]*)\)[^{}]*?return\s+\(?\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)?\s*\.\s*Trim(Start|End)?\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
@@ -4974,7 +4974,7 @@ static LITERAL_PARAM_BLOCK_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("literal param-block trim extractor def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_ITEM_PATH_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\b(?:New-Item|n`?i|Set-Item|s`?i)\b[^{}]{0,512}\bFunction:\s*\\?\s*([A-Za-z_][A-Za-z0-9_-]*)[^{}]{0,512}-Value\s*\{\s*param\s*\(([^)]*)\)[^{}]*?return\s+\(?\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)?\s*\.\s*Trim(Start|End)?\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
@@ -4982,7 +4982,7 @@ static LITERAL_ITEM_PATH_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("literal item path trim extractor def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_ITEM_NAME_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\b(?:New-Item|n`?i|Set-Item|s`?i)\b[^{}]{0,512}-Name\s+([A-Za-z_][A-Za-z0-9_-]*)[^{}]{0,512}-Value\s*\{\s*param\s*\(([^)]*)\)[^{}]*?return\s+\(?\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)?\s*\.\s*Trim(Start|End)?\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
@@ -4990,7 +4990,7 @@ static LITERAL_ITEM_NAME_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("literal item name trim extractor def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_CONST_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\(?\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)?\s*\.\s*Trim(Start|End)?\s*\(\s*'((?:''|[^'])*)'\s*\)[^{}]*\}"#,
@@ -4998,7 +4998,7 @@ static LITERAL_CONST_TRIM_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("literal constant trim extractor def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_CASE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*To(Lower|Upper)\s*\(\s*\)[^{}]*\}"#,
@@ -5006,7 +5006,7 @@ static LITERAL_CASE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("literal case extractor def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_INDEX_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]|\.\s*(?:Chars|get_Chars)\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)|\.\s*ToCharArray\s*\(\s*\)\s*\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\])[^{}]*\}"#,
@@ -5014,7 +5014,7 @@ static LITERAL_INDEX_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("literal index extractor def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_CONST_INDEX_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[\s*(\d+)\s*\]|\.\s*(?:Chars|get_Chars)\s*\(\s*(\d+)\s*\)|\.\s*ToCharArray\s*\(\s*\)\s*\[\s*(\d+)\s*\])[^{}]*\}"#,
@@ -5022,7 +5022,7 @@ static LITERAL_CONST_INDEX_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("literal constant index extractor def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_CONST_REMOVE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Remove\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)[^{}]*\}"#,
@@ -5030,7 +5030,7 @@ static LITERAL_CONST_REMOVE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("literal constant remove extractor def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_REMOVE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Remove\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*))?\s*\)[^{}]*\}"#,
@@ -5038,7 +5038,7 @@ static LITERAL_REMOVE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("literal remove extractor def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_CONST_INSERT_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Insert\s*\(\s*(\d+)\s*,\s*'((?:''|[^'])*)'\s*\)[^{}]*\}"#,
@@ -5046,7 +5046,7 @@ static LITERAL_CONST_INSERT_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("literal constant insert extractor def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_INSERT_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Insert\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\)[^{}]*\}"#,
@@ -5054,7 +5054,7 @@ static LITERAL_INSERT_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("literal insert extractor def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_CONST_DOT_REPLACE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*Replace\s*\(\s*'((?:''|[^'])*)'\s*,\s*'((?:''|[^'])*)'\s*\)[^{}]*\}"#,
@@ -5062,7 +5062,7 @@ static LITERAL_CONST_DOT_REPLACE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("literal constant dot-replace extractor def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static LITERAL_CONST_DASH_REPLACE_EXTRACTOR_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(([^)]*)\)\s*\{[^{}]*?return\s+\$([A-Za-z_][A-Za-z0-9_]*)\s+-i?replace\s+'((?:''|[^'])*)'\s*,\s*'((?:''|[^'])*)'[^{}]*\}"#,
@@ -6845,7 +6845,7 @@ fn normalize_simple_ps_split_separator(separator: &str) -> String {
     out
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static SKIP_NTH_FOR_SUBSTRING_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+(\w+)\s*\([^)]*\)\s*\{[^{}]*?for\s*\(\s*\$(\w+)\s*=\s*(\d+)\s*;[^;]*?;\s*\$(\w+)\s*\+=\s*(\d+)\s*\)\s*\{[^{}]*?\.\s*'su'\s*\.\s*'Invoke'\s*\(\s*\$(\w+)\s*,"#,
@@ -6858,7 +6858,7 @@ static SKIP_NTH_FOR_SUBSTRING_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 // the function body uses do/until instead of for. Captures: 1=function name,
 // 2=index-var (init), 3=start, 4=index-var (increment) — must equal 2,
 // 5=step.
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static MUSCULOS_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+(\w+)\s*\([^)]*\)\s*\{\s*\$(\w+)\s*=\s*(\d+)\s*;\s*do\s*\{[^{}]*?\$\w+\s*\+=\s*\$\w+\[\s*\$\w+\s*\][^{}]*?\$(\w+)\s*\+=\s*(\d+)[^{}]*?\}\s*until\s*\(\s*!\s*\$\w+\[\s*\$\w+\s*\]\s*\)"#,
@@ -6868,7 +6868,7 @@ static MUSCULOS_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 
 // For-loop stride decoders that append direct index reads:
 // `for($i=4; $i -lt $s.Length; $i+=5) { $out += $s[$i] }`.
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static FOR_INDEX_STRIDE_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+(\w+)\s*\(\s*\$(\w+)[^)]*\)\s*\{.{0,4096}?for\s*\(\s*\$(\w+)\s*=\s*(\d+)\s*;[^;]{0,1024}?;\s*\$(\w+)\s*\+=\s*(\d+)\s*\)\s*\{.{0,2048}?\$\w+\s*\+=\s*\$(\w+)\s*\[\s*\$(\w+)\s*\]"#,
@@ -6878,7 +6878,7 @@ static FOR_INDEX_STRIDE_DEF_RE: Lazy<Regex> = Lazy::new(|| {
 
 // For-loop stride decoders that call Substring through a literal or variable:
 // `$out += $s.$method.Invoke($i, 1)`.
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static FOR_SUBSTRING_INVOKE_STRIDE_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+(\w+)\s*\(\s*\$(\w+)[^)]*\)\s*\{.{0,4096}?for\s*\(\s*\$(\w+)\s*=\s*(\d+)\s*;[^;]{0,1024}?;\s*\$(\w+)\s*\+=\s*\(?\s*(\d+)\s*\)?\s*\)\s*\{.{0,2048}?\$\w+\s*\+=\s*\$(\w+)\s*\.\s*(?:'([^']+)'|\$([A-Za-z_][A-Za-z0-9_]*))\s*\.Invoke\s*\(\s*\$(\w+)\s*,"#,
@@ -6886,7 +6886,7 @@ static FOR_SUBSTRING_INVOKE_STRIDE_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("for substring invoke stride def")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static DO_WHILE_STRIDE_DEF_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)[^)]*\)\s*\{[^{}]*?\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;\r\n{}]{1,128})[;\r\n]+[^{}]*?do\s*\{[^{}]*?\$\w+\s*\+=\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\][^{}]*?\$([A-Za-z_][A-Za-z0-9_]*)\s*\+=\s*(\d+)[^{}]*?\}\s*(?:until\s*\(\s*!\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]\s*\)|while\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*\]\s*\))"#,
@@ -7645,7 +7645,7 @@ mod decode_strided_carrier_tests {
 // single-quoted PS literal (common after `[Convert]::FromBase64String('...')`
 // inlining). The closing `'@` should be at column 0 in strict PS, but
 // obfuscators often deviate, so we just require the marker pair.
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_HERESTRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?s)\$([A-Za-z_]\w*)\s*=\s*@'+\r?\n(.*?)\r?\n'+@"#).expect("ps herestring assign")
 });
@@ -7656,7 +7656,7 @@ static PS_HERESTRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
 // that arises when the chain is inlined inside a wrapping single-quoted PS
 // literal. Inner pattern allows `''` as a single-quote escape but forbids
 // `\n` so we never accidentally extend the match across a line.
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_VAR_REPLACE_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"\$([A-Za-z_]\w*)\s*=\s*\$([A-Za-z_]\w*)\s*-replace\s*'{1,2}((?:[^'\\\n]|''|\\.)*?)'{1,2}\s*,\s*'{1,2}((?:[^'\\\n]|''|\\.)*?)'{1,2}"#,
@@ -9065,7 +9065,7 @@ fn ps_literal_urls_in_download_context(text: &str) -> Vec<String> {
 /// trait for each unique (url, payload_idx) pair found.
 // Matches `[Convert]::FromBase64String('...')` or `[System.Convert]::FromBase64String('...')`
 // at the top level of a PS payload. Captures: 1=base64 string.
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static OUTER_FROMBASE64_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)\[(?:System\.)?Convert\]::FromBase64String\s*\(\s*'([A-Za-z0-9+/=]{32,})'\s*\)"#,
@@ -9531,13 +9531,13 @@ fn extract_herestring_replace_iex_from_text(text: &str) -> Vec<String> {
     out
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_INVOKE_EXPRESSION_SINGLE_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)^\s*(?:iex|invoke-expression)\s*\(?\s*'((?:[^']|'')*)'\s*\)?\s*;?\s*$"#)
         .expect("ps invoke-expression single literal regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_REVERSED_URL_TOKEN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)([A-Za-z0-9._~:/?!$&*+=;,%\-]{8,400}//:(?:ptth|sptth))"#)
         .expect("ps reversed url token regex")

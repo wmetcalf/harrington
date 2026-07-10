@@ -11,7 +11,7 @@ use base64::Engine as _;
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static URL_IN_JS_RE: Lazy<Regex> = Lazy::new(|| {
     // Generic URL match — picks up any http(s) in the JS text.
     // Case-insensitive + Windows-liberal slashes (`http:\\` / `http:/`
@@ -21,13 +21,13 @@ static URL_IN_JS_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("url-in-js")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static U_ESCAPE_RE: Lazy<Regex> = Lazy::new(|| {
     // Sequences of \uXXXX hex escapes (4 or more consecutive)
     Regex::new(r"((?:\\u[0-9a-fA-F]{4}){4,})").expect("u-escape")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*["']from(?:CharCode|CodePoint)["']\s*\])\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
@@ -35,7 +35,7 @@ static JS_FROMCHARCODE_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("js fromCharCode/fromCodePoint")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_BIND_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)String\s*(?:\.\s*from(?:CharCode|CodePoint)|\[\s*["']from(?:CharCode|CodePoint)["']\s*\])\s*\.\s*bind\s*\(\s*[^)\r\n]{0,128}\)\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
@@ -43,7 +43,7 @@ static JS_FROMCHARCODE_BIND_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("js fromCharCode/fromCodePoint bind")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_MEMBER_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
@@ -51,7 +51,7 @@ static JS_FROMCHARCODE_MEMBER_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("js fromCharCode member variable")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_MEMBER_APPLY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\.\s*apply\s*\(\s*[^,\r\n]{0,128},\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]\s*\)"#,
@@ -59,7 +59,7 @@ static JS_FROMCHARCODE_MEMBER_APPLY_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("js fromCharCode member apply")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_MEMBER_CALL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\.\s*call\s*\(\s*[^,\r\n]{0,128},\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
@@ -67,7 +67,7 @@ static JS_FROMCHARCODE_MEMBER_CALL_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("js fromCharCode member call")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_MEMBER_SPREAD_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\(\s*\.\.\.\s*\[\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\]\s*\)"#,
@@ -75,7 +75,7 @@ static JS_FROMCHARCODE_MEMBER_SPREAD_ARRAY_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("js fromCharCode member spread array")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static JS_FROMCHARCODE_MEMBER_BIND_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)String\s*\[\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\]\s*\.\s*bind\s*\(\s*[^)\r\n]{0,128}\)\s*\(\s*([0-9xa-f+\-\^\s,]{5,8192})\s*\)"#,
@@ -83,7 +83,7 @@ static JS_FROMCHARCODE_MEMBER_BIND_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("js fromCharCode member bind")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static JS_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:^|[;{}\r\n])\s*(?:(?:var|let|const)\s+)?([A-Za-z_$][A-Za-z0-9_$]{0,127})\s*=\s*([^;{}\r\n]{1,4096})"#,
@@ -91,7 +91,7 @@ static JS_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("js string assign")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static JS_STRING_APPEND_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)(?:^|[;{}\r\n])\s*([A-Za-z_$][A-Za-z0-9_$]{0,127})\s*\+=\s*([^;{}\r\n]{1,4096})"#,
@@ -99,7 +99,7 @@ static JS_STRING_APPEND_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("js string append")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static JS_NAMED_FUNCTION_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]{0,127})\s*\([^)]{0,256}\)\s*\{"#)
         .expect("js named function")

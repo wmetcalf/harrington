@@ -1185,7 +1185,7 @@ mod lex_type_tests {
     use crate::lex::{PercentTildeFlags, Token, VarOp};
 
     #[test]
-    #[expect(clippy::expect_used, reason = "static regex construction")]
+    #[allow(clippy::expect_used)]
     fn percent_tilde_flags_parse() {
         let f = PercentTildeFlags::parse("dpnx").expect("parse");
         assert!(f.d && f.p && f.n && f.x);
@@ -13853,7 +13853,7 @@ fn has_bang_var_reference(input: &[u8]) -> bool {
 
     use once_cell::sync::Lazy;
     use regex::bytes::Regex;
-    #[expect(clippy::expect_used, reason = "static regex construction")]
+    #[allow(clippy::expect_used)]
     static BANG_RE: Lazy<Regex> = Lazy::new(|| {
         // `!IDENT!`  or  `!IDENT:…!`  (the `:` form is substring/substitution
         // and is just as much a delayed-expansion construct as plain `!X!`).
@@ -13965,7 +13965,7 @@ fn bytes_have_clear_powershell_invocation(input: &[u8]) -> bool {
     use once_cell::sync::Lazy;
     use regex::bytes::Regex;
 
-    #[expect(clippy::expect_used, reason = "static regex construction")]
+    #[allow(clippy::expect_used)]
     static PS_INVOKE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
             r#"(?ix)
@@ -14052,7 +14052,7 @@ fn ascii_lower_bytes(bytes: &[u8]) -> Vec<u8> {
 fn has_disable_delayed_expansion(input: &[u8]) -> bool {
     use once_cell::sync::Lazy;
     use regex::bytes::Regex;
-    #[expect(clippy::expect_used, reason = "static regex construction")]
+    #[allow(clippy::expect_used)]
     static DIS_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"(?i)setlocal\s+disabledelayedexpansion").expect("dis re"));
     DIS_RE.is_match(input)
@@ -14836,7 +14836,7 @@ fn marker_carrier_encoded_estimate(payload: &str) -> Option<(usize, usize)> {
 fn self_read_marker_prefixes(text: &str) -> Vec<String> {
     use once_cell::sync::Lazy;
 
-    #[expect(clippy::expect_used, reason = "static regex construction")]
+    #[allow(clippy::expect_used)]
     static STARTSWITH_MARKER_RE: Lazy<regex::Regex> = Lazy::new(|| {
         regex::Regex::new(r#"(?is)\bStartsWith\s*\(\s*['"]([A-Za-z0-9\+/\=]{4,64})['"]\s*\)"#)
             .expect("startswith marker re")
@@ -15445,7 +15445,7 @@ fn decoded_powershell_frombase64_literal_sizes(line: &str) -> Option<(usize, usi
     use base64::Engine as _;
     use once_cell::sync::Lazy;
 
-    #[expect(clippy::expect_used, reason = "static regex construction")]
+    #[allow(clippy::expect_used)]
     static FROMBASE64_LITERAL_RE: Lazy<regex::Regex> = Lazy::new(|| {
         regex::Regex::new(r#"(?i)FromBase64String\s*\(\s*["']([A-Za-z0-9+/=]{40,})["']\s*\)"#)
             .expect("frombase64 literal regex")

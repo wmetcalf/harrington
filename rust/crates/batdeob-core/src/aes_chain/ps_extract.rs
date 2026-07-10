@@ -44,7 +44,7 @@ pub fn find_single_quoted_long(text: &str, min_len: usize) -> Vec<&str> {
     out
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static REPLACE_PAIR_RE: Lazy<Regex> = Lazy::new(|| {
     // Match both `.Replace('A','B')` and `-replace 'A','B'` / `-replace "A","B"`.
     // The needle is what we actually care about; replacement is usually empty.
@@ -79,7 +79,7 @@ pub fn find_replace_chain(text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static AES_KEY_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(&format!(
         r"(?ix)
@@ -93,7 +93,7 @@ static AES_KEY_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("aes key re")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static AES_IV_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(&format!(
         r"(?ix)
@@ -110,7 +110,7 @@ static AES_IV_RE: Lazy<Regex> = Lazy::new(|| {
 const CONVERT_DECODE_METHOD: &str = r"(?:FromBase64String|\(\s*\$\w+\s*\[\s*\d+\s*\]\s*\))";
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static FROMBASE64_LITERAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r"(?ix)
@@ -288,7 +288,7 @@ pub fn find_payload_line_prefix(text: &str) -> Option<String> {
     None
 }
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static INLINE_GZIPPED_B64_RE: Lazy<Regex> = Lazy::new(|| {
     // The gzip magic 1f 8b 08 00 base64-encodes to `H4sIA...`. Look for a
     // single-quoted PS literal that starts that way.

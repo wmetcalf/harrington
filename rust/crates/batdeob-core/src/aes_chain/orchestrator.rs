@@ -21,31 +21,31 @@ const MAX_STAGE_OUTPUT: usize = 16 * 1024 * 1024;
 const MAX_URLS_PER_SAMPLE: usize = 16;
 const MAX_ENVELOPE_CHUNKS: usize = 64;
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static STAGE1_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"'([^']{200,})'\s*\.\s*Replace\s*\(\s*'([^']{2,40})'\s*,\s*''\s*\)")
         .expect("stage1 re")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_KEY_BYTES_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?is)\.Key\s*=\s*(?:\[\s*byte\s*\[\s*\]\s*\]\s*@?\(\s*([^)]+)\)|\[\s*(by[0-9A-Za-z]{2}\s*,[^)]+)\))")
         .expect("ps key bytes re")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_IV_BYTES_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?is)\.IV\s*=\s*(?:\[\s*byte\s*\[\s*\]\s*\]\s*@?\(\s*([^)]+)\)|\[\s*(by[0-9A-Za-z]{2}\s*,[^)]+)\))")
         .expect("ps iv bytes re")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_B64_ASSIGNMENT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)\$[A-Za-z_][A-Za-z0-9_]*\s*=\s*\(?\s*['"]([A-Za-z0-9+/=]{80,})['"]\s*\)?"#)
         .expect("ps b64 assignment re")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_DYNAMIC_AES_B64_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\[[^\]]*Convert\]\s*::\s*(?:FromBase64String|\$[A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\(?\s*((?:['"][A-Za-z0-9+/=]{16,}['"]\s*(?:\+\s*)?){1,96})\s*\)?\s*\)"#,
@@ -53,7 +53,7 @@ static PS_DYNAMIC_AES_B64_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps dynamic aes b64 re")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_DYNAMIC_KEY_B64_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\.Key\s*=\s*\[[^\]]*Convert\]\s*::\s*(?:FromBase64String|\$[A-Za-z_][A-Za-z0-9_]*)\s*\(\s*['"]([A-Za-z0-9+/=]{16,})['"]\s*\)"#,
@@ -61,7 +61,7 @@ static PS_DYNAMIC_KEY_B64_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps dynamic key b64 re")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_DYNAMIC_IV_B64_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\.IV\s*=\s*\[[^\]]*Convert\]\s*::\s*(?:FromBase64String|\$[A-Za-z_][A-Za-z0-9_]*)\s*\(\s*['"]([A-Za-z0-9+/=]{16,})['"]\s*\)"#,
@@ -69,11 +69,11 @@ static PS_DYNAMIC_IV_B64_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps dynamic iv b64 re")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_QUOTED_B64_FRAGMENT_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"['"]([A-Za-z0-9+/=]{16,})['"]"#).expect("ps b64 fragment re"));
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_SELF_MARKER_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)\.StartsWith\(\s*['"]([^'"]{2,80})['"]\s*\).*?\.Substring\(\s*(\d{1,3})\s*\)"#,
@@ -81,27 +81,27 @@ static PS_SELF_MARKER_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("ps self marker re")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_REPLACE_PAIR_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)\.Replace\(\s*['"]([^'"]{1,8})['"]\s*,\s*['"]([^'"]{0,8})['"]\s*\)"#)
         .expect("ps replace pair re")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static PS_REVERSED_STRING_MEMBER_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?is)\(\s*['"]([^'"]{2,64})['"]\s*\[\s*-1\s*\.\.\s*-\d{1,3}\s*\]\s*-\s*join\s*['"]{2}\s*\)"#)
         .expect("ps reversed string member re")
 });
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static SIMPLE_AES_KEY_B64_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"['"]([A-Za-z0-9+/]{43}=)['"]\s*\)"#).expect("simple aes key re"));
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static SIMPLE_AES_IV_B64_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"['"]([A-Za-z0-9+/]{22}==)['"]\s*\)"#).expect("simple aes iv re"));
 
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static CMD_VAR_MARKER_REMOVAL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"%[A-Za-z_][A-Za-z0-9_]*:([^=%\s"]{2,32})=%"#)
         .expect("cmd variable marker removal regex")

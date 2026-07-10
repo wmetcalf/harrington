@@ -17,7 +17,7 @@ use regex::Regex;
 const MAX_OUTER_PAREN_STRIP_DEPTH: usize = 64;
 
 // Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static FOR_F_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r#"(?is)^\s*for\s*/F\s*(?:"(?P<opts>[^"]*)")?\s*%%?(?P<var>\S)\s+in\s*\(\s*(?P<src>.+?)\s*\)\s*do\s+(?P<body>.+)$"#
@@ -25,7 +25,7 @@ static FOR_F_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 // Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static FOR_L_RE: Lazy<Regex> = Lazy::new(|| {
     // Accept both comma-separated "(11,-1,0)" and space-separated "(11 -1 0)" forms.
     Regex::new(
@@ -34,7 +34,7 @@ static FOR_L_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 // Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static FOR_D_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r"(?i)^\s*for\s*/D\s+%%?(?P<var>\S)\s+in\s*\(\s*(?P<set>[^)]+)\)\s*do\s+(?P<body>.+)$",
@@ -43,7 +43,7 @@ static FOR_D_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 // Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static FOR_R_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r"(?i)^\s*for\s*/R(?:\s+(?P<root>.+?))?\s+%%?(?P<var>\S)\s+in\s*\(\s*(?P<set>[^)]+)\)\s*do\s+(?P<body>.+)$",
@@ -52,7 +52,7 @@ static FOR_R_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 // Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
-#[expect(clippy::expect_used, reason = "static regex construction")]
+#[allow(clippy::expect_used)]
 static FOR_PLAIN_RE: Lazy<Regex> = Lazy::new(|| {
     // CMD accepts both `)do command` and `) do command`; `\s*do\s*` covers
     // either, plus the obfuscator-friendly `)do(` block form.
