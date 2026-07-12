@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Compare current harrington URL extraction against the cmp baseline saved
-in /home/coz/cstorage/harrington_caperun/cmp/<sha>.json. Categorises each
+"""Compare current batdeob URL extraction against the cmp baseline saved
+in /home/coz/cstorage/batdeob_caperun/cmp/<sha>.json. Categorises each
 delta as one of:
 
   REAL_GAINED   — sample now extracts a host the cmp baseline didn't
@@ -15,10 +15,9 @@ delta as one of:
 import csv, json, os, subprocess, sys, re
 from urllib.parse import urlparse
 
-STATE = '/home/coz/cstorage/harrington_caperun/state.csv'
-CMP_DIR = '/home/coz/cstorage/harrington_caperun/cmp'
-HARRINGTON = './target/debug/harrington'
-LEGACY_URLS_KEY = ''.join(['bat', 'deob_urls'])
+STATE = '/home/coz/cstorage/batdeob_caperun/state.csv'
+CMP_DIR = '/home/coz/cstorage/batdeob_caperun/cmp'
+BATDEOB = './target/debug/batdeob'
 
 # Noise patterns we expect to drop (post-fix is correct to filter these)
 NOISE_RE = re.compile(
@@ -71,8 +70,8 @@ def main():
         if not os.path.exists(cf): continue
         try:
             d = json.load(open(cf))
-            old = set(d.get('harrington_urls') or d.get(LEGACY_URLS_KEY) or [])
-            res = subprocess.run([HARRINGTON, 'report', lp], capture_output=True, timeout=20)
+            old = set(d.get('batdeob_urls') or [])
+            res = subprocess.run([BATDEOB, 'report', lp], capture_output=True, timeout=20)
             rep = json.loads(res.stdout)
             # Include http_url too so unc-webdav rows whose `src` is the new
             # `\\host@port\share` form still get credit for the `http://...`

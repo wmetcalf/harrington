@@ -1,0 +1,38 @@
+[package]
+name = "batdeob-core"
+version = "0.1.0"
+description = "Static-analysis deobfuscation engine for Windows batch, cmd, PowerShell, VBS, and JScript samples."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../../README.md"
+keywords = ["deobfuscation", "malware", "batch", "powershell", "forensics"]
+categories = ["parser-implementations", "command-line-utilities"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+once_cell.workspace = true
+base64.workspace = true
+phf.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+hex.workspace = true
+aes.workspace = true
+cbc.workspace = true
+flate2.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+pretty_assertions.workspace = true
+tempfile.workspace = true
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

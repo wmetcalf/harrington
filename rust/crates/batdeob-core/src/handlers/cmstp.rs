@@ -1,0 +1,49 @@
+//! cmstp.exe handler - surfaces silent auto-elevated INF install use.
+
+use super::util::{split_words, strip_outer_quotes};
+use crate::env::Environment;
+use crate::traits::Trait;
+
+pub fn h_cmstp(raw: &str, env: &mut Environment) {
+    let tokens = split_words(raw);
+    if !has_au_flag(&tokens) {
+        return;
+    }
+    if !env
+        .traits
+        .iter()
+        .any(|t| matches!(t, Trait::UacBypass { technique } if technique == "cmstp-au"))
+    {
+        env.traits.push(Trait::UacBypass {
+            technique: "cmstp-au".to_string(),
+        });
+    }
+    push_lolbas(raw, env);
+}
+
+fn has_au_flag(tokens: &[String]) -> bool {
+    tokens
+        .iter()
+        .skip(1)
+        .map(|token| strip_outer_quotes(token))
+        .any(cmstp_token_has_au_flag)
+}
+
+fn cmstp_token_has_au_flag(token: &str) -> bool {
+    token
+        .split(['/', '-'])
+        .any(|part| part.eq_ignore_ascii_case("au"))
+}
+
+fn push_lolbas(raw: &str, env: &mut Environment) {
+    if !env
+        .traits
+        .iter()
+        .any(|t| matches!(t, Trait::Lolbas { name, cmd } if name == "cmstp" && cmd == raw))
+    {
+        env.traits.push(Trait::Lolbas {
+            name: "cmstp".to_string(),
+            cmd: raw.to_string(),
+        });
+    }
+}

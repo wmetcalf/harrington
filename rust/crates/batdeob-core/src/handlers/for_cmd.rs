@@ -1,0 +1,1202 @@
+//! `for` handler — parses /F, /L and plain forms, runs body per iteration.
+//!
+//! Because the lexer strips `%%A` loop variables during normalization, this handler
+//! must work on the **raw** (pre-normalization) line text.  The public entry point
+//! used by `drive()` is `run_for_from_raw`; `h_for` (called on the *normalized* line)
+//! is a no-op so that no double-execution occurs.
+
+use crate::env::{Environment, FsEntry};
+use crate::for_loop::run_body;
+use crate::handlers::util::{
+    normalize_filesystem_storage_path, normalize_wildcard_path, wildcard_match,
+};
+use crate::util::find_ascii_case_insensitive_from;
+use once_cell::sync::Lazy;
+use regex::Regex;
+
+const MAX_OUTER_PAREN_STRIP_DEPTH: usize = 64;
+
+// Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
+#[allow(clippy::expect_used)]
+static FOR_F_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)^\s*for\s*/F\s*(?:"(?P<opts>[^"]*)")?\s*%%?(?P<var>\S)\s+in\s*\(\s*(?P<src>.+?)\s*\)\s*do\s+(?P<body>.+)$"#
+    ).expect("for /F regex")
+});
+
+// Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
+#[allow(clippy::expect_used)]
+static FOR_L_RE: Lazy<Regex> = Lazy::new(|| {
+    // Accept both comma-separated "(11,-1,0)" and space-separated "(11 -1 0)" forms.
+    Regex::new(
+        r"(?i)^\s*for\s*/L\s+%%?(?P<var>\S)\s+in\s*\(\s*(?P<start>[-+]?\d+)[\s,]+(?P<step>[-+]?\d+)[\s,]+(?P<end>[-+]?\d+)\s*\)\s*do\s+(?P<body>.+)$"
+    ).expect("for /L regex")
+});
+
+// Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
+#[allow(clippy::expect_used)]
+static FOR_D_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)^\s*for\s*/D\s+%%?(?P<var>\S)\s+in\s*\(\s*(?P<set>[^)]+)\)\s*do\s+(?P<body>.+)$",
+    )
+    .expect("for /D regex")
+});
+
+// Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
+#[allow(clippy::expect_used)]
+static FOR_R_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)^\s*for\s*/R(?:\s+(?P<root>.+?))?\s+%%?(?P<var>\S)\s+in\s*\(\s*(?P<set>[^)]+)\)\s*do\s+(?P<body>.+)$",
+    )
+    .expect("for /R regex")
+});
+
+// Regex is a compile-time constant; .expect on a literal panic-at-startup is a developer error.
+#[allow(clippy::expect_used)]
+static FOR_PLAIN_RE: Lazy<Regex> = Lazy::new(|| {
+    // CMD accepts both `)do command` and `) do command`; `\s*do\s*` covers
+    // either, plus the obfuscator-friendly `)do(` block form.
+    Regex::new(r"(?i)^\s*for\s+%%?(?P<var>\S)\s+in\s*\(\s*(?P<set>[^)]+)\)\s*do\s+(?P<body>.+)$")
+        .expect("for plain regex")
+});
+
+// ── /F helpers ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+struct FOpts {
+    tokens: Vec<usize>,
+    tokens_star: bool,
+    delims: String,
+    skip: usize,
+    eol: Option<char>,
+    usebackq: bool,
+}
+
+fn parse_f_opts(opts: &str) -> FOpts {
+    let mut o = FOpts {
+        tokens: vec![1],
+        tokens_star: false,
+        delims: " \t".to_string(),
+        skip: 0,
+        eol: Some(';'),
+        usebackq: false,
+    };
+    for kv in opts.split_whitespace() {
+        if let Some(eq) = kv.find('=') {
+            let val = &kv[eq + 1..];
+            let key = &kv[..eq];
+            if key.eq_ignore_ascii_case("tokens") {
+                o.tokens.clear();
+                o.tokens_star = false;
+                for part in val.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() {
+                        continue;
+                    }
+                    let (part, star_suffix) = if let Some(prefix) = part.strip_suffix('*') {
+                        (prefix.trim(), true)
+                    } else {
+                        (part, false)
+                    };
+                    if part.is_empty() && star_suffix {
+                        o.tokens_star = true;
+                    } else if let Some((start, end)) = parse_token_range(part) {
+                        o.tokens.extend(start..=end);
+                    } else if let Ok(n) = part.parse::<usize>() {
+                        o.tokens.push(n);
+                    }
+                    if star_suffix {
+                        o.tokens_star = true;
+                    }
+                }
+                if o.tokens.is_empty() && !o.tokens_star {
+                    o.tokens.push(1);
+                }
+            } else if key.eq_ignore_ascii_case("delims") {
+                o.delims = val.to_string();
+            } else if key.eq_ignore_ascii_case("skip") {
+                o.skip = val.parse().unwrap_or(0);
+            } else if key.eq_ignore_ascii_case("eol") {
+                o.eol = val.chars().next();
+            }
+        } else if kv.eq_ignore_ascii_case("usebackq") {
+            o.usebackq = true;
+        }
+    }
+    o
+}
+
+/// Hard cap on the `for /F tokens=N-M` range. CMD itself only meaningfully
+/// indexes tokens 1..=31 (max distinct loop vars); accepting wider attacker-
+/// supplied ranges just allocates a huge Vec<usize> and OOMs.
+const MAX_TOKEN_RANGE_LEN: usize = 64;
+
+fn parse_token_range(part: &str) -> Option<(usize, usize)> {
+    let (start, end) = part.split_once('-')?;
+    let start = start.trim().parse::<usize>().ok()?;
+    let end = end.trim().parse::<usize>().ok()?;
+    if start > end {
+        return None;
+    }
+    // Clamp the range so a malicious `tokens=1-2147483647` cannot allocate
+    // billions of usizes.
+    let end = end.min(start.saturating_add(MAX_TOKEN_RANGE_LEN.saturating_sub(1)));
+    Some((start, end))
+}
+
+/// Parse the options string carefully: `delims=` may be followed by a space
+/// that is the actual delimiter, so we cannot use a simple `split_whitespace`
+/// approach for the whole string.  Instead we scan key=value pairs manually.
+fn parse_f_opts_full(opts: &str) -> FOpts {
+    // Handle the common `delims=<chars>` where chars could include spaces and
+    // be terminated only by the end of the options string or another known key.
+    // Strategy: find "delims=" and treat everything after it (up to the next
+    // recognised keyword boundary) as the delimiter set.
+    let mut base = parse_f_opts(opts);
+
+    // Re-parse delims more carefully.
+    if let Some(pos) = find_ascii_case_insensitive_from(opts, "delims=", 0) {
+        let after = &opts[pos + "delims=".len()..];
+        // The delimiter set ends at EOF or at the start of another keyword
+        // ("tokens=", "skip=", "usebackq") preceded by whitespace.
+        let keywords = ["tokens=", "skip=", "eol=", "usebackq"];
+        let end = keywords
+            .iter()
+            .filter_map(|kw| {
+                // Find keyword, but only if preceded by whitespace (or at start).
+                let mut search_from = 0;
+                loop {
+                    if let Some(abs) = find_ascii_case_insensitive_from(after, kw, search_from) {
+                        if abs == 0 || after.as_bytes()[abs - 1].is_ascii_whitespace() {
+                            return Some(abs);
+                        }
+                        search_from = abs + 1;
+                    } else {
+                        return None;
+                    }
+                }
+            })
+            .min()
+            .unwrap_or(after.len());
+        // When a keyword follows the delimiter set, strip only the single
+        // whitespace separator.  When delims is at end-of-opts, keep the
+        // value verbatim (a trailing space IS a delimiter, e.g. `delims= `).
+        let raw_delims = &after[..end];
+        base.delims = if end < after.len() {
+            raw_delims.trim_end().to_string()
+        } else {
+            raw_delims.to_string()
+        };
+    }
+
+    base
+}
+
+fn extract_tokens(line: &str, opts: &FOpts) -> Option<Vec<String>> {
+    // tokens=* means capture the entire remainder of the line as-is.
+    if opts.tokens_star && opts.tokens.is_empty() {
+        return Some(vec![line.to_string()]);
+    }
+    if opts.delims.is_empty() {
+        return Some(vec![line.to_string()]);
+    }
+    let spans = token_spans(line, &opts.delims);
+    let mut values: Vec<String> = opts
+        .tokens
+        .iter()
+        .filter_map(|idx| {
+            spans
+                .get(idx.saturating_sub(1))
+                .map(|(start, end)| line[*start..*end].to_string())
+        })
+        .collect();
+    if !values.is_empty() {
+        if opts.tokens_star {
+            if let Some(last) = opts.tokens.iter().copied().max() {
+                if let Some((_, end)) = spans.get(last.saturating_sub(1)) {
+                    let remainder = trim_leading_delims(&line[*end..], &opts.delims);
+                    if !remainder.is_empty() {
+                        values.push(remainder.to_string());
+                    }
+                }
+                return Some(values);
+            }
+        }
+        return Some(values);
+    }
+    None
+}
+
+fn for_f_line_is_active(line: &str, opts: &FOpts) -> bool {
+    let trimmed = line.trim_start_matches([' ', '\t']);
+    !trimmed.is_empty() && !opts.eol.is_some_and(|eol| trimmed.starts_with(eol))
+}
+
+fn token_spans(line: &str, delims: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut token_start: Option<usize> = None;
+    for (idx, ch) in line.char_indices() {
+        if is_for_f_delim(ch, delims) {
+            if let Some(start) = token_start.take() {
+                spans.push((start, idx));
+            }
+        } else if token_start.is_none() {
+            token_start = Some(idx);
+        }
+    }
+    if let Some(start) = token_start {
+        spans.push((start, line.len()));
+    }
+    spans
+}
+
+fn trim_leading_delims<'a>(s: &'a str, delims: &str) -> &'a str {
+    s.trim_start_matches(|ch| is_for_f_delim(ch, delims))
+}
+
+fn is_for_f_delim(ch: char, delims: &str) -> bool {
+    if delims == " \t" {
+        ch.is_whitespace()
+    } else {
+        delims.contains(ch)
+    }
+}
+
+fn resolve_f_source(src: &str, env: &mut crate::env::Environment, usebackq: bool) -> Vec<String> {
+    let s = src.trim();
+    if usebackq {
+        // With USEBACKQ, double-quoted sources are file paths, single-quoted
+        // sources are literal data, and backticks invoke a command.
+        if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+            let path = &s[1..s.len() - 1];
+            if path.is_empty() {
+                return Vec::new();
+            }
+            if path.contains(['%', '!']) {
+                return vec![path.to_string()];
+            }
+            let file_lines = crate::synth::run_pipeline(&format!(r#"type "{}""#, path), env);
+            if !file_lines.is_empty() {
+                return file_lines;
+            }
+            env.traits.push(crate::traits::Trait::ForUnresolvedSource {
+                pipeline: path.to_string(),
+            });
+            return Vec::new();
+        }
+        if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 {
+            let inner = &s[1..s.len() - 1];
+            return vec![inner.to_string()];
+        }
+        if s.starts_with('`') && s.ends_with('`') {
+            let pipeline = expand_percent_vars_for_source(&s[1..s.len() - 1], env);
+            return crate::synth::run_pipeline(&pipeline, env);
+        }
+    } else if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+        let inner = &s[1..s.len() - 1];
+        return vec![inner.to_string()];
+    }
+    // Single-quoted: `for /F ... in ('command')` — run as pipeline command.
+    if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 {
+        let pipeline = expand_percent_vars_for_source(&s[1..s.len() - 1], env);
+        return crate::synth::run_pipeline(&pipeline, env);
+    }
+    // Backticks are only command quotes under USEBACKQ. Without it they are
+    // just literal characters and should not trigger pipeline execution.
+    if usebackq && s.starts_with('`') && s.ends_with('`') {
+        let pipeline = expand_percent_vars_for_source(&s[1..s.len() - 1], env);
+        return crate::synth::run_pipeline(&pipeline, env);
+    }
+    let expanded = expand_percent_vars_for_source(s, env);
+    let file_lines = crate::synth::run_pipeline(&format!("type {}", expanded), env);
+    if !file_lines.is_empty() {
+        return file_lines;
+    }
+    env.traits
+        .push(crate::traits::Trait::ForUnresolvedSource { pipeline: expanded });
+    Vec::new()
+}
+
+fn expand_percent_vars_for_source(src: &str, env: &crate::env::Environment) -> String {
+    let mut out = String::with_capacity(src.len());
+    let bytes = src.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'%' {
+            out.push(bytes[i] as char);
+            i += 1;
+            continue;
+        }
+        if i + 1 < bytes.len() && bytes[i + 1] == b'%' {
+            out.push('%');
+            out.push('%');
+            i += 2;
+            continue;
+        }
+        let Some(rel_end) = src[i + 1..].find('%') else {
+            out.push('%');
+            i += 1;
+            continue;
+        };
+        let end = i + 1 + rel_end;
+        let name = &src[i + 1..end];
+        if name.is_empty() || name.starts_with('~') || name.contains(char::is_whitespace) {
+            out.push('%');
+            i += 1;
+            continue;
+        }
+        let base = name.split(':').next().unwrap_or(name);
+        if let Some(value) = env.get(base) {
+            out.push_str(&value);
+        } else {
+            out.push_str(&src[i..=end]);
+        }
+        i = end + 1;
+    }
+    out
+}
+
+// ── public entry point ───────────────────────────────────────────────────────
+
+/// Strip obfuscation noise so the FOR regex can match the keyword. Removes
+/// `^X` caret escapes (CMD treats `^X` as literal `X`) and `%X%` variable
+/// references whose name is non-ASCII *and* not defined in `env` (the AbObUs-
+/// style emoji/Arabic/Chinese noise vars that expand to empty). Preserves
+/// `%%X` loop-variable references intact so the iteration body's `%%a` refs
+/// still work post-strip. UTF-8 safe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForZone {
+    PreParens,
+    InList,
+    PostListPreDo,
+    Body,
+}
+
+fn strip_for_header_noise(raw: &str, env: &Environment) -> String {
+    let raw = raw.trim_start_matches(|c: char| {
+        c == '@' || c == '(' || c == ')' || c == ',' || c == ';' || c.is_whitespace()
+    });
+    let mut out = String::with_capacity(raw.len());
+    let chars: Vec<(usize, char)> = raw.char_indices().collect();
+    let mut i = 0usize;
+    // FE DOSfuscation "Commas & Semicolons" — `,` and `;` between
+    // FOR header tokens (`fo^R;,;%%a,;; i^N,,;( …` and `),;,;dO,,(…`)
+    // act as token separators. We collapse them to spaces in three
+    // header-shaped zones:
+    //   (1) start of line → first `(` (FOR keyword + `/F`/`/L` + var + IN)
+    //   (2) inside the IN list, ONLY when we know the IN list is shaped
+    //       like a number/value list (no `,` collapse if quotes appear,
+    //       since `for /F "delims=,"` etc. uses `,` as data)
+    //   (3) IN list closing `)` → `do`
+    // After `do` we hand off the body verbatim — substring syntax
+    // `!VAR:~N,M!` and inline PS statements need their commas/semicolons.
+    let mut zone = ForZone::PreParens;
+    let mut paren_depth: i32 = 0;
+    let mut in_dq = false;
+    while i < chars.len() {
+        let (_, c) = chars[i];
+        if c == '^' && i + 1 < chars.len() {
+            // Caret escape — CMD consumes the `^` and the next char keeps
+            // its semantic role (a `^%` still opens a var ref; `^&` is a
+            // literal `&` etc.). Just drop the `^` and reprocess from
+            // the next position so `%X%` after `^` still triggers var-
+            // expansion logic below.
+            i += 1;
+            continue;
+        }
+        if c == '"' {
+            in_dq = !in_dq;
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if !in_dq {
+            match c {
+                '(' => {
+                    paren_depth += 1;
+                    if zone == ForZone::PreParens {
+                        zone = ForZone::InList;
+                    }
+                }
+                ')' => {
+                    paren_depth -= 1;
+                    if paren_depth == 0 && zone == ForZone::InList {
+                        zone = ForZone::PostListPreDo;
+                    }
+                }
+                _ => {}
+            }
+            // Detect the `do` keyword at zone PostListPreDo to switch into
+            // body-passthrough mode. Step past any caret-escape sigils
+            // between `d` and `o` (FE DOSfuscation `d^O`) — the `^`
+            // gets dropped on output but `chars[i+1]` still sees it.
+            // `^X` consumes the `^` and uses `X` as the escaped char, so
+            // we skip JUST the `^` (one char) to land on the `X`.
+            if zone == ForZone::PostListPreDo && (c == 'd' || c == 'D') {
+                fn skip_carets(chars: &[(usize, char)], mut p: usize, limit: usize) -> usize {
+                    let stop = (p + limit).min(chars.len());
+                    while p < stop && chars[p].1 == '^' {
+                        p += 1;
+                    }
+                    p
+                }
+                let p = skip_carets(&chars, i + 1, 4);
+                let next_o = chars.get(p).map(|(_, c)| *c);
+                if next_o == Some('o') || next_o == Some('O') {
+                    let q = skip_carets(&chars, p + 1, 4);
+                    let after = chars.get(q).map(|(_, c)| *c);
+                    let is_keyword = match after {
+                        None => true,
+                        Some(c) => c.is_whitespace() || matches!(c, '(' | ',' | ';'),
+                    };
+                    if is_keyword {
+                        out.push(c);
+                        out.push(next_o.unwrap_or('o'));
+                        // FOR_PLAIN_RE / FOR_F_RE / FOR_L_RE require `do\s+`
+                        // before the body. The original char after `do`
+                        // (post-strip) might be a non-whitespace separator
+                        // like `(`/`,`/`;` (FE DOSfuscation `d^O,,(;(;sEt…`).
+                        // Inject a single space so the regex can match. The
+                        // body lex re-collapses surrounding whitespace.
+                        if !matches!(after, Some(c) if c.is_whitespace()) {
+                            out.push(' ');
+                        }
+                        i = p + 1;
+                        zone = ForZone::Body;
+                        continue;
+                    }
+                }
+            }
+        }
+        let collapse_here = !in_dq
+            && (c == ',' || c == ';')
+            && (zone == ForZone::PreParens
+                || zone == ForZone::PostListPreDo
+                || (zone == ForZone::InList && paren_depth == 1));
+        if collapse_here {
+            let mut j = i;
+            while j < chars.len() && matches!(chars[j].1, ',' | ';' | ' ' | '\t') {
+                j += 1;
+            }
+            if !out.ends_with(' ') {
+                out.push(' ');
+            }
+            i = j;
+            continue;
+        }
+        if c == '%' {
+            // `%%X` is a loop-var reference (or escaped `%`). Preserve the
+            // `%%` and the following identifier verbatim so substitution
+            // still works. This only fires when we're at a fresh `%` whose
+            // neighbour is also `%` — adjacent var refs `%a%%b%` do NOT hit
+            // this because the close `%` of `a` is consumed with the ref
+            // below (i jumps past it), so the next `%` we see opens `b`.
+            if i + 1 < chars.len() && chars[i + 1].1 == '%' {
+                out.push('%');
+                out.push('%');
+                i += 2;
+                continue;
+            }
+            // Find the closing `%` (same line). The span between is a var ref.
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].1 != '%' && chars[j].1 != '\n' {
+                j += 1;
+            }
+            if j < chars.len() && chars[j].1 == '%' && j > i + 1 {
+                let name = &raw[chars[i + 1].0..chars[j].0];
+                // Reject spans that aren't real `%VAR%` env refs: a leading
+                // `~` (parameter modifier like `%~f0`), or whitespace/quotes
+                // inside (which mean the closing `%` we found belongs to a
+                // *later* ref and this `%` is a stray literal — `%~f0"') do`
+                // must not be swallowed). Leave such `%` literal.
+                if name.starts_with('~')
+                    || name
+                        .chars()
+                        .any(|c| c.is_whitespace() || c == '"' || c == '\'')
+                {
+                    out.push('%');
+                    i += 1;
+                    continue;
+                }
+                // Strip embedded carets from the name (obfuscators split
+                // names across them, e.g. `%ﯤ◯ﺼ^تكت%`). The op part
+                // (`:~i,n` / `:a=b`) is kept for the lookup decision: a
+                // substring of a defined var stays; of an unset var drops.
+                let name_clean = strip_carets(name);
+                let base = name_clean.split(':').next().unwrap_or(&name_clean);
+                // Runtime-only vars are intentionally unset in the baseline
+                // but should stay visible, not be silently dropped.
+                let runtime_only = is_runtime_only_var(base);
+                let defined = env.get(base).is_some();
+                if !defined && !runtime_only {
+                    // Unset var → expands to empty in CMD. Drop the span.
+                    i = j + 1;
+                    continue;
+                }
+                // Defined (or runtime-only): keep the WHOLE `%name%` verbatim
+                // and jump past the closing `%`, so the close isn't re-read
+                // as the start of a `%%` with the next ref.
+                out.push_str(&raw[chars[i].0..=chars[j].0]);
+                i = j + 1;
+                continue;
+            }
+            // No closing `%` — literal.
+            out.push('%');
+            i += 1;
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// Called by `drive()` on the **raw** (pre-normalization) command string.
+/// Returns true if this was a FOR command that was handled.
+pub fn run_for_from_raw(raw: &str, env: &mut Environment) -> bool {
+    if !raw_might_start_with_for(raw) {
+        return false;
+    }
+
+    // Trim leading `@` and whitespace (echo-suppression prefix).
+    // Build a noise-stripped copy so the keyword regex can match even when
+    // the FOR header is shrouded in caret escapes + non-ASCII-named empty
+    // var references (AbObUsObfuscator and friends). The cleaned form is
+    // also what we use to extract the IN list and body so the iteration
+    // works on a clean template; `%%X` loop refs are preserved through the
+    // strip, so substitution still works.
+    let cleaned = strip_for_header_noise(raw, env);
+    let raw = cleaned.as_str();
+    let trimmed = raw.trim_start_matches(|c: char| {
+        c == '@' || c == '(' || c == ')' || c == ',' || c == ';' || c.is_whitespace()
+    });
+
+    // /F must be tried first (more specific than plain for).
+    if let Some(caps) = FOR_F_RE.captures(trimmed) {
+        let opts = caps
+            .name("opts")
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let var = caps
+            .name("var")
+            .and_then(|m| m.as_str().as_bytes().first().copied())
+            .map(char::from)
+            .unwrap_or('A');
+        let src = caps
+            .name("src")
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let body = caps
+            .name("body")
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+
+        let parsed = parse_f_opts_full(&opts);
+        let lines = resolve_f_source(&src, env, parsed.usebackq);
+        let values: Vec<Vec<String>> = lines
+            .into_iter()
+            .filter(|line| for_f_line_is_active(line, &parsed))
+            .skip(parsed.skip)
+            .filter_map(|line| extract_tokens(&line, &parsed))
+            .collect();
+
+        if values.is_empty() {
+            // Source was unresolvable. Still run the body once for IOC
+            // scanning, but skip iter_output emission — the FOR header
+            // line already contains the body text verbatim and the
+            // sentinel substitution (`%%i` → `%%i`) is a no-op, so
+            // appending it again would duplicate the line in the deob.
+            let sentinel = format!("%%{var}");
+            run_iter_body_inner(&body, var, vec![sentinel].into_iter(), env, false);
+        } else {
+            run_iter_body_multi(&body, var, values.into_iter(), env);
+        }
+        return true;
+    }
+
+    if let Some(caps) = FOR_R_RE.captures(trimmed) {
+        let var = caps
+            .name("var")
+            .and_then(|m| m.as_str().as_bytes().first().copied())
+            .map(char::from)
+            .unwrap_or('A');
+        let root = caps.name("root").map(|m| m.as_str());
+        let set = caps
+            .name("set")
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let body = caps
+            .name("body")
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let values = resolve_for_r_values(root, &set, env);
+        run_iter_body(&body, var, values.into_iter(), env);
+        return true;
+    }
+
+    if let Some(caps) = FOR_D_RE.captures(trimmed) {
+        let var = caps
+            .name("var")
+            .and_then(|m| m.as_str().as_bytes().first().copied())
+            .map(char::from)
+            .unwrap_or('A');
+        let set = caps
+            .name("set")
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let body = caps
+            .name("body")
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let values = resolve_for_d_values(&set, env);
+        run_iter_body(&body, var, values.into_iter(), env);
+        return true;
+    }
+
+    if let Some(caps) = FOR_L_RE.captures(trimmed) {
+        let var = caps
+            .name("var")
+            .and_then(|m| m.as_str().as_bytes().first().copied())
+            .map(char::from)
+            .unwrap_or('A');
+        let start: i64 = caps
+            .name("start")
+            .and_then(|m| m.as_str().parse().ok())
+            .unwrap_or(0);
+        let step: i64 = caps
+            .name("step")
+            .and_then(|m| m.as_str().parse().ok())
+            .unwrap_or(1);
+        let end: i64 = caps
+            .name("end")
+            .and_then(|m| m.as_str().parse().ok())
+            .unwrap_or(0);
+        let body = caps
+            .name("body")
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+
+        if step == 0 {
+            return true;
+        }
+
+        // Generate values lazily so run_body's iteration cap fires correctly.
+        let values = numeric_range(start, step, end);
+        run_iter_body(&body, var, values, env);
+        return true;
+    }
+
+    if let Some(caps) = FOR_PLAIN_RE.captures(trimmed) {
+        let var = caps
+            .name("var")
+            .and_then(|m| m.as_str().as_bytes().first().copied())
+            .map(char::from)
+            .unwrap_or('A');
+        let set = caps
+            .name("set")
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let body = caps
+            .name("body")
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
+        let values = split_plain_set_items(&set);
+        run_iter_body(&body, var, values.into_iter(), env);
+        return true;
+    }
+
+    false
+}
+
+/// No-op: `drive()` uses `run_for_from_raw` on the raw line before normalization.
+/// This is registered in the handler table so `interp::interpret_line` doesn't
+/// dispatch an unknown-command no-op for the normalized `for …` text.
+pub fn h_for(_raw: &str, _env: &mut Environment) {
+    // Intentionally empty — all work is done by run_for_from_raw in drive().
+}
+
+pub(crate) fn raw_might_start_with_for(raw: &str) -> bool {
+    let mut token = [0u8; 3];
+    let mut token_len = 0usize;
+    let mut chars = raw.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '^' {
+            continue;
+        }
+        if c == '%' {
+            if chars.peek() == Some(&'%') {
+                break;
+            }
+            for next in chars.by_ref() {
+                if next == '%' || next == '\n' || next == '\r' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if token_len == 0 && (c.is_whitespace() || matches!(c, '@' | '(' | ')' | ',' | ';')) {
+            continue;
+        }
+        if c.is_ascii_alphabetic() {
+            token[token_len] = c.to_ascii_lowercase() as u8;
+            token_len += 1;
+            if token_len == token.len() {
+                if token != *b"for" {
+                    return false;
+                }
+                while let Some(&next) = chars.peek() {
+                    if next == '^' {
+                        chars.next();
+                        continue;
+                    }
+                    return !(next.is_ascii_alphanumeric() || next == '_');
+                }
+                return true;
+            }
+            continue;
+        }
+        break;
+    }
+
+    false
+}
+
+/// Build a lazy iterator over the numeric range `start, start+step, ..., end`.
+/// The iterator stops when the value passes `end` (direction inferred from `step` sign).
+/// This is lazy so `run_body`'s iteration cap fires before values are generated.
+fn numeric_range(start: i64, step: i64, end: i64) -> impl Iterator<Item = String> {
+    let mut current = start;
+    let forward = step > 0;
+    std::iter::from_fn(move || {
+        if forward && current > end {
+            return None;
+        }
+        if !forward && current < end {
+            return None;
+        }
+        let v = current.to_string();
+        current = current.saturating_add(step);
+        Some(v)
+    })
+}
+
+fn run_iter_body(
+    body: &str,
+    var: char,
+    values: impl Iterator<Item = String>,
+    env: &mut Environment,
+) {
+    run_iter_body_inner(body, var, values, env, true);
+}
+
+fn run_iter_body_multi(
+    body: &str,
+    var: char,
+    values: impl Iterator<Item = Vec<String>>,
+    env: &mut Environment,
+) {
+    if body.trim().is_empty() || body.trim() == "(" {
+        return;
+    }
+    let body_inner = strip_outer_parens(body);
+    for row in values {
+        if crate::for_loop::for_body_budget_exhausted(body, env) {
+            break;
+        }
+        if env.limits.iterations >= env.limits.max_iterations {
+            if !env
+                .traits
+                .iter()
+                .any(|t| matches!(t, crate::traits::Trait::IterationCapped { .. }))
+            {
+                env.traits.push(crate::traits::Trait::IterationCapped {
+                    command: body.to_string(),
+                });
+            }
+            break;
+        }
+        env.limits.iterations += 1;
+        let substituted = substitute_loop_vars(body_inner, var, &row);
+        let toks = crate::lex::lex(&substituted);
+        let normalized = crate::normalize::normalize_to_string(&toks, env);
+        // If the iteration body is itself a FOR command (nested loop),
+        // recursively dispatch it through run_for_from_raw so the inner
+        // loop also unrolls. interpret_line doesn't handle FOR (h_for is
+        // a no-op), so without this nested FORs are silently dropped.
+        if !run_for_from_raw(&normalized, env) {
+            crate::interp::interpret_line(&normalized, env);
+        }
+        env.iter_output.push_str(&normalized);
+        env.iter_output.push_str("\r\n");
+        if crate::for_loop::for_body_budget_exhausted(body, env) {
+            break;
+        }
+    }
+}
+
+fn is_runtime_only_var(name: &str) -> bool {
+    matches!(name, n if n.eq_ignore_ascii_case("errorlevel")
+        || n.eq_ignore_ascii_case("cmdcmdline")
+        || n.eq_ignore_ascii_case("cmdextversion")
+        || n.eq_ignore_ascii_case("dirstack")
+        || n.eq_ignore_ascii_case("highestnumanodenumber")
+        || n.eq_ignore_ascii_case("random")
+        || n.eq_ignore_ascii_case("time")
+        || n.eq_ignore_ascii_case("date"))
+}
+
+fn split_plain_set_items(set: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_dq = false;
+    let mut in_sq = false;
+    for c in set.chars() {
+        if c == '"' && !in_sq {
+            in_dq = !in_dq;
+            continue;
+        }
+        if c == '\'' && !in_dq {
+            in_sq = !in_sq;
+            continue;
+        }
+        if !in_dq && !in_sq && (c.is_whitespace() || c == ',' || c == ';') {
+            if !cur.is_empty() {
+                out.push(normalize_plain_set_item(&cur));
+                cur.clear();
+            }
+            continue;
+        }
+        cur.push(c);
+    }
+    if !cur.is_empty() {
+        out.push(normalize_plain_set_item(&cur));
+    }
+    out
+}
+
+fn strip_carets(s: &str) -> String {
+    if !s.as_bytes().contains(&b'^') {
+        return s.to_string();
+    }
+
+    let mut out = String::with_capacity(s.len());
+    let mut emitted = 0usize;
+    for (i, &byte) in s.as_bytes().iter().enumerate() {
+        if byte == b'^' {
+            out.push_str(&s[emitted..i]);
+            emitted = i + 1;
+        }
+    }
+    out.push_str(&s[emitted..]);
+    out
+}
+
+fn normalize_plain_set_item(item: &str) -> String {
+    if let Some(rest) = item.strip_prefix('+') {
+        rest.to_string()
+    } else {
+        item.to_string()
+    }
+}
+
+fn resolve_for_d_values(set: &str, env: &Environment) -> Vec<String> {
+    let mut values = Vec::new();
+    for pattern in split_plain_set_items(set) {
+        if pattern.contains(['*', '?']) {
+            values.extend(tracked_directories_matching(&pattern, env));
+        } else if !pattern.is_empty() {
+            values.push(normalized_loop_path(&pattern));
+        }
+    }
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn tracked_directories_matching(pattern: &str, env: &Environment) -> Vec<String> {
+    let normalized_pattern = normalize_loop_pattern(pattern);
+    let mut matches = env
+        .modified_filesystem
+        .iter()
+        .filter_map(|(path, entry)| {
+            if !matches!(entry, FsEntry::Directory) {
+                return None;
+            }
+            let normalized_path = normalized_loop_path(path);
+            wildcard_match(&normalized_pattern, &normalized_path).then_some(normalized_path)
+        })
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.dedup();
+    matches
+}
+
+fn resolve_for_r_values(root: Option<&str>, set: &str, env: &Environment) -> Vec<String> {
+    let root = root.map(str::trim).filter(|root| !root.is_empty());
+    let patterns = split_plain_set_items(set);
+    let mut values = Vec::new();
+    for pattern in patterns {
+        if pattern.is_empty() {
+            continue;
+        }
+        values.extend(tracked_files_matching_recursive(root, &pattern, env));
+    }
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn tracked_files_matching_recursive(
+    root: Option<&str>,
+    pattern: &str,
+    env: &Environment,
+) -> Vec<String> {
+    let normalized_root = root.map(normalized_loop_path).unwrap_or_default();
+    let normalized_pattern = normalize_loop_pattern(pattern);
+    let pattern_has_path = pattern.contains(['\\', '/', ':']);
+    let mut matches = env
+        .modified_filesystem
+        .iter()
+        .filter_map(|(path, entry)| {
+            if !matches!(entry, FsEntry::Content { .. } | FsEntry::Decoded { .. }) {
+                return None;
+            }
+            let normalized_path = normalized_loop_path(path);
+            if !recursive_file_is_under_root(&normalized_path, &normalized_root) {
+                return None;
+            }
+            let candidate = if pattern_has_path {
+                normalized_path.as_str()
+            } else {
+                windows_basename(&normalized_path).unwrap_or(normalized_path.as_str())
+            };
+            wildcard_match(&normalized_pattern, candidate).then_some(normalized_path)
+        })
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.dedup();
+    matches
+}
+
+fn recursive_file_is_under_root(path: &str, normalized_root: &str) -> bool {
+    if normalized_root.is_empty() {
+        return true;
+    }
+    let Some(rest) = path.strip_prefix(normalized_root) else {
+        return false;
+    };
+    rest.starts_with('\\') && rest.len() > 1
+}
+
+fn normalize_loop_pattern(pattern: &str) -> String {
+    normalize_wildcard_path(&normalize_filesystem_storage_path(
+        pattern.trim_matches(['"', '\'']),
+    ))
+}
+
+fn normalized_loop_path(path: &str) -> String {
+    normalize_wildcard_path(&normalize_filesystem_storage_path(
+        path.trim_matches(['"', '\'']),
+    ))
+}
+
+fn windows_basename(path: &str) -> Option<&str> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
+}
+
+fn substitute_loop_vars(body: &str, first_var: char, values: &[String]) -> String {
+    let mut out = body.to_string();
+    for (offset, value) in values.iter().enumerate().rev() {
+        let Some(var) = char::from_u32((first_var as u32).saturating_add(offset as u32)) else {
+            continue;
+        };
+        out = crate::for_loop::substitute_loop_var(&out, var, value);
+    }
+    out
+}
+
+fn run_iter_body_inner(
+    body: &str,
+    var: char,
+    values: impl Iterator<Item = String>,
+    env: &mut Environment,
+    emit_to_iter_output: bool,
+) {
+    // Multi-line FOR (`for %%f in (...) do (\n...\n)`) where the body
+    // is on subsequent physical lines: line_reader does NOT fold them
+    // into one logical line, so the regex captures only the `(` from
+    // `do (`. With body == `(`, iter_output would emit a redundant `(`
+    // right after the FOR header's own trailing `(`, doubling the
+    // open-paren in the deob. The subsequent physical lines are
+    // already processed independently by drive(), so we can simply
+    // skip the iter emit for empty/paren-only bodies.
+    if body.trim().is_empty() || body.trim() == "(" {
+        return;
+    }
+    // The body of an inline `for ... do ( ... )` is a parenthesized
+    // block when the whole loop fits on one logical line. The wrapper
+    // FOR line is emitted with its trailing `(`, so emitting the
+    // body's `(...)` again would produce a double-`(` in the deob.
+    // Strip a matching outer pair so iter_output renders the inner
+    // statements on their own line.
+    let body_inner = strip_outer_parens(body);
+    let saved_delayed = env.delayed_expansion;
+    if body_inner.contains('!') {
+        env.delayed_expansion = true;
+    }
+    run_body(body_inner, var, values, env, |env, iter_cmd| {
+        // Lex + normalize + interpret each iteration's substituted command.
+        let toks = crate::lex::lex(iter_cmd);
+        let normalized = crate::normalize::normalize_to_string(&toks, env);
+        // Recurse into nested FOR so loops like `for /l %%i in (1 1 1) do
+        // for %%a in (...) do ...` unroll to the leaf body. interpret_line
+        // alone won't do this — h_for is a deliberate no-op.
+        if !run_for_from_raw(&normalized, env) {
+            crate::interp::interpret_line(&normalized, env);
+        }
+        if emit_to_iter_output {
+            // Append normalized text to iter_output so drive() can include it in output.
+            env.iter_output.push_str(&normalized);
+            env.iter_output.push_str("\r\n");
+        }
+    });
+    env.delayed_expansion = saved_delayed;
+}
+
+fn strip_outer_parens(s: &str) -> &str {
+    // Iteratively peel matching outer pairs so the FE DOSfuscation
+    // wrapped FORcoding/Reversal body `( ( sEt fINal=… ))` (two layers
+    // of parens at the same depth) collapses to the bare SET that
+    // interpret_line can dispatch. Also skip leading `,;` / `;,` runs
+    // (FE comma-and-semicolon obfuscation can leave them before the
+    // first `(` after our header-zone strip switches to body
+    // passthrough mode).
+    let mut cur = s;
+    let mut stripped = 0usize;
+    loop {
+        if stripped >= MAX_OUTER_PAREN_STRIP_DEPTH {
+            return cur;
+        }
+        let t = cur
+            .trim_start_matches(|c: char| c.is_whitespace() || c == ',' || c == ';')
+            .trim_end_matches(|c: char| c.is_whitespace() || c == ',' || c == ';');
+        if !t.starts_with('(') || !t.ends_with(')') || t.len() < 2 {
+            return if t.len() == cur.len() { cur } else { t };
+        }
+        // Confirm the leading `(` matches the trailing `)` (nesting-aware,
+        // double-quote aware). If not balanced as a single outer group,
+        // leave the body untouched.
+        let mut depth: i32 = 0;
+        let mut in_dq = false;
+        let bytes = t.as_bytes();
+        let mut paired = true;
+        for (i, &b) in bytes.iter().enumerate() {
+            match b as char {
+                '"' => in_dq = !in_dq,
+                '(' if !in_dq => depth += 1,
+                ')' if !in_dq => {
+                    depth -= 1;
+                    if depth == 0 && i + 1 != bytes.len() {
+                        paired = false;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !paired || depth != 0 {
+            return cur;
+        }
+        cur = &t[1..t.len() - 1];
+        stripped += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        raw_might_start_with_for, run_for_from_raw, strip_carets, strip_for_header_noise,
+        strip_outer_parens, FOR_PLAIN_RE,
+    };
+    use crate::env::{Config, Environment};
+    use crate::traits::Trait;
+
+    #[test]
+    fn strip_carets_preserves_unicode_and_removes_ascii_carets() {
+        assert_eq!(strip_carets("te^st"), "test");
+        assert_eq!(strip_carets("hé^llo"), "héllo");
+        assert_eq!(strip_carets("plain"), "plain");
+    }
+
+    #[test]
+    fn for_body_stops_when_iter_output_cap_is_reached() {
+        let mut env = Environment::new(&Config {
+            max_output_bytes: 64,
+            ..Config::default()
+        });
+
+        assert!(run_for_from_raw(
+            "for /L %%A in (1,1,1000) do echo %%A-abcdefghijklmnopqrstuvwxyz",
+            &mut env
+        ));
+
+        assert!(
+            env.limits.iterations < 1000,
+            "FOR body ignored output cap and ran all iterations"
+        );
+        assert!(
+            env.traits
+                .iter()
+                .any(|t| matches!(t, Trait::OutputCapped { .. })),
+            "expected OutputCapped trait: {:?}",
+            env.traits
+        );
+    }
+
+    #[test]
+    fn wrapped_forcoding_with_seeded_source_assembles_final_value() {
+        let mut env = Environment::default();
+        env.seed("unique", "OnBeFtUsS C/AaToE ");
+        let raw = ") ,; fo^R;,;%%^a,;; i^N;,,;( ,+1; 3 5 7 +5 1^3 +5,,9 11 +1^3 +1;;+15 ^+13^37;,),;,;d^O,,(;(;s^Et fI^Nal=!finAl!!uni^Que:~ %%^a,1!))";
+        let cleaned = strip_for_header_noise(raw, &env);
+        let cleaned_trimmed = cleaned.trim_start_matches(|c: char| {
+            c == '@' || c == '(' || c == ')' || c == ',' || c == ';' || c.is_whitespace()
+        });
+
+        assert!(
+            FOR_PLAIN_RE.is_match(cleaned_trimmed),
+            "cleaned FORcoding header did not match plain FOR regex:\n{cleaned_trimmed}"
+        );
+        assert!(run_for_from_raw(raw, &mut env));
+
+        assert_eq!(env.get("final").as_deref(), Some("netstat /ano"));
+    }
+
+    #[test]
+    fn deeply_wrapped_for_body_stripping_is_bounded() {
+        let mut body = String::from("echo ok");
+        for _ in 0..200 {
+            body = format!("({body})");
+        }
+
+        let stripped = strip_outer_parens(&body);
+
+        assert!(
+            stripped.starts_with('('),
+            "deep wrapper stripping should stop before peeling every layer: {stripped}"
+        );
+    }
+
+    #[test]
+    fn for_prefix_rejects_longer_command_names() {
+        assert!(!raw_might_start_with_for("forest /q"));
+        assert!(!raw_might_start_with_for("format /q"));
+        assert!(!raw_might_start_with_for("for1 /q"));
+        assert!(!raw_might_start_with_for("for_ /q"));
+        assert!(raw_might_start_with_for("for /f %%A in (x) do echo hi"));
+        assert!(raw_might_start_with_for(") ,; foR %%A in (x) do echo hi"));
+    }
+}

@@ -1,5 +1,5 @@
 #![no_main]
-use harrington_core::marker_noise;
+use batdeob_core::marker_noise;
 use libfuzzer_sys::fuzz_target;
 
 // Fuzz the strip-marker-noise loop directly. This was the algorithm that

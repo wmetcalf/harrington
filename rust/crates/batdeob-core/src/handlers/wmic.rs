@@ -1,0 +1,181 @@
+//! wmic handler — extracts the inner command from `wmic process call create ...`.
+
+use crate::env::Environment;
+use crate::handlers::util::{split_words, strip_outer_quotes};
+use crate::traits::Trait;
+use once_cell::sync::Lazy;
+use regex::Regex;
+
+#[allow(clippy::expect_used)]
+static WMIC_PROCESS_CREATE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?i)^\s*wmic(?:\.exe)?(?:\s+\S+)*\s+(?:process|path\s+win32_process)\s+call\s+create\s+(?:"(?P<dq>[^"]+)"|'(?P<sq>[^']+)'|(?P<bare>\S.*))\s*$"#,
+    )
+        .expect("wmic regex")
+});
+
+pub fn h_wmic(raw: &str, env: &mut Environment) {
+    let inner = wmic_process_create_inner(raw).unwrap_or_default();
+    if inner.is_empty() {
+        return;
+    }
+    if let Some(target_host) = wmic_node_target(raw) {
+        env.traits.push(Trait::LateralMovement {
+            tool: "wmic".to_string(),
+            target_host,
+        });
+    }
+    let command = unescape_outer_caret_bangs(&inner);
+    env.traits.push(Trait::WmicProcessCreate {
+        inner_cmd: command.clone(),
+    });
+    let delayed = crate::handlers::cmd::has_v_on_raw(&command);
+    env.exec_cmd.push(command);
+    env.exec_cmd_delayed.push(delayed);
+}
+
+pub(crate) fn wmic_process_create_inner(raw: &str) -> Option<String> {
+    let caps = WMIC_PROCESS_CREATE_RE.captures(raw)?;
+    caps.name("dq")
+        .or_else(|| caps.name("sq"))
+        .or_else(|| caps.name("bare"))
+        .and_then(|m| wmic_create_commandline_argument(m.as_str()))
+}
+
+fn wmic_create_commandline_argument(tail: &str) -> Option<String> {
+    const MAX_COMMANDLINE_UNWRAPS: usize = 8;
+    let mut tail = tail.trim();
+    for _ in 0..MAX_COMMANDLINE_UNWRAPS {
+        let Some(value_start) = wmic_commandline_value_start(tail) else {
+            return wmic_create_commandline_tail(tail);
+        };
+        tail = tail[value_start..].trim();
+    }
+    None
+}
+
+fn wmic_create_commandline_tail(tail: &str) -> Option<String> {
+    let mut in_dq = false;
+    let mut in_sq = false;
+    let mut end = tail.len();
+    for (idx, ch) in tail.char_indices() {
+        match ch {
+            '"' if !in_sq => in_dq = !in_dq,
+            '\'' if !in_dq => in_sq = !in_sq,
+            ',' if !in_dq && !in_sq => {
+                end = idx;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let inner = tail[..end].trim().trim_matches(['"', '\'']).trim();
+    (!inner.is_empty()).then(|| inner.to_string())
+}
+
+fn wmic_commandline_value_start(tail: &str) -> Option<usize> {
+    let bytes = tail.as_bytes();
+    let mut i = 0usize;
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    let name = tail.get(i..i + "commandline".len())?;
+    if !name.eq_ignore_ascii_case("commandline") {
+        return None;
+    }
+    i += "commandline".len();
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    if bytes.get(i) != Some(&b'=') {
+        return None;
+    }
+    i += 1;
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    (i < tail.len()).then_some(i)
+}
+
+fn wmic_node_target(raw: &str) -> Option<String> {
+    let tokens = split_words(raw);
+    let mut i = 1usize;
+    while i < tokens.len() {
+        let token = strip_outer_quotes(&tokens[i]);
+        let value = if token.eq_ignore_ascii_case("/node") || token.eq_ignore_ascii_case("-node") {
+            tokens.get(i + 1).map(|next| strip_outer_quotes(next))
+        } else {
+            attached_node_value(token)
+        };
+        if let Some(host) = value
+            .map(normalize_node_target)
+            .filter(|host| !host.is_empty())
+        {
+            return Some(host);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn attached_node_value(token: &str) -> Option<&str> {
+    let lower = token.to_ascii_lowercase();
+    for prefix in ["/node:", "/node=", "-node:", "-node="] {
+        if lower.starts_with(prefix) {
+            return token.get(prefix.len()..);
+        }
+    }
+    None
+}
+
+fn normalize_node_target(value: &str) -> String {
+    strip_outer_quotes(value)
+        .trim()
+        .trim_start_matches('\\')
+        .to_string()
+}
+
+fn unescape_outer_caret_bangs(command: &str) -> String {
+    command.replace("^!", "!")
+}
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod tests {
+    use super::{wmic_create_commandline_argument, wmic_node_target};
+
+    #[test]
+    fn create_argument_extracts_named_commandline() {
+        assert_eq!(
+            wmic_create_commandline_argument(r#"CommandLine="cmd /c echo named""#).as_deref(),
+            Some("cmd /c echo named")
+        );
+    }
+
+    #[test]
+    fn create_argument_extracts_named_commandline_with_spaces() {
+        assert_eq!(
+            wmic_create_commandline_argument(r#"CommandLine = "cmd /c echo named", "C:\Temp""#)
+                .as_deref(),
+            Some("cmd /c echo named")
+        );
+    }
+
+    #[test]
+    fn create_argument_named_commandline_unwrap_is_bounded() {
+        let nested = format!("{}\"cmd /c echo hi\"", "CommandLine=".repeat(32));
+        assert_eq!(wmic_create_commandline_argument(&nested), None);
+    }
+
+    #[test]
+    fn node_target_accepts_attached_and_spaced_values() {
+        assert_eq!(
+            wmic_node_target(r#"wmic /node:"target.example" process call create "cmd""#).as_deref(),
+            Some("target.example")
+        );
+        assert_eq!(
+            wmic_node_target(r#"wmic -node \\target2 process call create "cmd""#).as_deref(),
+            Some("target2")
+        );
+    }
+}
