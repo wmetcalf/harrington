@@ -18905,7 +18905,9 @@ fn summarize_long_powershell_marker_base64_lines(text: &str, env: &mut Environme
     let mut changed = false;
     for line in text.split_inclusive('\n') {
         let (body, ending) = split_line_ending(line);
-        if is_long_powershell_marker_base64_line(body) {
+        // Ordinary launchers are evidence an analyst needs to inspect. Only
+        // compact exceptionally large encoded wrappers, not normal command lines.
+        if body.len() > 64 * 1024 && is_long_powershell_marker_base64_line(body) {
             changed = true;
             env.traits.push(crate::traits::Trait::LineTruncated {
                 original_len: body.len() as u64,
@@ -40355,9 +40357,22 @@ powershell.exe -WindowStyle Hidden -Command "Write-Host keep"
     }
 
     #[test]
+    fn inspectable_powershell_launcher_is_not_summarized() {
+        let b64 = "A".repeat(8192);
+        let line = format!("powershell.exe -nop -c \"iex([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(('{b64}').Replace('marker',''))))\"");
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_powershell_marker_base64_lines(&line, &mut env);
+        assert_eq!(cleaned, line);
+        assert!(!env
+            .traits
+            .iter()
+            .any(|t| matches!(t, Trait::LineTruncated { .. })));
+    }
+
+    #[test]
     fn long_powershell_marker_base64_wrapper_lines_are_summarized() {
         let marker = "wtghirpdtuue";
-        let b64 = "A".repeat(4096);
+        let b64 = "A".repeat(96 * 1024);
         let line = format!(
             "powershell.exe -nop -w h -c \"iex([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(('{b64}').Replace('{marker}',''))))\""
         );
