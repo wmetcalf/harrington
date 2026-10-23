@@ -10322,14 +10322,19 @@ fn analyze_inner(
     let raw_scan_text = summarized_raw_windows_profile_checks
         .as_deref()
         .unwrap_or(raw_scan_text);
-    // Collapse giant unresolved percent-noise before broad raw-source scans.
+    // Collapse only giant unresolved percent-noise before broad raw-source scans.
+    // Smaller commands must wait until their SET definitions have been consumed.
     // The original bytes remain available for later artifact recovery, while
     // these scans only need the surviving commands and compact summaries.
     let summarized_early_raw_percent_noise = if raw_scan_text.len() >= 1024
         && raw_scan_text.contains('%')
         && has_oversize_percent_noise_candidate_line(raw_scan_text)
     {
-        let summarized = summarize_long_unresolved_percent_noise_lines(raw_scan_text, &mut env);
+        let summarized = summarize_percent_noise_lines_above(
+            raw_scan_text,
+            &mut env,
+            MAX_PERCENT_NOISE_ACTION_MATERIALIZATION_SOURCE_BYTES,
+        );
         (summarized != raw_scan_text).then_some(summarized)
     } else {
         None
@@ -17838,6 +17843,14 @@ fn has_oversize_percent_noise_candidate_line(text: &str) -> bool {
 }
 
 fn summarize_long_unresolved_percent_noise_lines(text: &str, env: &mut Environment) -> String {
+    summarize_percent_noise_lines_above(text, env, 0)
+}
+
+fn summarize_percent_noise_lines_above(
+    text: &str,
+    env: &mut Environment,
+    minimum_bytes: usize,
+) -> String {
     let mut out = String::with_capacity(text.len().min(512 * 1024));
     let mut changed = false;
     let mut materialized_seen = std::collections::HashSet::new();
@@ -17850,7 +17863,10 @@ fn summarize_long_unresolved_percent_noise_lines(text: &str, env: &mut Environme
     let mut pending_markers: Vec<&'static str> = Vec::new();
     for line in text.split_inclusive('\n') {
         let (body, ending) = split_line_ending(line);
-        if let Some(summary) = classify_long_unresolved_percent_noise_line(body) {
+        if let Some(summary) = (body.len() > minimum_bytes)
+            .then(|| classify_long_unresolved_percent_noise_line(body))
+            .flatten()
+        {
             changed = true;
             push_percent_noise_anti_analysis_markers(body, &summary.markers, env);
             let should_try_materialize = body.len()
@@ -18404,11 +18420,16 @@ fn preconsume_percent_setter_alias_assignments_before_percent_noise_summary(
 
 fn materialize_direct_percent_setter_alias_assignment(
     line: &str,
-    env: &Environment,
+    env: &mut Environment,
 ) -> Option<String> {
     let trimmed = line.trim_start_matches(['@', ' ', '\t']);
-    let after_open = trimmed.strip_prefix('%')?;
-    let close_rel = after_open.find('%')?;
+    let delimiter = match trimmed.as_bytes().first()? {
+        b'%' => '%',
+        b'!' if env.delayed_expansion => '!',
+        _ => return None,
+    };
+    let after_open = &trimmed[1..];
+    let close_rel = after_open.find(delimiter)?;
     let alias = &after_open[..close_rel];
     if !simple_percent_name_allowed(alias) {
         return None;
@@ -18421,7 +18442,17 @@ fn materialize_direct_percent_setter_alias_assignment(
     if !remainder.trim_start().starts_with('"') {
         return None;
     }
-    Some(format!("{setter}{remainder}"))
+    let materialized = format!("{setter}{remainder}");
+    if delimiter == '!' {
+        // Percent expansion precedes delayed expansion in CMD. The assignment
+        // name itself can contain empty percent references between its letters.
+        Some(normalize::normalize_to_string(
+            &lex::lex(&materialized),
+            env,
+        ))
+    } else {
+        Some(materialized)
+    }
 }
 
 fn preconsume_percent_wrapped_single_char_sets_before_percent_noise_summary(
@@ -39075,6 +39106,42 @@ echo keep
             )),
             "materialized echoed PowerShell loader URL was not scanned: {:?}\ndeob:\n{}",
             report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn large_inert_carrier_preserves_delayed_setter_alias_command() {
+        let mut script =
+            String::from("@echo off\r\nsetlocal enabledelayedexpansion\r\nset \"setter=set\"\r\n");
+        script.push_str(":%");
+        script.push_str(&"InertCarrier%".repeat(20_000));
+        script.push_str("\r\n");
+        for idx in 1..=64 {
+            let value = match idx {
+                1 => "powershell.exe -NoProfile -Command \"Write-Output 'retained-child-proof'\"",
+                _ => " ",
+            };
+            let name = format!("Fragment{idx:03}Token");
+            let mut masked = String::new();
+            for ch in name.chars() {
+                masked.push_str("%Absent%");
+                masked.push(ch);
+            }
+            script.push_str(&format!("!setter! \"{masked}={value}\"\r\n"));
+        }
+        for idx in 1..=64 {
+            script.push_str(&format!("%Fragment{idx:03}Token%"));
+        }
+        script.push_str("\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .extracted_ps1
+                .iter()
+                .any(|s| String::from_utf8_lossy(s).contains("retained-child-proof")),
+            "live command after carrier was discarded: {}",
             report.deobfuscated
         );
     }
