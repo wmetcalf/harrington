@@ -974,6 +974,126 @@ enum PsCompressionStream {
     Deflate,
 }
 
+#[allow(clippy::expect_used)]
+static VARIABLE_COMPRESSION_CHAIN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?ix)
+      \$([a-z_]\w*)\s*=\s*New-Object\s+(?:System\.)?IO\.MemoryStream\s*\(\s*,?\s*
+        \[(?:System\.)?Convert\]::FromBase64String\s*\(\s*\$([a-z_]\w*)\s*\)\s*\)\s*;
+      \$([a-z_]\w*)\s*=\s*New-Object\s+(?:System\.)?IO\.Compression\.(GZip|Deflate)Stream\s*\(
+        \s*\$([a-z_]\w*)\s*,\s*\[(?:System\.)?IO\.Compression\.CompressionMode\]::Decompress\s*\)\s*;
+      \$([a-z_]\w*)\s*=\s*New-Object\s+(?:System\.)?IO\.StreamReader\s*\(\s*\$([a-z_]\w*)\s*\)\s*;
+      (?:iex|Invoke-Expression)\s*\(\s*\$([a-z_]\w*)\.ReadToEnd\s*\(\s*\)\s*\)
+    "#).expect("variable compression chain")
+});
+
+#[allow(clippy::expect_used)]
+static STREAM_CLOSE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)^\s*;\s*\$([a-z_]\w*)\.Close\s*\(\s*\)").expect("stream cleanup")
+});
+
+fn expand_variable_compression_chains(text: &str) -> String {
+    if !contains_ascii_case_insensitive(text, "memorystream") {
+        return text.to_string();
+    }
+    let mut replacements = Vec::new();
+    for caps in VARIABLE_COMPRESSION_CHAIN_RE.captures_iter(text) {
+        let Some(full) = caps.get(0) else { continue };
+        if ps_env_ref_quote_context(text, full.start()) != PsEnvRefQuoteContext::Expression {
+            continue;
+        }
+        let names: Vec<&str> = (1..=8)
+            .filter_map(|n| caps.get(n).map(|m| m.as_str()))
+            .collect();
+        if names.len() != 8
+            || !names[0].eq_ignore_ascii_case(names[4])
+            || !names[2].eq_ignore_ascii_case(names[6])
+            || !names[5].eq_ignore_ascii_case(names[7])
+        {
+            continue;
+        }
+        // Resolve only definitions preceding this chain; later assignments must
+        // not retroactively change which bytes this decoder consumes.
+        let bindings = ps_string_bindings(&text[..full.start()]);
+        let Some(encoded) = bindings.get(&names[1].to_ascii_lowercase()) else {
+            continue;
+        };
+        let Some(bytes) = decode_ps_base64_string(encoded) else {
+            continue;
+        };
+        let kind = if names[3].eq_ignore_ascii_case("gzip") {
+            PsCompressionStream::Gzip
+        } else {
+            PsCompressionStream::Deflate
+        };
+        let Some(bytes) = decompress_ps_stream(&bytes, kind, 2 * 1024 * 1024) else {
+            continue;
+        };
+        let child = decode_payload(&bytes);
+        let mut end = full.end();
+        for _ in 0..3 {
+            let Some(close) = STREAM_CLOSE_RE.captures(&text[end..]) else {
+                break;
+            };
+            let Some(name) = close.get(1) else { break };
+            if ![names[0], names[2], names[5]]
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case(name.as_str()))
+            {
+                break;
+            }
+            let Some(span) = close.get(0) else { break };
+            end += span.end();
+        }
+        // The span is a complete statement chain ending in IEX, not a fragment
+        // inside its MemoryStream initializer. Its decoded source is code here.
+        replacements.push((full.start(), end, format!("{}\n", child)));
+    }
+    let mut result = text.to_string();
+    for (start, end, child) in replacements.into_iter().rev() {
+        result.replace_range(start..end, &child);
+    }
+    result
+}
+
+#[allow(clippy::expect_used)]
+static LITERAL_IEX_STATEMENT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\b(?:iex|Invoke-Expression)\s*\(\s*").expect("literal IEX statement")
+});
+
+fn inline_literal_iex_statements(text: &str) -> String {
+    if !contains_ascii_case_insensitive(text, "iex")
+        && !contains_ascii_case_insensitive(text, "invoke-expression")
+    {
+        return text.to_string();
+    }
+    let mut replacements = Vec::new();
+    for call in LITERAL_IEX_STATEMENT_RE.find_iter(text) {
+        if ps_env_ref_quote_context(text, call.start()) != PsEnvRefQuoteContext::Expression {
+            continue;
+        }
+        let before = text[..call.start()].trim_end();
+        if !before.is_empty()
+            && !before.ends_with([';', '{', '}'])
+            && !text[..call.start()].ends_with(['\r', '\n'])
+        {
+            continue;
+        }
+        let Some((end, source)) = parse_ps_quoted_literal(text, call.end()) else {
+            continue;
+        };
+        let close = skip_ascii_ws(text.as_bytes(), end);
+        if text.as_bytes().get(close) != Some(&b')') {
+            continue;
+        }
+        replacements.push((call.start(), close + 1, format!("{source}\n")));
+    }
+    let mut result = text.to_string();
+    for (start, end, source) in replacements.into_iter().rev() {
+        result.replace_range(start..end, &source);
+    }
+    result
+}
+
 fn expand_gzip_base64_literals(text: &str) -> String {
     let has_gzip = contains_ascii_case_insensitive(text, "gzipstream");
     let has_deflate = contains_ascii_case_insensitive(text, "deflatestream");
@@ -987,15 +1107,7 @@ fn expand_gzip_base64_literals(text: &str) -> String {
             let full = caps.get(0)?;
             let b64 = caps.get(1)?.as_str();
             let decoded = decode_ps_base64_string(b64)?;
-            let (start, end, stream) = compression_wrapper_bounds(text, full.start(), full.end())
-                .unwrap_or_else(|| {
-                    let stream = if has_deflate {
-                        PsCompressionStream::Deflate
-                    } else {
-                        PsCompressionStream::Gzip
-                    };
-                    (full.start(), full.end(), stream)
-                });
+            let (start, end, stream) = compression_wrapper_bounds(text, full.start(), full.end())?;
             let inflated = decompress_ps_stream(&decoded, stream, 2 * 1024 * 1024)?;
             let s = decode_payload(&inflated).into_owned().replace('\'', "''");
             Some((start, end, format!("'{s}'")))
@@ -1150,6 +1262,54 @@ mod gzip_base64_prefilter_tests {
     };
 
     #[test]
+    fn literal_iex_child_is_normalized_as_code_with_its_own_quote_scope() {
+        let source = "iex('$message=''first'';Write-Output $message')";
+        let normalized = normalize_ps1_text(source);
+        assert!(normalized.contains("$message='first'"), "{normalized}");
+        assert!(
+            !normalized.contains("Expression('"),
+            "child quotes leaked into a parent literal: {normalized}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn normalizes_two_gzip_stages_without_splicing_statements_or_quotes() {
+        fn encode(stage: &str) -> String {
+            let mut writer =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            writer.write_all(stage.as_bytes()).expect("writes fixture");
+            base64::engine::general_purpose::STANDARD.encode(writer.finish().expect("gzip fixture"))
+        }
+        let first = "$message='first';Write-Output $message";
+        let second = "Write-Output \"second\"";
+        let a = encode(first);
+        let b = encode(second);
+        let mid = b.len() / 2;
+        let source = format!(
+            "$blob='{a}';$ms=New-Object IO.MemoryStream(,[Convert]::FromBase64String($blob));$gz=New-Object IO.Compression.GZipStream($ms,[IO.Compression.CompressionMode]::Decompress);$sr=New-Object IO.StreamReader($gz);iex($sr.ReadToEnd());$sr.Close();$gz.Close();$ms.Close();\n\
+             $part1='{}';$part2='{}';$blob2=$part1+$part2;$ms2=New-Object IO.MemoryStream(,[Convert]::FromBase64String($blob2));$gz2=New-Object IO.Compression.GZipStream($ms2,[IO.Compression.CompressionMode]::Decompress);$sr2=New-Object IO.StreamReader($gz2);iex($sr2.ReadToEnd());$sr2.Close();$gz2.Close();$ms2.Close()",
+            &b[..mid], &b[mid..]);
+        let normalized = normalize_ps1_text(&source);
+        assert!(
+            normalized.contains("$message='first'") && normalized.contains("Write-Output 'first'"),
+            "first child was not decoded correctly: {normalized}"
+        );
+        assert!(
+            normalized.contains(second),
+            "second child was not kept intact: {normalized}"
+        );
+        assert!(
+            !normalized.contains("$ms="),
+            "a stream initializer was replaced with script text: {normalized}"
+        );
+        assert!(
+            !normalized.contains("$sr2.Close"),
+            "cleanup from a replaced decoder chain remains: {normalized}"
+        );
+    }
+
+    #[test]
     fn ignores_text_without_gzip_base64_shape() {
         let text = "Write-Host hello world";
         assert_eq!(expand_gzip_base64_literals(text), text);
@@ -1157,7 +1317,7 @@ mod gzip_base64_prefilter_tests {
 
     #[test]
     fn finds_mixed_case_wrapper_bounds() {
-        let text = "New-Object System.IO.StreamReader; [Convert]::FromBase64String('QUJDRA=='); GZipStream; MemoryStream; .ReadToEnd()";
+        let text = "(New-Object System.IO.StreamReader([System.IO.Compression.GZipStream]::new([System.IO.MemoryStream]::new([Convert]::FromBase64String('QUJDRA==')),[System.IO.Compression.CompressionMode]::Decompress))).ReadToEnd()";
         let b64_start = text.find("QUJDRA==");
         assert!(b64_start.is_some(), "b64 start");
         let b64_start = b64_start.unwrap_or_default();
@@ -1299,9 +1459,62 @@ fn compression_wrapper_bounds(
         "[system.io.memorystream]::new",
         "[io.memorystream]::new",
     ] {
-        let Some(start) = lower[..b64_start].rfind(marker) else {
+        let Some(mut start) = lower[..b64_start].rfind(marker) else {
             continue;
         };
+        if ps_env_ref_quote_context(text, start) != PsEnvRefQuoteContext::Expression {
+            continue;
+        }
+        let mut quote = None;
+        let mut depth = 0i32;
+        let mut minimum = 0i32;
+        let mut chars = text[start..end].chars().peekable();
+        let mut statements = false;
+        while let Some(ch) = chars.next() {
+            match quote {
+                Some(current) if ch == current => {
+                    if current == '\'' && chars.peek() == Some(&'\'') {
+                        chars.next();
+                    } else {
+                        quote = None;
+                    }
+                }
+                Some('"') if ch == '`' => {
+                    chars.next();
+                }
+                Some(_) => {}
+                None if matches!(ch, '\'' | '"') => {
+                    quote = Some(ch);
+                }
+                None if ch == '(' => {
+                    depth += 1;
+                }
+                None if ch == ')' => {
+                    depth -= 1;
+                    minimum = minimum.min(depth);
+                }
+                None if ch == ';' => {
+                    statements = true;
+                    break;
+                }
+                None => {}
+            }
+        }
+        if statements || quote.is_some() || depth != minimum || depth > 0 {
+            continue;
+        }
+        // Parentheses immediately wrapping the reader may precede New-Object.
+        for _ in 0..(-depth) {
+            let before = text[..start].trim_end();
+            if !before.ends_with('(') {
+                start = end;
+                break;
+            }
+            start = before.len() - 1;
+        }
+        if start >= end {
+            continue;
+        }
         let wrapper = &lower[start..end];
         if !wrapper.contains("memorystream") {
             continue;
@@ -7682,6 +7895,7 @@ fn expand_obfuscation_until(text: &str, deadline: Option<std::time::Instant>) ->
         let before = out.clone();
         out = expand_start_process_argument_list(&out);
         out = expand_invoke_expression_wrappers(&out);
+        out = inline_literal_iex_statements(&out);
         out = expand_literal_replace_extractor_calls(&out);
         if ps_deadline_expired(deadline) {
             return (out, true);
@@ -7727,13 +7941,16 @@ fn expand_obfuscation_until(text: &str, deadline: Option<std::time::Instant>) ->
             return (out, true);
         }
         out = expand_gzip_function_base64_variables(&out);
+        out = expand_variable_compression_chains(&out);
         out = expand_gzip_base64_literals(&out);
+        out = inline_literal_iex_statements(&out);
         out = expand_json_script_base64(&out);
         out = expand_regex_replace_base64_variables(&out);
         out = expand_regex_replace_calls(&out);
         out = expand_marker_chunk_base64_carrier(&out);
         out = expand_getstring_base64_variables(&out);
         out = expand_getstring_base64_literals(&out);
+        out = inline_literal_iex_statements(&out);
         out = expand_getstring_byte_arrays(&out);
         out = expand_string_join_char_arrays(&out);
         out = expand_unary_join_char_arrays(&out);
@@ -7930,6 +8147,42 @@ pub(crate) fn normalize_ps1_text_until(
     text: &str,
     deadline: Option<std::time::Instant>,
 ) -> (String, bool) {
+    normalize_ps1_text_inner(text, deadline, 0)
+}
+
+#[allow(clippy::expect_used)]
+static PS_ARGUMENT_ASSIGNMENT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)^\s*\$[a-z_][a-z0-9_.]*\.Arguments\s*=\s*")
+        .expect("PowerShell argument assignment")
+});
+
+fn normalize_ps1_text_inner(
+    text: &str,
+    deadline: Option<std::time::Instant>,
+    depth: usize,
+) -> (String, bool) {
+    // A complete Arguments assignment contains a separate PowerShell source
+    // layer. Decode that literal, normalize its value, then escape it once when
+    // putting it back into the parent assignment.
+    if depth < 8 {
+        if let Some(prefix) = PS_ARGUMENT_ASSIGNMENT_RE.find(text) {
+            if let Some((end, inner)) = parse_ps_quoted_literal(text, prefix.end()) {
+                if matches!(text[end..].trim(), "" | ";") {
+                    let (normalized, timed_out) =
+                        normalize_ps1_text_inner(&inner, deadline, depth + 1);
+                    return (
+                        format!(
+                            "{}'{}'{}",
+                            &text[..prefix.end()],
+                            normalized.replace('\'', "''"),
+                            &text[end..]
+                        ),
+                        timed_out,
+                    );
+                }
+            }
+        }
+    }
     let command_text = unwrap_outer_encoded_powershell_argument(text);
     let decoded_iex_inner = decode_marker_replaced_getstring_iex_inner(&command_text);
     let normalization_source = decoded_iex_inner.as_deref().unwrap_or(&command_text);
