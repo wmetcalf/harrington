@@ -33,7 +33,12 @@ pub(crate) mod normalize;
 pub(crate) mod ps1_scan;
 pub(crate) mod ps_alias;
 pub(crate) mod redirect;
+mod retained_sources;
 pub(crate) mod snapshot;
+pub use retained_sources::{
+    RetainedSourceEvent, RetainedSourceRange, RetainedSourceSnapshot, RetainedSources,
+    MAX_RETAINED_SOURCE_BYTES, RETAINED_SOURCE_MANIFEST_RESERVE,
+};
 pub(crate) mod split;
 pub(crate) mod synth;
 pub(crate) mod vbs_scan;
@@ -9436,6 +9441,8 @@ set "_it="
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Report {
+    /// Optional bounded source snapshots; disabled by default.
+    pub retained_sources: Option<RetainedSources>,
     pub deobfuscated: String,
     pub traits: Vec<Trait>,
     pub extracted_cmd: Vec<String>,
@@ -10067,12 +10074,22 @@ pub fn analyze_with_path(
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct AnalysisOptions {
+    pub retain_summarized_sources: bool,
     pub environment: Vec<(String, String)>,
 }
 
 impl AnalysisOptions {
+    /// Enable the fixed 8 MiB, root-only retained-source profile.
+    pub fn with_retained_sources(mut self) -> Self {
+        self.retain_summarized_sources = true;
+        self
+    }
+
     pub fn with_environment(environment: Vec<(String, String)>) -> Self {
-        Self { environment }
+        Self {
+            environment,
+            ..Self::default()
+        }
     }
 }
 
@@ -10226,6 +10243,9 @@ fn analyze_inner(
     options: &AnalysisOptions,
 ) -> Report {
     let mut env = Environment::new(cfg);
+    let mut capture = options
+        .retain_summarized_sources
+        .then(|| retained_sources::Collector::new(input, env.limits.deadline));
     for (name, value) in &options.environment {
         env.seed(name, value);
     }
@@ -10234,21 +10254,50 @@ fn analyze_inner(
         env.input_bytes = Some(std::sync::Arc::from(input));
     }
     if looks_like_pe(input) {
-        return disguised_binary_report(
+        let mut report = disguised_binary_report(
             input,
             env,
             "pe",
             "disguised-pe-input",
             cfg.max_traits_per_kind,
         );
+        report.retained_sources = capture.map(|mut c| {
+            c.unsupported_input();
+            c.finish()
+        });
+        return report;
     }
     if let Some(fmt) = detect_disguised_binary(input) {
         let label = format!("disguised-{fmt}-input");
-        return disguised_binary_report(input, env, fmt, &label, cfg.max_traits_per_kind);
+        let mut report = disguised_binary_report(input, env, fmt, &label, cfg.max_traits_per_kind);
+        report.retained_sources = capture.map(|mut c| {
+            c.unsupported_input();
+            c.finish()
+        });
+        return report;
     }
     if let Some(blob) = extract_github_blob_raw_lines(input) {
         let nested_file_path = env.file_path.clone();
-        let mut report = analyze_inner(blob.content.as_bytes(), cfg, nested_file_path, options);
+        let nested_options;
+        let nested_options = if options.retain_summarized_sources {
+            nested_options = AnalysisOptions {
+                retain_summarized_sources: false,
+                ..options.clone()
+            };
+            &nested_options
+        } else {
+            options
+        };
+        let mut report = analyze_inner(
+            blob.content.as_bytes(),
+            cfg,
+            nested_file_path,
+            nested_options,
+        );
+        if let Some(mut collector) = capture.take() {
+            collector.unsupported_input();
+            report.retained_sources = Some(collector.finish());
+        }
         let mut summary = format!(
             "rem omitted GitHub HTML blob wrapper for {} ({} wrapper bytes)",
             blob.path.as_deref().unwrap_or("embedded file"),
@@ -10291,6 +10340,10 @@ fn analyze_inner(
         }
         dedup_traits(&mut traits, cfg.max_traits_per_kind);
         return Report {
+            retained_sources: capture.map(|mut c| {
+                c.unsupported_input();
+                c.finish()
+            }),
             deobfuscated: summary,
             traits,
             extracted_cmd: Vec::new(),
@@ -10373,12 +10426,16 @@ fn analyze_inner(
     let standalone_script_input =
         pre_scan_standalone_script_input(raw_scan_text.as_bytes(), &mut env);
     pre_scan_damaged_powershell_handoff(raw_scan_text.as_bytes(), &mut env);
-    if let Some(report) = summarize_large_public_activation_utility_report(
+    if let Some(mut report) = summarize_large_public_activation_utility_report(
         raw_scan_text,
         input.len(),
         &mut env,
         cfg.max_traits_per_kind,
     ) {
+        report.retained_sources = capture.map(|mut c| {
+            c.unsupported_input();
+            c.finish()
+        });
         return report;
     }
     let summarized_raw_base64_pe = if has_embedded_base64_pe_carrier_hint(raw_scan_input) {
@@ -10390,7 +10447,7 @@ fn analyze_inner(
     };
     let raw_scan_text = summarized_raw_base64_pe.as_deref().unwrap_or(raw_scan_text);
     let summarized_raw_colon_comment =
-        summarize_long_double_colon_payload_lines(raw_scan_text, &mut env);
+        summarize_long_double_colon_payload_lines(raw_scan_text, &mut env, capture.as_mut());
     let raw_scan_text = summarized_raw_colon_comment
         .as_deref()
         .unwrap_or(raw_scan_text);
@@ -10793,7 +10850,12 @@ fn analyze_inner(
         out = summarize_numeric_label_dispatch_scaffolding(&out, &mut env);
         out = suppress_short_set_fragment_line_runs(&out, &mut env);
         out = suppress_unreferenced_extracted_short_set_fragments(&out, &env);
-        out = summarize_unreferenced_long_set_scaffolding_runs(&out, &mut env);
+        out = summarize_unreferenced_long_set_scaffolding_runs_captured(
+            &out,
+            &mut env,
+            capture.as_mut(),
+            "root_post_analysis_set",
+        );
         if let Some(summarized) =
             summarize_dense_unresolved_control_flow_noise_lines(&out, &mut env)
         {
@@ -11069,7 +11131,12 @@ fn analyze_inner(
     out = summarize_encoded_set_carrier_line_runs(&out, &mut env);
     out = suppress_short_set_fragment_line_runs(&out, &mut env);
     out = suppress_unreferenced_extracted_short_set_fragments(&out, &env);
-    out = summarize_unreferenced_long_set_scaffolding_runs(&out, &mut env);
+    out = summarize_unreferenced_long_set_scaffolding_runs_captured(
+        &out,
+        &mut env,
+        capture.as_mut(),
+        "root_final_set",
+    );
     out = summarize_generated_nonascii_set_scaffold_runs(&out, &mut env);
     if let Some(summarized) = summarize_dense_unresolved_control_flow_noise_lines(&out, &mut env) {
         out = summarized;
@@ -11146,6 +11213,7 @@ fn analyze_inner(
     dedup_traits(&mut env.traits, max_per_kind);
     reconcile_live_trait_caps(&mut env.traits, env.admin_command_total, max_per_kind);
     Report {
+        retained_sources: capture.map(retained_sources::Collector::finish),
         deobfuscated: out,
         traits: std::mem::take(&mut env.traits),
         extracted_cmd: std::mem::take(&mut env.all_extracted_cmd),
@@ -11174,6 +11242,7 @@ fn disguised_binary_report(
     dedup_traits(&mut env.traits, max_traits_per_kind);
 
     Report {
+        retained_sources: None,
         deobfuscated: String::new(),
         traits: std::mem::take(&mut env.traits),
         extracted_cmd: Vec::new(),
@@ -16089,7 +16158,17 @@ fn is_unreferenced_extracted_short_set_fragment_line(line: &str, text: &str) -> 
         && !contains_ascii_case_insensitive_bytes(text.as_bytes(), bang_ref.as_bytes())
 }
 
+#[cfg(test)]
 fn summarize_unreferenced_long_set_scaffolding_runs(text: &str, env: &mut Environment) -> String {
+    summarize_unreferenced_long_set_scaffolding_runs_captured(text, env, None, "test")
+}
+
+fn summarize_unreferenced_long_set_scaffolding_runs_captured(
+    text: &str,
+    env: &mut Environment,
+    mut capture: Option<&mut retained_sources::Collector>,
+    stage: &'static str,
+) -> String {
     let mut total_scaffold_lines = 0usize;
     let mut total_scaffold_bytes = 0usize;
     for line in text.lines() {
@@ -16103,17 +16182,32 @@ fn summarize_unreferenced_long_set_scaffolding_runs(text: &str, env: &mut Enviro
             text,
             env,
             total_scaffold_lines,
+            capture.as_deref_mut(),
+            stage,
         );
-        return summarize_dense_unreferenced_set_scaffolding_lines(&summarized, env);
+        return summarize_dense_unreferenced_set_scaffolding_lines(
+            &summarized,
+            env,
+            capture,
+            stage,
+        );
     }
 
     let mut out = String::with_capacity(text.len().min(512 * 1024));
     let mut pending = String::new();
     let mut pending_lines = 0usize;
+    let mut retained = capture.as_ref().map(|c| c.pending(text));
+    let mut offset = 0usize;
+    let mut pending_start = 0usize;
 
     for line in text.split_inclusive('\n') {
+        let line_start = offset;
+        offset += line.len();
         let (body, _) = split_line_ending(line);
         if is_unreferenced_long_set_scaffolding_line(body, text) {
+            if pending.is_empty() {
+                pending_start = line_start;
+            }
             pending.push_str(line);
             pending_lines += 1;
             continue;
@@ -16123,25 +16217,43 @@ fn summarize_unreferenced_long_set_scaffolding_runs(text: &str, env: &mut Enviro
             &mut pending,
             &mut pending_lines,
             env,
+            retained.as_mut(),
+            pending_start,
         );
         out.push_str(line);
     }
-    flush_unreferenced_long_set_scaffolding_run(&mut out, &mut pending, &mut pending_lines, env);
-    summarize_dense_unreferenced_set_scaffolding_lines(&out, env)
+    flush_unreferenced_long_set_scaffolding_run(
+        &mut out,
+        &mut pending,
+        &mut pending_lines,
+        env,
+        retained.as_mut(),
+        pending_start,
+    );
+    if let (Some(c), Some(event)) = (capture.as_deref_mut(), retained) {
+        c.record(stage, "long_set_scaffolding_run", text, event);
+    }
+    summarize_dense_unreferenced_set_scaffolding_lines(&out, env, capture, stage)
 }
 
 fn summarize_dense_unreferenced_long_set_scaffolding_lines(
     text: &str,
     env: &mut Environment,
     total_scaffold_lines: usize,
+    capture: Option<&mut retained_sources::Collector>,
+    stage: &'static str,
 ) -> String {
     let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut retained = capture.as_ref().map(|c| c.pending(text));
+    let mut offset = 0usize;
     let mut omitted_lines = 0usize;
     let mut omitted_bytes = 0usize;
     let mut summary_inserted = false;
     let mut summary_ending = "\r\n";
 
     for line in text.split_inclusive('\n') {
+        let line_start = offset;
+        offset += line.len();
         let (body, ending) = split_line_ending(line);
         if is_unreferenced_long_set_scaffolding_line(body, text) {
             if !summary_inserted {
@@ -16151,6 +16263,9 @@ fn summarize_dense_unreferenced_long_set_scaffolding_lines(
                 ));
                 summary_inserted = true;
                 summary_ending = ending;
+            }
+            if let Some(event) = retained.as_mut() {
+                event.push(line_start, offset);
             }
             rescue_truncated_urls(body, body.len(), env);
             omitted_lines += 1;
@@ -16168,6 +16283,9 @@ fn summarize_dense_unreferenced_long_set_scaffolding_lines(
             "rem omitted {omitted_lines} unreferenced long-name set scaffolding lines ({omitted_bytes} bytes){summary_ending}"
         ));
     }
+    if let (Some(c), Some(event)) = (capture, retained) {
+        c.record(stage, "dense_long_set_scaffolding", text, event);
+    }
     out
 }
 
@@ -16176,11 +16294,16 @@ fn flush_unreferenced_long_set_scaffolding_run(
     pending: &mut String,
     pending_lines: &mut usize,
     env: &mut Environment,
+    retained: Option<&mut retained_sources::PendingEvent>,
+    pending_start: usize,
 ) {
     if pending.is_empty() {
         return;
     }
     if *pending_lines >= 64 && pending.len() >= 2048 {
+        if let Some(event) = retained {
+            event.push(pending_start, pending_start + pending.len());
+        }
         let ending = if pending.contains("\r\n") {
             "\r\n"
         } else {
@@ -16321,7 +16444,12 @@ fn is_generated_nonascii_set_scaffold_line(line: &str) -> bool {
         && value.bytes().any(|b| b.is_ascii_digit())
 }
 
-fn summarize_dense_unreferenced_set_scaffolding_lines(text: &str, env: &mut Environment) -> String {
+fn summarize_dense_unreferenced_set_scaffolding_lines(
+    text: &str,
+    env: &mut Environment,
+    capture: Option<&mut retained_sources::Collector>,
+    stage: &'static str,
+) -> String {
     let mut total_scaffold_lines = 0usize;
     let mut total_scaffold_bytes = 0usize;
     for line in text.lines() {
@@ -16334,12 +16462,16 @@ fn summarize_dense_unreferenced_set_scaffolding_lines(text: &str, env: &mut Envi
         return text.to_string();
     }
 
+    let mut retained = capture.as_ref().map(|c| c.pending(text));
+    let mut offset = 0usize;
     let mut out = String::with_capacity(text.len().min(512 * 1024));
     let mut omitted_lines = 0usize;
     let mut omitted_bytes = 0usize;
     let mut summary_inserted = false;
 
     for line in text.split_inclusive('\n') {
+        let line_start = offset;
+        offset += line.len();
         let (body, ending) = split_line_ending(line);
         if is_unreferenced_dense_set_scaffolding_line(body, text) {
             if !summary_inserted {
@@ -16347,6 +16479,9 @@ fn summarize_dense_unreferenced_set_scaffolding_lines(text: &str, env: &mut Envi
                     "rem omitted {total_scaffold_lines} unreferenced set scaffolding lines ({total_scaffold_bytes} bytes){ending}"
                 ));
                 summary_inserted = true;
+            }
+            if let Some(event) = retained.as_mut() {
+                event.push(line_start, offset);
             }
             rescue_truncated_urls(body, body.len(), env);
             omitted_lines += 1;
@@ -16360,6 +16495,9 @@ fn summarize_dense_unreferenced_set_scaffolding_lines(text: &str, env: &mut Envi
         env.traits.push(crate::traits::Trait::LineTruncated {
             original_len: omitted_bytes as u64,
         });
+    }
+    if let (Some(c), Some(event)) = (capture, retained) {
+        c.record(stage, "dense_set_scaffolding", text, event);
     }
     out
 }
@@ -20905,7 +21043,11 @@ fn is_windows_profile_check_label(line: &str) -> bool {
         )
 }
 
-fn summarize_long_double_colon_payload_lines(text: &str, env: &mut Environment) -> Option<String> {
+fn summarize_long_double_colon_payload_lines(
+    text: &str,
+    env: &mut Environment,
+    mut capture: Option<&mut retained_sources::Collector>,
+) -> Option<String> {
     const MIN_SUMMARY_BYTES: usize = 1024;
 
     if !contains_double_colon_comment_candidate(text) {
@@ -20913,9 +21055,14 @@ fn summarize_long_double_colon_payload_lines(text: &str, env: &mut Environment) 
     }
 
     let marker_prefixes = self_read_base64_marker_prefixes(text);
+    let mut ordinary = capture.as_ref().map(|c| c.pending(text));
+    let mut marker = capture.as_ref().map(|c| c.pending(text));
+    let mut offset = 0usize;
     let mut changed = false;
     let mut out = String::with_capacity(text.len().min(256 * 1024));
     for line in text.split_inclusive('\n') {
+        let line_start = offset;
+        offset += line.len();
         let (body, eol) = split_line_ending(line);
         let trimmed = body.trim_start_matches(['@', ' ', '\t']);
         let leading_len = body.len() - trimmed.len();
@@ -20931,6 +21078,9 @@ fn summarize_long_double_colon_payload_lines(text: &str, env: &mut Environment) 
             env,
             &mut out,
         ) {
+            if let Some(event) = marker.as_mut() {
+                event.push(line_start, offset);
+            }
             changed = true;
             continue;
         }
@@ -20942,6 +21092,9 @@ fn summarize_long_double_colon_payload_lines(text: &str, env: &mut Environment) 
             continue;
         }
 
+        if let Some(event) = ordinary.as_mut() {
+            event.push(line_start, offset);
+        }
         rescue_truncated_urls(payload, body.len(), env);
         env.traits.push(crate::traits::Trait::LineTruncated {
             original_len: body.len() as u64,
@@ -20954,6 +21107,14 @@ fn summarize_long_double_colon_payload_lines(text: &str, env: &mut Environment) 
         changed = true;
     }
 
+    if let Some(c) = capture.as_mut() {
+        if let Some(event) = ordinary {
+            c.record("root_pre_colon", "long_double_colon", text, event);
+        }
+        if let Some(event) = marker {
+            c.record("root_pre_colon", "colon_self_read_marker", text, event);
+        }
+    }
     changed.then_some(out)
 }
 
@@ -23197,6 +23358,7 @@ fn summarize_large_public_activation_utility_report(
     dedup_traits(&mut traits, max_traits_per_kind);
 
     Some(Report {
+        retained_sources: None,
         deobfuscated: format!(
             "{title}\r\nrem omitted large public activation utility body ({} bytes; static activation/KMS data labels: {})\r\n",
             original_len, data_labels

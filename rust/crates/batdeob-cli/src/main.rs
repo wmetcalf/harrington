@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -122,6 +122,12 @@ enum Command {
         /// Embed the deobfuscated text as a JSON string.
         #[arg(long)]
         include_deob: bool,
+        /// Retain selected root summarizer input snapshots (partial coverage; 8 MiB total).
+        #[arg(long, requires = "out_dir")]
+        retain_summarized_sources: bool,
+        /// Fixed aggregate snapshot-plus-manifest profile; requires explicit opt-in.
+        #[arg(long, default_value_t = 8_388_608, requires = "retain_summarized_sources", value_parser = clap::value_parser!(u64).range(8_388_608..=8_388_608))]
+        retained_source_budget_bytes: u64,
         #[arg(long, default_value_t = 12)]
         max_depth: u32,
         #[arg(long, default_value_t = 65_536)]
@@ -160,7 +166,6 @@ const MAX_ENV_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_FILE_LIST_BYTES: u64 = 16 * 1024 * 1024;
 
 fn read_input(path: &str) -> Result<Vec<u8>> {
-    use std::io::Read;
     if path == "-" {
         let mut buf = Vec::new();
         let mut limited = std::io::stdin().take(MAX_INPUT_BYTES);
@@ -1023,6 +1028,11 @@ fn write_report_files(
     if force {
         remove_stale_generated_outputs(&canonical_out)?;
     }
+    if report.retained_sources.is_some()
+        && fs::symlink_metadata(canonical_out.join("retained-source-manifest.json")).is_ok()
+    {
+        anyhow::bail!("refusing to overwrite existing retained-source manifest");
+    }
 
     let mut extracted_files = Vec::new();
     let mut recovered_files = Vec::new();
@@ -1158,13 +1168,170 @@ fn write_report_files(
     safe_write(&traits_path, traits_json.as_bytes(), force)?;
     let traits_file = basic_output_file("traits", traits_name, &traits_path, traits_json.len());
 
-    Ok(serde_json::json!({
+    let mut output_files = serde_json::json!({
         "out_dir": canonical_out.display().to_string(),
         "deobfuscated": deobfuscated_file,
         "traits": traits_file,
         "extracted": extracted_files,
         "recovered": recovered_files,
+    });
+    if let Some(retained) = report.retained_sources.as_ref() {
+        output_files["retained_sources"] = write_retained_sources(retained, &canonical_out)?;
+    }
+    Ok(output_files)
+}
+
+/// Bounded raw snapshots first; publish the successful manifest atomically last.
+fn write_retained_sources(
+    retained: &batdeob_core::RetainedSources,
+    canonical_out: &Path,
+) -> Result<serde_json::Value> {
+    let mut manifest = retained.manifest_json();
+    manifest["availability_scope"] = serde_json::json!("filesystem_export");
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
+    let payload_bytes = retained
+        .snapshots()
+        .iter()
+        .try_fold(0usize, |total, s| total.checked_add(s.bytes.len()))
+        .ok_or_else(|| anyhow::anyhow!("retained-source size overflow"))?;
+    if manifest_bytes.len() > batdeob_core::RETAINED_SOURCE_MANIFEST_RESERVE
+        || payload_bytes
+            .checked_add(manifest_bytes.len())
+            .map_or(true, |bytes| {
+                bytes > batdeob_core::MAX_RETAINED_SOURCE_BYTES
+            })
+    {
+        anyhow::bail!("retained-source export exceeds its fixed aggregate budget");
+    }
+    for snapshot in retained.snapshots() {
+        let name = format!("source-{}.bin", snapshot.sha256);
+        let path = safe_join(canonical_out, &name)?;
+        write_new_retained_snapshot(&path, &snapshot.bytes)?;
+        verify_retained_snapshot(&path, snapshot.bytes.len(), &snapshot.sha256)?;
+    }
+    let name = "retained-source-manifest.json";
+    let path = safe_join(canonical_out, name)?;
+    publish_retained_manifest(canonical_out, &path, &manifest_bytes)?;
+    Ok(serde_json::json!({
+        "manifest": basic_output_file("retained_source_manifest", name, &path, manifest_bytes.len()),
+        "coverage_complete": false,
+        "capture_complete_for_selected_passes": manifest["capture_complete_for_selected_passes"],
+        "snapshot_count": retained.snapshots().len(),
+        "retained_bytes": payload_bytes + manifest_bytes.len(),
     }))
+}
+
+fn write_new_retained_snapshot(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    // --force removes known old regular outputs first. Never use a truncating
+    // open here: an existing FIFO/device/symlink must fail without following it.
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("refusing existing output path {:?}", path))?;
+    if !file.metadata()?.is_file() {
+        anyhow::bail!("snapshot output is not a regular file");
+    }
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn verify_retained_snapshot(path: &Path, expected_size: usize, expected_sha: &str) -> Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let mut file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() != expected_size as u64 {
+        anyhow::bail!("retained-source snapshot size changed during export");
+    }
+    let mut total = 0usize;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        total = total
+            .checked_add(count)
+            .ok_or_else(|| anyhow::anyhow!("snapshot size overflow"))?;
+        if total > expected_size {
+            anyhow::bail!("snapshot grew during export");
+        }
+        hasher.update(&buffer[..count]);
+    }
+    if total != expected_size || hex::encode(hasher.finalize()) != expected_sha {
+        anyhow::bail!("retained-source snapshot hash mismatch");
+    }
+    file.sync_all()?;
+    Ok(())
+}
+
+struct RetainedManifestTemp(PathBuf);
+impl Drop for RetainedManifestTemp {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn publish_retained_manifest(canonical_out: &Path, target: &Path, bytes: &[u8]) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    if bytes.len() > batdeob_core::RETAINED_SOURCE_MANIFEST_RESERVE {
+        anyhow::bail!("retained-source manifest exceeds metadata budget");
+    }
+    let mut created = None;
+    for _ in 0..16 {
+        let name = format!(
+            ".retained-source-{}-{}.tmp",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        );
+        let path = safe_join(canonical_out, &name)?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        }
+        match options.open(&path) {
+            Ok(file) => {
+                created = Some((RetainedManifestTemp(path), file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let (temporary, mut file) = created.ok_or_else(|| {
+        anyhow::anyhow!("could not create retained-source manifest temporary file")
+    })?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    // A same-directory hard link atomically publishes a complete file and refuses
+    // any existing target, including symlinks. --force removed old outputs first.
+    fs::hard_link(&temporary.0, target).context("publish retained-source manifest")?;
+    #[cfg(unix)]
+    if let Err(error) = fs::File::open(canonical_out).and_then(|directory| directory.sync_all()) {
+        let _ = fs::remove_file(target);
+        return Err(error.into());
+    }
+    Ok(())
 }
 
 fn detect_blob_extension(bytes: &[u8]) -> &'static str {
@@ -1221,6 +1388,16 @@ fn looks_like_python_script_bytes(bytes: &[u8]) -> bool {
 }
 
 fn remove_stale_generated_outputs(canonical_out: &Path) -> Result<()> {
+    // Remove the previous success marker before any fallible cleanup.
+    let manifest = canonical_out.join("retained-source-manifest.json");
+    match fs::symlink_metadata(&manifest) {
+        Ok(metadata) if metadata.is_file() || metadata.file_type().is_symlink() => {
+            fs::remove_file(&manifest)?
+        }
+        Ok(_) => anyhow::bail!("refusing to remove retained-source manifest directory"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
     for entry in fs::read_dir(canonical_out)
         .with_context(|| format!("read output dir {:?}", canonical_out))?
     {
@@ -1247,8 +1424,17 @@ fn remove_stale_generated_outputs(canonical_out: &Path) -> Result<()> {
 }
 
 fn is_generated_output_name(name: &str) -> bool {
-    if matches!(name, "deobfuscated.bat" | "traits.json") {
+    if matches!(
+        name,
+        "deobfuscated.bat" | "traits.json" | "retained-source-manifest.json"
+    ) {
         return true;
+    }
+    if let Some(digest) = name
+        .strip_prefix("source-")
+        .and_then(|n| n.strip_suffix(".bin"))
+    {
+        return digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit());
     }
     let Some((prefix, ext)) = name.split_once('.') else {
         return false;
@@ -2221,6 +2407,8 @@ fn run() -> Result<()> {
             force,
             include_source,
             include_deob,
+            retain_summarized_sources,
+            retained_source_budget_bytes: _,
             max_depth,
             max_iterations,
             max_child_scripts,
@@ -2244,7 +2432,10 @@ fn run() -> Result<()> {
                 max_output_line_bytes,
                 max_traits_per_kind,
             );
-            let options = make_analysis_options(&env, &env_file)?;
+            let mut options = make_analysis_options(&env, &env_file)?;
+            if retain_summarized_sources {
+                options = options.with_retained_sources();
+            }
             let report = analyze_cli_input(&file, &input, &cfg, &options);
             let output_files = out_dir
                 .as_deref()
