@@ -988,6 +988,7 @@ fn expand_gzip_base64_literals(text: &str) -> String {
     // high-ratio literals cannot amplify a small script into gigabytes.
     let mut remaining_inflated = MAX_GZIP_LITERAL_INFLATED_BYTES;
     let mut matches: Vec<(usize, usize, String)> = Vec::new();
+    let mut shared_wrapper_end = 0usize;
     for caps in GZIP_B64_LITERAL_RE.captures_iter(text) {
         if remaining_inflated == 0 {
             break;
@@ -1008,12 +1009,19 @@ fn expand_gzip_base64_literals(text: &str) -> String {
                 };
                 (full.start(), full.end(), stream)
             });
-        // Two literals inside one wrapper share its span; replacing it twice
-        // would slice past the end of the shortened text. Keep the first.
+        // Two literals inside one wrapper share its span: which one the stream
+        // really reads is unknown (e.g. if/else), and replacing the span twice
+        // would slice past the end of the shortened text. Decode neither.
+        if start < shared_wrapper_end {
+            continue;
+        }
         if matches
             .last()
             .is_some_and(|(_, prev_end, _)| start < *prev_end)
         {
+            if let Some((_, prev_end, _)) = matches.pop() {
+                shared_wrapper_end = prev_end.max(end);
+            }
             continue;
         }
         let Some(inflated) = decompress_ps_stream(&decoded, stream, remaining_inflated) else {
@@ -1191,6 +1199,15 @@ mod gzip_base64_prefilter_tests {
         let source = format!("$x=(New-Object IO.StreamReader([IO.Compression.GZipStream]::new([IO.MemoryStream]::new([Convert]::FromBase64String('{a}') + [Convert]::FromBase64String('{b}')),[IO.Compression.CompressionMode]::Decompress))).ReadToEnd()\n");
         let _ = expand_gzip_base64_literals(&source);
         let _ = normalize_ps1_text(&source);
+        // Which literal a shared wrapper really reads is unknown (here the
+        // second one runs), so neither may be presented as the stage.
+        let (decoy, payload) = (
+            gzip_b64(b"Write-Output decoy"),
+            gzip_b64(b"Write-Output payload"),
+        );
+        let source = format!("$x=(New-Object IO.StreamReader([IO.Compression.GZipStream]::new([IO.MemoryStream]::new($(if ($false) {{ [Convert]::FromBase64String('{decoy}') }} else {{ [Convert]::FromBase64String('{payload}') }})),[IO.Compression.CompressionMode]::Decompress))).ReadToEnd()\n");
+        let out = expand_gzip_base64_literals(&source);
+        assert!(!out.contains("Write-Output decoy"), "{out}");
     }
 
     #[test]
