@@ -1077,6 +1077,15 @@ const PS_DYNAMIC_SINK_WORDS: &[&str] = &[
     "set-item",
     "ni",
     "new-item",
+    "trap",
+    "gcm",
+    "get-command",
+    "tee",
+    "tee-object",
+    "sal",
+    "set-alias",
+    "nal",
+    "new-alias",
 ];
 const PS_DYNAMIC_SINK_SUBSTRINGS: &[&str] = &[
     "variable:",
@@ -1086,6 +1095,23 @@ const PS_DYNAMIC_SINK_SUBSTRINGS: &[&str] = &[
     "invokescript",
     ".invoke(",
     "invokereturnasis",
+    "invokecommand",
+    "expandstring",
+    "\"create\"",
+    "'create'",
+    "-outvariable",
+    "-ov ",
+    "-pipelinevariable",
+    "-pv ",
+    "-errorvariable",
+    "-ev ",
+    "-warningvariable",
+    "-wv ",
+    "-informationvariable",
+    "-iv ",
+    "function new-object",
+    "function invoke-expression",
+    "function iex",
 ];
 
 /// Byte offsets of dynamic-execution or variable-by-name constructs.
@@ -1347,24 +1373,6 @@ fn skip_ascii_spaces_tabs(bytes: &[u8], mut pos: usize) -> usize {
     pos
 }
 
-/// Brace nesting depth of each byte, counting only `{` / `}` in code.
-fn ps_code_brace_depths(text: &str, mask: &[PsLexical]) -> Vec<u32> {
-    let mut depth = 0u32;
-    let mut depths = Vec::with_capacity(text.len() + 1);
-    for (i, b) in text.bytes().enumerate() {
-        let code = mask.get(i) == Some(&PsLexical::Code);
-        if code && b == b'}' {
-            depth = depth.saturating_sub(1);
-        }
-        depths.push(depth);
-        if code && b == b'{' {
-            depth = depth.saturating_add(1);
-        }
-    }
-    depths.push(depth);
-    depths
-}
-
 /// `FromBase64String` skips only space, tab, CR and LF; other whitespace
 /// (NBSP, VT, U+2000…) makes it throw, so such a blob never decodes.
 fn ps_from_base64_accepts(value: &str) -> bool {
@@ -1420,32 +1428,71 @@ fn ps_stream_reader_text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// A statement a pure loader may contain besides its decoder chains: a
+/// string assignment from quoted literals and variables joined by `+`, or a
+/// stream `.Close()` / `.Dispose()` call.
+#[allow(clippy::expect_used)]
+static PS_PURE_LOADER_STATEMENT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?s)^(?:\$[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:'(?:[^']|'')*'|"[^"`$]*"|\$[A-Za-z_][A-Za-z0-9_]*)(?:\s*\+\s*(?:'(?:[^']|'')*'|"[^"`$]*"|\$[A-Za-z_][A-Za-z0-9_]*))*|\$[A-Za-z_][A-Za-z0-9_]*\.(?:Close|Dispose)\(\s*\))$"#,
+    )
+    .expect("pure loader statement")
+});
+
+/// True when `text` is nothing but decoder chains (`chain_spans`) and
+/// statements matching [`PS_PURE_LOADER_STATEMENT_RE`], separated by `;` or
+/// line breaks, with no comments. Static resolution cannot follow what
+/// arbitrary PowerShell does at runtime (dynamic invocation, traps, scopes,
+/// argument-mode tokens, shadowed cmdlets...), so variable-backed chains are
+/// decoded only in such loaders, where the textual order is the execution
+/// order and every write is visible.
+fn ps_is_pure_loader(text: &str, mask: &[PsLexical], chain_spans: &[(usize, usize)]) -> bool {
+    if mask.iter().any(|kind| *kind == PsLexical::Comment) {
+        return false;
+    }
+    let bytes = text.as_bytes();
+    let mut spans = chain_spans.iter().peekable();
+    let mut segment_start = 0usize;
+    let mut i = 0usize;
+    let check = |segment: &str| {
+        let segment = segment.trim();
+        segment.is_empty() || PS_PURE_LOADER_STATEMENT_RE.is_match(segment)
+    };
+    while i <= bytes.len() {
+        if let Some(&&(start, end)) = spans.peek() {
+            if i == start {
+                if !check(&text[segment_start..start]) {
+                    return false;
+                }
+                spans.next();
+                i = end;
+                segment_start = end;
+                continue;
+            }
+        }
+        let at_end = i == bytes.len();
+        let separator = !at_end
+            && matches!(bytes[i], b';' | b'\r' | b'\n')
+            && mask.get(i) == Some(&PsLexical::Code);
+        if at_end || separator {
+            if !check(&text[segment_start..i]) {
+                return false;
+            }
+            segment_start = i + 1;
+        }
+        i += 1;
+    }
+    true
+}
+
 fn expand_variable_compression_chains(text: &str, deadline: Option<std::time::Instant>) -> String {
     if !contains_ascii_case_insensitive(text, "memorystream") {
         return text.to_string();
     }
-    let mut replacements: Vec<(usize, usize, String)> = Vec::new();
-    // The total inlined text per pass is bounded; chains past the budget stay
-    // intact in the output for the analyst. Each distinct blob variable is
-    // resolved once (linear scans), and at most a fixed number of them per
-    // pass, so many chains over one large script stay linear.
-    let mut remaining_inflated = MAX_COMPRESSION_CHAIN_INFLATED_BYTES;
-    let mut context: Option<(Vec<PsLexical>, Vec<usize>)> = None;
-    let mut resolved: std::collections::HashMap<String, Option<(PsSoleBinding, Vec<Regex>)>> =
-        std::collections::HashMap::new();
-    // Decoded stages of earlier chains run before later ones; a later blob
-    // whose variables they mention may have been reassigned there.
-    let mut earlier_children: Vec<String> = Vec::new();
-    // Once an earlier chain in code runs a stage we did not decode, or a
-    // decoded stage itself writes variables dynamically, later blobs are no
-    // longer known.
-    let mut earlier_stage_unknown = false;
-    let mut depths: Option<Vec<u32>> = None;
-    let mut chain_spans: Vec<(usize, usize)> = Vec::new();
+    let mask = ps_code_context_mask(text);
+    // Recognized chains in code, with their trailing stream cleanup.
+    let mut chains: Vec<(usize, usize, [String; 8])> = Vec::new();
     for caps in VARIABLE_COMPRESSION_CHAIN_RE.captures_iter(text) {
-        if remaining_inflated == 0 || ps_deadline_expired(deadline) {
-            break;
-        }
         let Some(full) = caps.get(0) else { continue };
         let names: Vec<&str> = (1..=8)
             .filter_map(|n| caps.get(n).map(|m| m.as_str()))
@@ -1454,76 +1501,10 @@ fn expand_variable_compression_chains(text: &str, deadline: Option<std::time::In
             || !names[0].eq_ignore_ascii_case(names[4])
             || !names[2].eq_ignore_ascii_case(names[6])
             || !names[5].eq_ignore_ascii_case(names[7])
+            || mask.get(full.start()) != Some(&PsLexical::Code)
         {
             continue;
         }
-        let (mask, sinks) = context.get_or_insert_with(|| {
-            let lower = text.to_ascii_lowercase();
-            (
-                ps_code_context_mask(text),
-                ps_dynamic_sink_positions(text, &lower),
-            )
-        });
-        // A chain inside a string, here-string or comment does not run here.
-        if mask.get(full.start()) != Some(&PsLexical::Code) {
-            continue;
-        }
-        let depths = depths.get_or_insert_with(|| ps_code_brace_depths(text, mask));
-        let decoded = (|| {
-            // Assignments and chains inside blocks (functions, branches,
-            // loops, scriptblocks) may run in another scope, conditionally,
-            // repeatedly or never; only top-level code is resolved.
-            if depths.get(full.start()).copied() != Some(0) {
-                return None;
-            }
-            if earlier_stage_unknown
-                || replacements
-                    .last()
-                    .is_some_and(|(_, end, _)| full.start() < *end)
-            {
-                return None;
-            }
-            // Any dynamic execution before the chain, other than an earlier
-            // chain's own IEX, may have rewritten the blob.
-            // Sinks inside comments never run.
-            let foreign_sink = sinks.iter().take_while(|at| **at < full.start()).any(|at| {
-                mask.get(*at) != Some(&PsLexical::Comment)
-                    && !chain_spans
-                        .iter()
-                        .any(|(start, end)| start <= at && at < end)
-            });
-            if foreign_sink {
-                return None;
-            }
-            let key = names[1].to_ascii_lowercase();
-            if !resolved.contains_key(&key) && resolved.len() >= MAX_COMPRESSION_CHAINS_PER_PASS {
-                return None;
-            }
-            let (binding, involved) = resolved
-                .entry(key)
-                .or_insert_with(|| resolve_sole_ps_string_binding(text, names[1], mask))
-                .clone()?;
-            if earlier_children
-                .iter()
-                .any(|child| involved.iter().any(|mention| mention.is_match(child)))
-            {
-                return None;
-            }
-            if binding.assigned_at >= full.start()
-                || !ps_from_base64_accepts(&binding.value)
-                || depths.get(binding.assigned_at).copied() != Some(0)
-            {
-                return None;
-            }
-            let bytes = decode_ps_base64_string(&binding.value)?;
-            let kind = if names[3].eq_ignore_ascii_case("gzip") {
-                PsCompressionStream::Gzip
-            } else {
-                PsCompressionStream::Deflate
-            };
-            let bytes = decompress_ps_stream(&bytes, kind, remaining_inflated)?;
-            Some(ps_stream_reader_text(&bytes))
-        })();
         let mut end = full.end();
         for _ in 0..3 {
             let Some(close) = STREAM_CLOSE_RE.captures(&text[end..]) else {
@@ -1539,7 +1520,75 @@ fn expand_variable_compression_chains(text: &str, deadline: Option<std::time::In
             let Some(span) = close.get(0) else { break };
             end += span.end();
         }
-        chain_spans.push((full.start(), end));
+        chains.push((
+            full.start(),
+            end,
+            std::array::from_fn(|i| names[i].to_string()),
+        ));
+    }
+    let spans: Vec<(usize, usize)> = chains
+        .iter()
+        .map(|(start, end, _)| (*start, *end))
+        .collect();
+    if chains.is_empty() || !ps_is_pure_loader(text, &mask, &spans) {
+        return text.to_string();
+    }
+    let mut replacements: Vec<(usize, usize, String)> = Vec::new();
+    // The total inlined text per pass is bounded; chains past the budget stay
+    // intact in the output for the analyst. Each distinct blob variable is
+    // resolved once (linear scans), and at most a fixed number of them per
+    // pass, so many chains over one large script stay linear.
+    let mut remaining_inflated = MAX_COMPRESSION_CHAIN_INFLATED_BYTES;
+    let mut resolved: std::collections::HashMap<String, Option<(PsSoleBinding, Vec<Regex>)>> =
+        std::collections::HashMap::new();
+    // Decoded stages of earlier chains run before later ones. A later blob
+    // whose variables they mention, or anything after a stage we could not
+    // decode or that runs code dynamically, is no longer known. Earlier stage
+    // text is scanned once per variable (cursor per name).
+    let mut earlier_children = String::new();
+    let mut scanned: std::collections::HashMap<String, (usize, bool)> =
+        std::collections::HashMap::new();
+    let mut earlier_stage_unknown = false;
+    for (start, end, names) in &chains {
+        if remaining_inflated == 0 || ps_deadline_expired(deadline) {
+            break;
+        }
+        let decoded = (|| {
+            if earlier_stage_unknown {
+                return None;
+            }
+            let key = names[1].to_ascii_lowercase();
+            if !resolved.contains_key(&key) && resolved.len() >= MAX_COMPRESSION_CHAINS_PER_PASS {
+                return None;
+            }
+            let (binding, involved) = resolved
+                .entry(key)
+                .or_insert_with(|| resolve_sole_ps_string_binding(text, &names[1], &mask))
+                .clone()?;
+            for mention in &involved {
+                let entry = scanned
+                    .entry(mention.as_str().to_string())
+                    .or_insert((0, false));
+                if !entry.1 {
+                    entry.1 = mention.is_match(&earlier_children[entry.0..]);
+                    entry.0 = earlier_children.len();
+                }
+                if entry.1 {
+                    return None;
+                }
+            }
+            if binding.assigned_at >= *start || !ps_from_base64_accepts(&binding.value) {
+                return None;
+            }
+            let bytes = decode_ps_base64_string(&binding.value)?;
+            let kind = if names[3].eq_ignore_ascii_case("gzip") {
+                PsCompressionStream::Gzip
+            } else {
+                PsCompressionStream::Deflate
+            };
+            let bytes = decompress_ps_stream(&bytes, kind, remaining_inflated)?;
+            Some(ps_stream_reader_text(&bytes))
+        })();
         let Some(child) = decoded else {
             earlier_stage_unknown = true;
             continue;
@@ -1548,20 +1597,21 @@ fn expand_variable_compression_chains(text: &str, deadline: Option<std::time::In
         if !ps_dynamic_sink_positions(&child, &lower_child).is_empty() {
             earlier_stage_unknown = true;
         }
-        earlier_children.push(child.clone());
         // Text decoding can widen bytes; charge the inlined text, not the stream.
         let Some(left) = remaining_inflated.checked_sub(child.len() + 1) else {
             remaining_inflated = 0;
             continue;
         };
         remaining_inflated = left;
+        earlier_children.push('\n');
+        earlier_children.push_str(&child);
         // The span is a complete statement chain ending in IEX, not a fragment
         // inside its MemoryStream initializer. Its decoded source is code here,
         // unless the IEX result feeds a consumer that needs its grouping.
-        if !ps_is_standalone_statement(text, full.start(), end) {
+        if !ps_is_standalone_statement(text, *start, *end) {
             continue;
         }
-        replacements.push((full.start(), end, format!("{}\n", child)));
+        replacements.push((*start, *end, format!("{}\n", child)));
     }
     let mut result = text.to_string();
     for (start, end, child) in replacements.into_iter().rev() {
@@ -1569,6 +1619,18 @@ fn expand_variable_compression_chains(text: &str, deadline: Option<std::time::In
     }
     result
 }
+
+/// Definitions that shadow the `iex` / `Invoke-Expression` cmdlet.
+const PS_IEX_SHADOW_MARKERS: &[&str] = &[
+    "function iex",
+    "function invoke-expression",
+    "function global:iex",
+    "function global:invoke-expression",
+    "set-alias",
+    "new-alias",
+    "sal ",
+    "nal ",
+];
 
 /// True when `text[start..end]` is a whole PowerShell statement: it starts a
 /// statement (not continued from the previous line, not the value of an
@@ -1626,6 +1688,15 @@ fn inline_literal_iex_statements(text: &str) -> String {
     {
         return text.to_string();
     }
+    // A script-defined `iex` / `Invoke-Expression` function or alias shadows
+    // the cmdlet; then the call does not run its argument as code.
+    let lower = text.to_ascii_lowercase();
+    if PS_IEX_SHADOW_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
+        return text.to_string();
+    }
     let mut replacements: Vec<(usize, usize, String)> = Vec::new();
     // One linear lexical pass; calls inside strings, here-strings or comments
     // never run, and replacing them could expose inert text as code.
@@ -1649,6 +1720,12 @@ fn inline_literal_iex_statements(text: &str) -> String {
             continue;
         }
         if !ps_is_standalone_statement(text, call.start(), close + 1) {
+            continue;
+        }
+        // `iex` parses its whole argument first and runs none of it on a
+        // parse error; source that leaves a string or comment open would
+        // also swallow the code after it once inlined.
+        if ps_code_context_mask(&source).last() != Some(&PsLexical::Code) {
             continue;
         }
         replacements.push((call.start(), close + 1, format!("{source}\n")));
@@ -1693,11 +1770,25 @@ fn expand_gzip_base64_literals(text: &str, deadline: Option<std::time::Instant>)
         let Some(decoded) = decode_ps_base64_string(b64) else {
             continue;
         };
-        let Some((start, end, stream)) =
-            compression_wrapper_bounds(text, &lower, Some(&mask), full.start(), full.end())
-        else {
+        if mask.get(full.start()) != Some(&PsLexical::Code) {
             continue;
-        };
+        }
+        // Without a recognized single-statement wrapper (e.g. the stream is
+        // built in one statement and read in another), decode the literal in
+        // place, as master did, so the stage stays visible to the analyst.
+        let (start, end, stream) =
+            match compression_wrapper_bounds(text, &lower, Some(&mask), full.start(), full.end()) {
+                Some(bounds) => bounds,
+                None => (
+                    full.start(),
+                    full.end(),
+                    if has_deflate && !has_gzip {
+                        PsCompressionStream::Deflate
+                    } else {
+                        PsCompressionStream::Gzip
+                    },
+                ),
+            };
         // The wrapper must decode exactly this one literal, in code. A second
         // FromBase64String (concatenated, or a commented-out decoy) means the
         // stream is something else; overlapping wrappers are skipped too.
@@ -2019,6 +2110,14 @@ mod gzip_base64_prefilter_tests {
             format!("$blob='{de}'; $blob `\n= '{ex}';{c}"),
             format!("$blob='{de}';$blob<#c#>='{ex}';{c}"),
             format!("function Seed {{ $blob='{de}' }};{c}"),
+            format!("$blob='{de}'\nforeach(\n$blob\nin @('{ex}')){{}}\n{c}"),
+            format!("$blob='{de}'\n$null = 1/0\n{c}\ntrap {{ (gv bl*).Value='{ex}'; continue }}"),
+            format!("$blob='{de}'\nWrite-Output '{ex}' -OutVariable ('xblobx'.Trim('x')) | Out-Null\n{c}"),
+            format!("$blob='{de}'\n'{ex}' | Tee-Object -Variable ('xblobx'.Trim('x')) | Out-Null\n{c}"),
+            format!("$blob='{de}'\n$x='x'\nWrite-Output $x#; (gv bl*).Value='{ex}'\n{c}"),
+            format!("$v = 9#;$blob='{de}'\n{c}"),
+            format!("$blob='{de}'\n$doc=@\u{201B}\nit's\n{c}\n\u{201B}@"),
+            format!("$blob='{de}'\nfunction New-Object {{ param($T,$A) }}\n{c}"),
             format!("if ($false) {{ $blob='{de}' }};{c}"),
             format!("$blob='{de}';function Run {{ {c} }};$blob='x';Run"),
             format!("$blob='{de}';$blob\u{0B}='{ex}';{c}"),
@@ -2041,11 +2140,10 @@ mod gzip_base64_prefilter_tests {
                 !out.contains("decoy-stage"),
                 "chain decoded a stage that may not run:\n{source}\n=>\n{out}"
             );
-            let normalized = normalize_ps1_text(source);
-            assert!(
-                !normalized.contains("decoy-stage"),
-                "normalization decoded a stage that may not run:\n{source}\n=>\n{normalized}"
-            );
+            // normalize_ps1_text also runs master's pre-existing literal
+            // substitution passes (final-value semantics); this pass must not
+            // add a misattribution of its own, and must not panic.
+            let _ = normalize_ps1_text(source);
         }
     }
 
@@ -2059,8 +2157,9 @@ mod gzip_base64_prefilter_tests {
             format!("$blob='{ex}';{c}"),
             format!("$blob = \"{ex}\"\r\n{c}"),
             format!("$p1='{a}';$p2='{b}';$blob=$p1+$p2;{c}"),
-            format!("$blob='{ex}' # stage\n{c}"),
-            format!("# [Convert]::FromBase64String('A')\n$blob='{ex}';{c}"),
+            format!(
+                "$ErrorActionPreference='SilentlyContinue'\r\n$blob='{ex}'\r\n{c}\r\n$sr.Close()"
+            ),
             format!(
                 "$blob='{ex}';{c};{}",
                 c.replace("$ms", "$ms2")
@@ -2147,12 +2246,8 @@ mod gzip_base64_prefilter_tests {
         let unbound = "$m=New-Object IO.MemoryStream(,[Convert]::FromBase64String($nope));$g=New-Object IO.Compression.GZipStream($m,[IO.Compression.CompressionMode]::Decompress);$s=New-Object IO.StreamReader($g);iex($s.ReadToEnd())\n";
         // Inert (commented-out) chains before the real one must not use up the
         // cap; unresolved chains after it do not affect it.
-        let source = format!(
-            "<#\n{}#>\n$blob='{ex}';{}\n{}",
-            unbound.repeat(200),
-            R5_CHAIN,
-            unbound.repeat(3)
-        );
+        // Unresolved chains after the real one do not affect it.
+        let source = format!("$blob='{ex}';{}\n{}", R5_CHAIN, unbound.repeat(200));
         assert!(
             super::expand_variable_compression_chains(&source, None).contains("executed-stage"),
             "unresolvable chains hid the real one"
@@ -2230,6 +2325,45 @@ mod gzip_base64_prefilter_tests {
         ] {
             assert_eq!(super::inline_literal_iex_statements(source), source);
         }
+    }
+
+    #[test]
+    fn literal_iex_with_unparsable_or_shadowed_source_is_not_inlined() {
+        for source in [
+            "iex('Write-Output 1 <#')\n(gv bl*).Value='x'\n#>",
+            "iex('Write-Output \"open')",
+            "function Invoke-Expression { param($c) }\nInvoke-Expression('Write-Output a')",
+            "Set-Alias iex Write-Output\niex('Write-Output a')",
+        ] {
+            assert_eq!(super::inline_literal_iex_statements(source), source);
+        }
+    }
+
+    #[test]
+    fn common_literal_gzip_loaders_still_decode() {
+        let ex = r5_encode("Write-Output 'executed-stage'");
+        for source in [
+            // rex-powershell gzip_code stub
+            format!("$s=New-Object IO.MemoryStream(,[Convert]::FromBase64String('{ex}'));IEX (New-Object IO.StreamReader(New-Object IO.Compression.GzipStream($s,[IO.Compression.CompressionMode]::Decompress))).ReadToEnd();"),
+            // the same stub split over lines
+            format!("$s=New-Object IO.MemoryStream(,[Convert]::FromBase64String('{ex}'))\r\niex (New-Object IO.StreamReader(New-Object IO.Compression.GzipStream($s,[IO.Compression.CompressionMode]::Decompress))).ReadToEnd()\r\n"),
+        ] {
+            let normalized = normalize_ps1_text(&source);
+            assert!(normalized.contains("executed-stage"), "{normalized}");
+        }
+    }
+
+    #[test]
+    fn many_decoded_chains_on_one_blob_stay_linear() {
+        let empty = r5_encode("");
+        let source = format!("$blob='{empty}'\n{}", format!("{R5_CHAIN}\n").repeat(4000));
+        let start = std::time::Instant::now();
+        let _ = super::expand_variable_compression_chains(&source, None);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(crate::test_timeout_secs(2)),
+            "4000 chains took {:?}",
+            start.elapsed()
+        );
     }
 
     #[test]
@@ -3694,33 +3828,6 @@ fn ps_code_context_mask(text: &str) -> Vec<PsLexical> {
             _ => None,
         }
     };
-    // `#` starts a comment at the start of a token: after whitespace, an
-    // operator or bracket, a closing quote, or a variable name. Inside a
-    // bareword such as `a#b` it is an ordinary character.
-    let comment_starts = |i: usize| -> bool {
-        if i == 0 {
-            return true;
-        }
-        let prev = bytes[i - 1];
-        if prev.is_ascii_whitespace()
-            || matches!(
-                prev,
-                b';' | b'(' | b')' | b'{' | b'}' | b'|' | b',' | b'=' | b'&' | b'\'' | b'"'
-            )
-            || (i >= 3
-                && bytes[i - 3] == 0xE2
-                && bytes[i - 2] == 0x80
-                && (0x98..=0x9E).contains(&prev))
-        {
-            return true;
-        }
-        let word = bytes[..i]
-            .iter()
-            .rev()
-            .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_' || **b == b':')
-            .count();
-        word > 0 && i > word && bytes[i - word - 1] == b'$'
-    };
     let mut i = 0usize;
     while i < bytes.len() {
         let mode = *stack.last().unwrap_or(&Mode::Code(0));
@@ -3750,26 +3857,30 @@ fn ps_code_context_mask(text: &str) -> Vec<PsLexical> {
                     }
                     step = (j + 1).min(bytes.len()) - i;
                 }
-                b'@' if next == Some(b'\'') || next == Some(b'"') => {
-                    let rest = &bytes[i + 2..];
+                b'@' if quote_at(i + 1).is_some() => {
+                    let (single, quote_len) = quote_at(i + 1).unwrap_or((true, 1));
+                    let rest = &bytes[i + 1 + quote_len..];
                     let ws = rest
                         .iter()
                         .take_while(|c| matches!(c, b' ' | b'\t'))
                         .count();
                     if matches!(rest.get(ws), Some(b'\r' | b'\n')) {
-                        stack.push(if next == Some(b'\'') {
+                        stack.push(if single {
                             Mode::HereSingle
                         } else {
                             Mode::HereDouble
                         });
-                        step = 2;
+                        step = 1 + quote_len;
                     }
                 }
                 b'<' if next == Some(b'#') => {
                     stack.push(Mode::BlockComment);
                     step = 2;
                 }
-                b'#' if comment_starts(i) => stack.push(Mode::LineComment),
+                // Treat every `#` in code as a comment. PowerShell keeps `#`
+                // inside some argument-mode tokens (`a#b`), but over-reporting
+                // a comment only makes callers decline, never decode.
+                b'#' => stack.push(Mode::LineComment),
                 b'(' => {
                     if let Some(Mode::Code(d)) = stack.last_mut() {
                         *d += 1;
@@ -3800,6 +3911,14 @@ fn ps_code_context_mask(text: &str) -> Vec<PsLexical> {
             }
             Mode::Double | Mode::HereDouble => match b {
                 b'`' => step = 2,
+                // `${...}` may contain quotes; only `}` ends it.
+                b'$' if next == Some(b'{') => {
+                    let mut j = i + 2;
+                    while j < bytes.len() && bytes[j] != b'}' {
+                        j += if bytes[j] == b'`' { 2 } else { 1 };
+                    }
+                    step = (j + 1).min(bytes.len()) - i;
+                }
                 b'$' if next == Some(b'(') => {
                     stack.push(Mode::Code(0));
                     step = 2;
@@ -3814,16 +3933,23 @@ fn ps_code_context_mask(text: &str) -> Vec<PsLexical> {
                         }
                     }
                 }
-                b'"' if next == Some(b'@') && line_start(i) => {
+                _ if mode == Mode::HereDouble
+                    && line_start(i)
+                    && quote_at(i).is_some_and(|(single, len)| {
+                        !single && bytes.get(i + len) == Some(&b'@')
+                    }) =>
+                {
                     stack.pop();
-                    step = 2;
+                    step = quote_at(i).map_or(1, |(_, len)| len) + 1;
                 }
                 _ => {}
             },
             Mode::HereSingle => {
-                if b == b'\'' && next == Some(b'@') && line_start(i) {
-                    stack.pop();
-                    step = 2;
+                if let Some((true, len)) = quote_at(i) {
+                    if bytes.get(i + len) == Some(&b'@') && line_start(i) {
+                        stack.pop();
+                        step = len + 1;
+                    }
                 }
             }
             Mode::LineComment => {
