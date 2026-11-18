@@ -997,25 +997,257 @@ static STREAM_CLOSE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)^\s*;\s*\$([a-z_]\w*)\.Close\s*\(\s*\)").expect("stream cleanup")
 });
 
-fn expand_variable_compression_chains(text: &str) -> String {
+/// One unambiguously resolved string variable for a compression chain.
+#[derive(Clone)]
+struct PsSoleBinding {
+    /// Byte offset of the `$` of the single assignment.
+    assigned_at: usize,
+    value: String,
+}
+
+/// Resolves `name` only when its value cannot depend on execution order:
+/// across the whole text (code, strings and comments alike, since strings may
+/// run later via `iex`) the variable has exactly one assignment, in code at a
+/// statement start, whose right-hand side is a complete statement made of
+/// quoted literals and other such variables joined by `+`. Every other
+/// mention of the name must be a plain read; scoped, braced or bare-word
+/// mentions (`$script:x`, `${x}`, `Set-Variable x`, `[ref]$x`, `foreach($x`)
+/// make the value unknown. Leaving a chain encoded is preferable to
+/// presenting a stage the script may have replaced as the one that ran.
+fn resolve_sole_ps_string_binding(
+    text: &str,
+    name: &str,
+    mask: &[PsLexical],
+) -> Option<PsSoleBinding> {
+    let mut names = Vec::new();
+    let mut spans = Vec::new();
+    let binding = resolve_sole_binding_tree(text, name, mask, 0, &mut names, &mut spans)?;
+    names
+        .iter()
+        .all(|(involved, assigned_at)| {
+            ps_variable_mentions_are_plain(text, involved, *assigned_at, &spans)
+        })
+        .then_some(binding)
+}
+
+const MAX_SOLE_BINDING_DEPTH: usize = 4;
+const MAX_SOLE_BINDING_NAMES: usize = 16;
+
+fn ps_variable_mention_regex(name: &str) -> Option<Regex> {
+    Regex::new(&format!(r"(?i)\b{}\b", regex::escape(name))).ok()
+}
+
+/// Position of the single statement-start assignment `$name =` in code.
+fn binding_position(text: &str, name: &str, mask: &[PsLexical]) -> Option<usize> {
+    let mention = ps_variable_mention_regex(name)?;
+    let bytes = text.as_bytes();
+    let mut found = None;
+    for m in mention.find_iter(text) {
+        let Some(dollar) = m.start().checked_sub(1) else {
+            continue;
+        };
+        if bytes[dollar] != b'$'
+            || ps_variable_mention_kind(text, dollar, m.end()) != PsMention::Assign
+        {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = Some(dollar);
+    }
+    let dollar = found?;
+    let statement_start = text[..dollar].trim_end_matches([' ', '\t']);
+    let at_statement_start =
+        statement_start.is_empty() || statement_start.ends_with([';', '\n', '\r', '{', '}']);
+    (at_statement_start && mask.get(dollar) == Some(&PsLexical::Code)).then_some(dollar)
+}
+
+#[derive(PartialEq)]
+enum PsMention {
+    Assign,
+    Read,
+    Other,
+}
+
+/// Classifies `$name` whose `$` is at `dollar` and whose name ends at `end`.
+fn ps_variable_mention_kind(text: &str, dollar: usize, end: usize) -> PsMention {
+    let bytes = text.as_bytes();
+    if dollar > 0 && bytes[dollar - 1] == b'`' {
+        // An escaped `$name` in an expandable string becomes code if the
+        // string is later invoked.
+        return PsMention::Other;
+    }
+    // `[ref]$x`, casts, and loop or parameter variables can all write `$x`.
+    // Only the token before the mention matters; never copy the prefix.
+    let before = text[..dollar].trim_end();
+    if before.ends_with(']') {
+        return PsMention::Other;
+    }
+    if let Some(open) = before.strip_suffix('(') {
+        let open = open.trim_end();
+        let keyword_len = open
+            .bytes()
+            .rev()
+            .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-')
+            .count();
+        let keyword = &open[open.len() - keyword_len..];
+        if ["foreach", "for", "param"]
+            .iter()
+            .any(|k| keyword.eq_ignore_ascii_case(k))
+        {
+            return PsMention::Other;
+        }
+    }
+    let mut after = end;
+    while matches!(bytes.get(after), Some(b' ' | b'\t')) {
+        after += 1;
+    }
+    match (bytes.get(after), bytes.get(after + 1)) {
+        (Some(b'='), Some(b'=')) => PsMention::Read,
+        (Some(b'='), _) => PsMention::Assign,
+        (Some(b'+' | b'-' | b'*' | b'/' | b'%' | b'?'), Some(b'=')) => PsMention::Other,
+        (Some(b'+'), Some(b'+')) | (Some(b'-'), Some(b'-')) | (Some(b'?'), Some(b'?')) => {
+            PsMention::Other
+        }
+        (Some(b','), _) => PsMention::Other,
+        _ => PsMention::Read,
+    }
+}
+
+/// True when every mention of `name` other than the assignment at
+/// `assigned_at` is a plain `$name` read, or a bare word inside one of the
+/// resolved literal `spans`.
+fn ps_variable_mentions_are_plain(
+    text: &str,
+    name: &str,
+    assigned_at: usize,
+    spans: &[(usize, usize)],
+) -> bool {
+    let Some(mention) = ps_variable_mention_regex(name) else {
+        return false;
+    };
+    let bytes = text.as_bytes();
+    for m in mention.find_iter(text) {
+        let prefix = m.start().checked_sub(1).map(|i| bytes[i]);
+        if prefix == Some(b'$') {
+            let dollar = m.start() - 1;
+            if dollar == assigned_at {
+                continue;
+            }
+            if ps_variable_mention_kind(text, dollar, m.end()) != PsMention::Read {
+                return false;
+            }
+            continue;
+        }
+        if spans.iter().any(|(s, e)| *s <= m.start() && m.end() <= *e) {
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
+fn resolve_sole_binding_tree(
+    text: &str,
+    name: &str,
+    mask: &[PsLexical],
+    depth: usize,
+    names: &mut Vec<(String, usize)>,
+    spans: &mut Vec<(usize, usize)>,
+) -> Option<PsSoleBinding> {
+    if depth > MAX_SOLE_BINDING_DEPTH || names.len() >= MAX_SOLE_BINDING_NAMES {
+        return None;
+    }
+    let key = name.to_ascii_lowercase();
+    if names.iter().any(|(seen, _)| *seen == key) {
+        // A variable that feeds itself is not a single literal value.
+        return None;
+    }
+    let dollar = binding_position(text, name, mask)?;
+    names.push((key, dollar));
+    let bytes = text.as_bytes();
+    let eq = dollar + 1 + name.len() + text[dollar + 1 + name.len()..].find('=')?;
+    let mut pos = skip_ascii_spaces_tabs(bytes, eq + 1);
+    let mut value = String::new();
+    loop {
+        match bytes.get(pos) {
+            Some(b'\'' | b'"') => {
+                let (end, literal) = parse_ps_quoted_literal(text, pos)?;
+                spans.push((pos, end));
+                value.push_str(&literal);
+                pos = end;
+            }
+            Some(b'$') => {
+                let operand_end = pos
+                    + 1
+                    + text[pos + 1..]
+                        .bytes()
+                        .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                        .count();
+                let operand = &text[pos + 1..operand_end];
+                if operand.is_empty() {
+                    return None;
+                }
+                let part = resolve_sole_binding_tree(text, operand, mask, depth + 1, names, spans)?;
+                // The operand must already hold its value when this runs.
+                if part.assigned_at >= dollar {
+                    return None;
+                }
+                value.push_str(&part.value);
+                pos = operand_end;
+            }
+            _ => return None,
+        }
+        pos = skip_ascii_spaces_tabs(bytes, pos);
+        if bytes.get(pos) == Some(&b'+') {
+            pos = skip_ascii_spaces_tabs(bytes, pos + 1);
+            continue;
+        }
+        // The right-hand side must end the statement: `'x' -replace ...`,
+        // `'x','y' | ...` or `'x' * 0 + 'y'` are other values.
+        if !matches!(
+            bytes.get(pos),
+            None | Some(b';' | b'\r' | b'\n' | b'}' | b'#')
+        ) {
+            return None;
+        }
+        return Some(PsSoleBinding {
+            assigned_at: dollar,
+            value,
+        });
+    }
+}
+
+fn skip_ascii_spaces_tabs(bytes: &[u8], mut pos: usize) -> usize {
+    while matches!(bytes.get(pos), Some(b' ' | b'\t')) {
+        pos += 1;
+    }
+    pos
+}
+
+fn expand_variable_compression_chains(text: &str, deadline: Option<std::time::Instant>) -> String {
     if !contains_ascii_case_insensitive(text, "memorystream") {
         return text.to_string();
     }
-    let mut replacements = Vec::new();
-    // Every chain re-scans its prefix for bindings and may inflate a stage, so
-    // both the chain count and the total inflated bytes are bounded per pass.
-    // Chains past either bound stay intact in the output for the analyst.
+    let mut replacements: Vec<(usize, usize, String)> = Vec::new();
+    // The total inlined text per pass is bounded; chains past the budget stay
+    // intact in the output for the analyst. Each distinct blob variable is
+    // resolved once (two linear scans), and at most a fixed number of them per
+    // pass, so many chains over one large script stay linear.
     let mut remaining_inflated = MAX_COMPRESSION_CHAIN_INFLATED_BYTES;
-    let mut code_mask: Option<Vec<PsLexical>> = None;
-    for caps in VARIABLE_COMPRESSION_CHAIN_RE
-        .captures_iter(text)
-        .take(MAX_COMPRESSION_CHAINS_PER_PASS)
-    {
-        if remaining_inflated == 0 {
+    let mut mask: Option<Vec<PsLexical>> = None;
+    let mut resolved: std::collections::HashMap<String, Option<PsSoleBinding>> =
+        std::collections::HashMap::new();
+    for caps in VARIABLE_COMPRESSION_CHAIN_RE.captures_iter(text) {
+        if remaining_inflated == 0 || ps_deadline_expired(deadline) {
             break;
         }
         let Some(full) = caps.get(0) else { continue };
-        if ps_env_ref_quote_context(text, full.start()) != PsEnvRefQuoteContext::Expression {
+        if replacements
+            .last()
+            .is_some_and(|(_, end, _)| full.start() < *end)
+        {
             continue;
         }
         let names: Vec<&str> = (1..=8)
@@ -1028,14 +1260,25 @@ fn expand_variable_compression_chains(text: &str) -> String {
         {
             continue;
         }
-        // Resolve only definitions preceding this chain; later assignments must
-        // not retroactively change which bytes this decoder consumes.
-        let code = code_mask.get_or_insert_with(|| ps_code_context_mask(text));
-        let bindings = ps_string_bindings_in_order(&text[..full.start()], code);
-        let Some(encoded) = bindings.get(&names[1].to_ascii_lowercase()) else {
+        let mask = mask.get_or_insert_with(|| ps_code_context_mask(text));
+        // A chain inside a string, here-string or comment does not run here.
+        if mask.get(full.start()) != Some(&PsLexical::Code) {
+            continue;
+        }
+        let key = names[1].to_ascii_lowercase();
+        if !resolved.contains_key(&key) && resolved.len() >= MAX_COMPRESSION_CHAINS_PER_PASS {
+            continue;
+        }
+        let binding = resolved
+            .entry(key)
+            .or_insert_with(|| resolve_sole_ps_string_binding(text, names[1], mask));
+        let Some(binding) = binding.as_ref() else {
             continue;
         };
-        let Some(bytes) = decode_ps_base64_string(encoded) else {
+        if binding.assigned_at >= full.start() {
+            continue;
+        }
+        let Some(bytes) = decode_ps_base64_string(&binding.value) else {
             continue;
         };
         let kind = if names[3].eq_ignore_ascii_case("gzip") {
@@ -1079,6 +1322,26 @@ fn expand_variable_compression_chains(text: &str) -> String {
     result
 }
 
+/// First byte at or after `pos` that is neither whitespace nor inside a `#`
+/// line comment or `<# #>` block comment.
+fn ps_next_code_byte(text: &str, mut pos: usize) -> Option<u8> {
+    let bytes = text.as_bytes();
+    loop {
+        match bytes.get(pos)? {
+            b if b.is_ascii_whitespace() => pos += 1,
+            b'#' => {
+                pos += bytes[pos..]
+                    .iter()
+                    .position(|b| matches!(b, b'\r' | b'\n'))?;
+            }
+            b'<' if bytes.get(pos + 1) == Some(&b'#') => {
+                pos += 2 + text[pos + 2..].find("#>")? + 2;
+            }
+            b => return Some(*b),
+        }
+    }
+}
+
 #[allow(clippy::expect_used)]
 static LITERAL_IEX_STATEMENT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)\b(?:iex|Invoke-Expression)\s*\(\s*").expect("literal IEX statement")
@@ -1096,11 +1359,17 @@ fn inline_literal_iex_statements(text: &str) -> String {
         if quotes.context_at(text, call.start()) != PsEnvRefQuoteContext::Expression {
             continue;
         }
+        // Only a call that starts a statement may be inlined. After a line
+        // break, the previous line must not continue into this one (trailing
+        // backtick, pipe, comma, operator or open bracket).
         let before = text[..call.start()].trim_end();
-        if !before.is_empty()
-            && !before.ends_with([';', '{', '}'])
-            && !text[..call.start()].ends_with(['\r', '\n'])
-        {
+        let after_line_break = text[..call.start()]
+            .trim_end_matches([' ', '\t'])
+            .ends_with(['\r', '\n']);
+        let starts_statement = before.is_empty()
+            || before.ends_with([';', '{', '}'])
+            || (after_line_break && !before.ends_with(['`', '|', ',', '=', '+', '(', '[']));
+        if !starts_statement {
             continue;
         }
         let Some((end, source)) = parse_ps_quoted_literal(text, call.end()) else {
@@ -1123,13 +1392,15 @@ fn inline_literal_iex_statements(text: &str) -> String {
         ) {
             continue;
         }
-        // PowerShell 7 continues a pipeline onto a following line that begins
-        // with `|`, so a line break alone does not end the statement.
-        let next_code = text.as_bytes()[after..]
-            .iter()
-            .position(|b| !b.is_ascii_whitespace())
-            .map(|rel| text.as_bytes()[after + rel]);
-        if matches!(text.as_bytes().get(after), Some(b'\r' | b'\n')) && next_code == Some(b'|') {
+        // PowerShell 7 continues a pipeline onto a following line whose first
+        // code (after whitespace and comments) is `|`.
+        if ps_next_code_byte(text, after) == Some(b'|') {
+            continue;
+        }
+        if replacements
+            .last()
+            .is_some_and(|(_, end, _)| call.start() < *end)
+        {
             continue;
         }
         replacements.push((call.start(), close + 1, format!("{source}\n")));
@@ -1148,14 +1419,15 @@ fn expand_gzip_base64_literals(text: &str) -> String {
         return text.to_string();
     }
 
-    // Same per-pass bounds as variable chains: each literal rescans its wrapper
-    // prefix and may inflate a stage, so cap both the count and inflated text.
+    // The total inlined text per pass is bounded. Each candidate looks only at
+    // a bounded window around its literal and a precomputed lexical mask, so
+    // inert candidates (comments, invalid base64) cost little and cannot
+    // crowd out a real stage.
     let mut remaining_inflated = MAX_COMPRESSION_CHAIN_INFLATED_BYTES;
+    let lower = text.to_ascii_lowercase();
+    let mask = ps_code_context_mask(text);
     let mut matches: Vec<(usize, usize, String)> = Vec::new();
-    for caps in GZIP_B64_LITERAL_RE
-        .captures_iter(text)
-        .take(MAX_COMPRESSION_CHAINS_PER_PASS)
-    {
+    for caps in GZIP_B64_LITERAL_RE.captures_iter(text) {
         if remaining_inflated == 0 {
             break;
         }
@@ -1166,10 +1438,18 @@ fn expand_gzip_base64_literals(text: &str) -> String {
         let Some(decoded) = decode_ps_base64_string(b64) else {
             continue;
         };
-        let Some((start, end, stream)) = compression_wrapper_bounds(text, full.start(), full.end())
+        let Some((start, end, stream)) =
+            compression_wrapper_bounds(text, &lower, Some(&mask), full.start(), full.end())
         else {
             continue;
         };
+        // Two literals inside one wrapper share its span; keep the first.
+        if matches
+            .last()
+            .is_some_and(|(_, prev_end, _)| start < *prev_end)
+        {
+            continue;
+        }
         let Some(inflated) = decompress_ps_stream(&decoded, stream, remaining_inflated) else {
             continue;
         };
@@ -1356,7 +1636,7 @@ mod gzip_base64_prefilter_tests {
                 "$m{i}=New-Object IO.MemoryStream(,[Convert]::FromBase64String($blob));$g{i}=New-Object IO.Compression.GZipStream($m{i},[IO.Compression.CompressionMode]::Decompress);$s{i}=New-Object IO.StreamReader($g{i});iex($s{i}.ReadToEnd())\n"
             ));
         }
-        let out = super::expand_variable_compression_chains(&source);
+        let out = super::expand_variable_compression_chains(&source, None);
         assert!(
             out.contains(&"A".repeat(1024)),
             "the first chain was not decoded"
@@ -1367,59 +1647,6 @@ mod gzip_base64_prefilter_tests {
             out.len(),
             source.len()
         );
-    }
-
-    #[test]
-    #[allow(clippy::expect_used)]
-    fn compression_chain_uses_assignment_time_value_of_concatenated_blob() {
-        fn encode(stage: &str) -> String {
-            let mut writer =
-                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-            writer.write_all(stage.as_bytes()).expect("writes fixture");
-            base64::engine::general_purpose::STANDARD.encode(writer.finish().expect("gzip"))
-        }
-        let chain = "$ms=New-Object IO.MemoryStream(,[Convert]::FromBase64String($blob));$gz=New-Object IO.Compression.GZipStream($ms,[IO.Compression.CompressionMode]::Decompress);$sr=New-Object IO.StreamReader($gz);iex($sr.ReadToEnd())";
-        let executed = encode("Write-Output 'executed-stage'");
-        let decoy = encode("Write-Output 'decoy-stage'");
-        let source = format!("$p='{executed}';$blob=$p+'';$p='{decoy}';{chain}");
-        let out = super::expand_variable_compression_chains(&source);
-        assert!(
-            !out.contains("decoy-stage"),
-            "a later reassignment replaced the decoded stage: {out}"
-        );
-        assert!(out.contains("executed-stage"), "{out}");
-
-        // An assignment the resolver cannot evaluate makes the value unknown.
-        // A string can run later (`iex '...'`, `iex $s`), so assignment-shaped
-        // text in one makes the value ambiguous: decline rather than decode a
-        // stage the script may no longer hold.
-        let quoted_decoy = format!("iex '$blob=''{decoy}''';");
-        for reassignment in [
-            quoted_decoy.as_str(),
-            "$note='$blob=Get-Content x';",
-            "$blob=Get-Content x.txt;",
-            "$n=\"$($blob=Get-Content x)\";",
-            // `#` inside a token is not a comment.
-            "Write-Output a#b;$blob=Get-Content x;",
-        ] {
-            let source = format!("$blob='{executed}';{reassignment}{chain}");
-            let out = super::expand_variable_compression_chains(&source);
-            assert!(
-                !out.contains("executed-stage"),
-                "a stale value survived an unresolvable reassignment {reassignment}: {out}"
-            );
-        }
-
-        // Comments never run, so assignment-shaped text there must not hide
-        // the stage.
-        for inert in ["# $blob=Get-Content x\n", "<# $blob=Get-Content x #>"] {
-            let source = format!("$blob='{executed}';{inert}{chain}");
-            let out = super::expand_variable_compression_chains(&source);
-            assert!(
-                out.contains("executed-stage"),
-                "inert text {inert:?} hid the decoded stage: {out}"
-            );
-        }
     }
 
     #[test]
@@ -1473,24 +1700,6 @@ mod gzip_base64_prefilter_tests {
     }
 
     #[test]
-    fn ordered_bindings_apply_literal_appends() {
-        let text = "$p=$null;$p+='ab';$p += \"cd\";$q=$p+'e';$r=$nullable;$r+='x'";
-        let bindings = super::ps_string_bindings_in_order(text, &super::ps_code_context_mask(text));
-        assert_eq!(bindings.get("p").map(String::as_str), Some("abcd"));
-        assert_eq!(bindings.get("q").map(String::as_str), Some("abcde"));
-        assert_eq!(bindings.get("r"), None, "$nullable is not $null");
-
-        // Only a bare `$null` right-hand side is a known empty value.
-        let text = "$b='!';$b=$null ?? '!';$b+='x'";
-        let bindings = super::ps_string_bindings_in_order(text, &super::ps_code_context_mask(text));
-        assert_eq!(
-            bindings.get("b"),
-            None,
-            "compound $null expression was treated as $null"
-        );
-    }
-
-    #[test]
     fn code_context_mask_ends_comments_and_here_strings_at_any_line_break() {
         use super::PsLexical;
         // A lone CR ends a line comment, like LF.
@@ -1507,6 +1716,168 @@ mod gzip_base64_prefilter_tests {
                 "here-string did not close with {eol:?}"
             );
             assert_eq!(mask[text.find("$blob").unwrap_or(0)], PsLexical::String);
+        }
+    }
+
+    const R5_CHAIN: &str = "$ms=New-Object IO.MemoryStream(,[Convert]::FromBase64String($blob));$gz=New-Object IO.Compression.GZipStream($ms,[IO.Compression.CompressionMode]::Decompress);$sr=New-Object IO.StreamReader($gz);iex($sr.ReadToEnd())";
+
+    #[allow(clippy::expect_used)]
+    fn r5_encode(stage: &str) -> String {
+        let mut writer = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        writer.write_all(stage.as_bytes()).expect("writes fixture");
+        base64::engine::general_purpose::STANDARD.encode(writer.finish().expect("gzip"))
+    }
+
+    #[test]
+    fn compression_chain_never_decodes_a_stage_that_may_have_been_replaced() {
+        let ex = r5_encode("Write-Output 'executed-stage'");
+        let de = r5_encode("Write-Output 'decoy-stage'");
+        let c = R5_CHAIN;
+        let shapes = [
+            format!("$blob='{de}';$blob='{ex}';{c}"),
+            format!("$blob='{de}';${{a'}}=1;$blob='{ex}';${{b'}}=2;{c}"),
+            format!("$blob='{de}';${{a #}}=1;$blob='{ex}'\n{c}"),
+            format!("$blob='{de}';${{x<#}}=1;$blob='{ex}';{c}"),
+            format!("$blob='{ex}';$x=$y#$blob='{de}'\n{c}"),
+            format!("$blob='{ex}';$x='y'#$blob='{de}'\n{c}"),
+            format!("$blob='{ex}';$n=\u{201E}$blob='{de}'\u{201E};{c}"),
+            format!("$blob='{de}';$q=\u{201B}x';$blob='{ex}';$z='y\u{201B};{c}"),
+            format!("$blob='{de}'\r# note\r$blob='{ex}'\r{c}"),
+            format!("$blob='{de}' -replace '^.*$','{ex}';{c}"),
+            format!("$blob='{de}','{ex}' | Select-Object -Last 1;{c}"),
+            format!("$blob='{de}' * 0 + '{ex}';{c}"),
+            format!("$blob='{de}'.Replace('{de}','{ex}');{c}"),
+            format!("$blob='{de}';${{blob}}='{ex}';{c}"),
+            format!("$blob='{de}';$script:blob='{ex}';{c}"),
+            format!("$blob='{de}';$blob,$z='{ex}','x';{c}"),
+            format!("$blob='{de}';Set-Variable -Name blob -Value '{ex}';{c}"),
+            format!("$blob='{de}';iex '$blob=''{ex}''';{c}"),
+            format!("$blob='{de}';foreach($blob in @('{ex}')){{}};{c}"),
+            format!("$blob='{de}';ForEach  (   $blob in @('{ex}')){{}};{c}"),
+            format!(
+                "$blob='{de}';[ref]$r=[ref]{}$blob;$r.Value='{ex}';{c}",
+                " ".repeat(100)
+            ),
+            format!("$blob='{de}';[ref]$r=[ref]$blob;$r.Value='{ex}';{c}"),
+            format!("$blob='{de}'\n$code=@'\nit's\n{c}\n'@\n$blob='{ex}'\niex $code\n"),
+            format!("$blob='{de}';$p='{de}';$blob=$p+'';$p='{ex}';{c}"),
+            format!("{c};$blob='{de}'"),
+        ];
+        for source in &shapes {
+            let out = super::expand_variable_compression_chains(source, None);
+            assert!(
+                !out.contains("decoy-stage"),
+                "chain decoded a stage that may not run:\n{source}\n=>\n{out}"
+            );
+            let normalized = normalize_ps1_text(source);
+            assert!(
+                !normalized.contains("decoy-stage"),
+                "normalization decoded a stage that may not run:\n{source}\n=>\n{normalized}"
+            );
+        }
+    }
+
+    #[test]
+    fn compression_chain_decodes_unambiguous_single_assignments() {
+        let ex = r5_encode("Write-Output 'executed-stage'");
+        let half = ex.len() / 2;
+        let (a, b) = ex.split_at(half);
+        let c = R5_CHAIN;
+        for source in [
+            format!("$blob='{ex}';{c}"),
+            format!("$blob = \"{ex}\"\r\n{c}"),
+            format!("$p1='{a}';$p2='{b}';$blob=$p1+$p2;{c}"),
+            format!("$blob='{ex}' # stage\n{c}"),
+            format!("# [Convert]::FromBase64String('A')\n$blob='{ex}';{c}"),
+            format!(
+                "$blob='{ex}';{c};{}",
+                c.replace("$ms", "$ms2")
+                    .replace("$gz", "$gz2")
+                    .replace("$sr", "$sr2")
+            ),
+        ] {
+            let out = super::expand_variable_compression_chains(&source, None);
+            assert!(
+                out.contains("executed-stage"),
+                "not decoded:\n{source}\n=>\n{out}"
+            );
+        }
+    }
+
+    #[test]
+    fn inert_candidates_do_not_exhaust_the_per_pass_caps() {
+        let ex = r5_encode("Write-Output 'executed-stage'");
+        let wrapper = format!("$a=(New-Object System.IO.StreamReader([System.IO.Compression.GZipStream]::new([System.IO.MemoryStream]::new([Convert]::FromBase64String('{ex}')),[System.IO.Compression.CompressionMode]::Decompress))).ReadToEnd()\n");
+        let source = format!(
+            "{}{wrapper}",
+            "# [Convert]::FromBase64String('A')\n".repeat(200)
+        );
+        assert!(
+            expand_gzip_base64_literals(&source).contains("executed-stage"),
+            "commented-out literals hid the real one"
+        );
+        let unbound = "$m=New-Object IO.MemoryStream(,[Convert]::FromBase64String($nope));$g=New-Object IO.Compression.GZipStream($m,[IO.Compression.CompressionMode]::Decompress);$s=New-Object IO.StreamReader($g);iex($s.ReadToEnd())\n";
+        let source = format!("{}$blob='{ex}';{}", unbound.repeat(200), R5_CHAIN);
+        assert!(
+            super::expand_variable_compression_chains(&source, None).contains("executed-stage"),
+            "unresolvable chains hid the real one"
+        );
+    }
+
+    #[test]
+    fn many_unbound_chains_over_many_assignments_stay_linear() {
+        let unbound = "$m=New-Object IO.MemoryStream(,[Convert]::FromBase64String($nope));$g=New-Object IO.Compression.GZipStream($m,[IO.Compression.CompressionMode]::Decompress);$s=New-Object IO.StreamReader($g);iex($s.ReadToEnd())\n";
+        let source = format!("{}{}", "$a=1\n".repeat(400_000), unbound.repeat(200));
+        let start = std::time::Instant::now();
+        let _ = super::expand_variable_compression_chains(&source, None);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(crate::test_timeout_secs(2)),
+            "chain pass took {:?}",
+            start.elapsed()
+        );
+        // Classifying each of many mentions must not rescan the whole prefix.
+        let source = format!(
+            "{}{}",
+            "$x=$nope;Write-Output $nope\n".repeat(60_000),
+            unbound
+        );
+        let start = std::time::Instant::now();
+        let _ = super::expand_variable_compression_chains(&source, None);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(crate::test_timeout_secs(2)),
+            "mention classification took {:?}",
+            start.elapsed()
+        );
+        // An expired deadline stops the pass before resolving any chain.
+        let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        let ex = r5_encode("Write-Output 'executed-stage'");
+        let source = format!("$blob='{ex}';{}", R5_CHAIN);
+        assert_eq!(
+            super::expand_variable_compression_chains(&source, Some(past)),
+            source
+        );
+    }
+
+    #[test]
+    fn two_literals_in_one_wrapper_do_not_panic() {
+        let b1 = r5_encode("a");
+        let b2 = r5_encode("b");
+        let source = format!("$x=(New-Object IO.StreamReader([IO.Compression.GZipStream]::new([IO.MemoryStream]::new([Convert]::FromBase64String('{b1}') + [Convert]::FromBase64String('{b2}')),[IO.Compression.CompressionMode]::Decompress))).ReadToEnd()\n");
+        let _ = expand_gzip_base64_literals(&source);
+        let _ = normalize_ps1_text(&source);
+    }
+
+    #[test]
+    fn literal_iex_on_a_continued_line_is_not_inlined() {
+        for source in [
+            "Write-Output `\niex('Write-Output a; Remove-Item b')",
+            "'x' |\niex('Write-Output a; Write-Output b')",
+            "iex('Write-Output a; Write-Output b') # c\n| Out-File r.txt",
+            "iex('Write-Output a; Write-Output b')\n# c\n| Out-File r.txt",
+            "iex('Write-Output a; Write-Output b')\n<# c #>\n| Out-File r.txt",
+        ] {
+            let inlined = super::inline_literal_iex_statements(source);
+            assert_eq!(inlined, source, "continued IEX call was inlined");
         }
     }
 
@@ -1737,15 +2108,25 @@ fn expand_gzip_function_base64_variables(text: &str) -> String {
 
 #[cfg(test)]
 fn gzip_wrapper_bounds(text: &str, b64_start: usize, b64_end: usize) -> Option<(usize, usize)> {
-    compression_wrapper_bounds(text, b64_start, b64_end).map(|(start, end, _)| (start, end))
+    let lower = text.to_ascii_lowercase();
+    compression_wrapper_bounds(text, &lower, None, b64_start, b64_end)
+        .map(|(start, end, _)| (start, end))
 }
+
+/// Wrapper markers are searched within this many bytes before the literal.
+const COMPRESSION_WRAPPER_LOOKBEHIND_BYTES: usize = 8192;
 
 fn compression_wrapper_bounds(
     text: &str,
+    lower: &str,
+    mask: Option<&[PsLexical]>,
     b64_start: usize,
     b64_end: usize,
 ) -> Option<(usize, usize, PsCompressionStream)> {
-    let lower = text.to_ascii_lowercase();
+    let window_start = floor_char_boundary(
+        text,
+        b64_start.saturating_sub(COMPRESSION_WRAPPER_LOOKBEHIND_BYTES),
+    );
     let after_end = floor_char_boundary(text, b64_end.saturating_add(8192));
     let after = &text[b64_end..after_end];
     let read_to_end = READ_TO_END_RE.find(after)?;
@@ -1760,10 +2141,17 @@ fn compression_wrapper_bounds(
         "[system.io.memorystream]::new",
         "[io.memorystream]::new",
     ] {
-        let Some(mut start) = lower[..b64_start].rfind(marker) else {
+        let Some(mut start) = lower[window_start..b64_start]
+            .rfind(marker)
+            .map(|rel| window_start + rel)
+        else {
             continue;
         };
-        if ps_env_ref_quote_context(text, start) != PsEnvRefQuoteContext::Expression {
+        let in_code = match mask {
+            Some(mask) => mask.get(start) == Some(&PsLexical::Code),
+            None => ps_env_ref_quote_context(text, start) == PsEnvRefQuoteContext::Expression,
+        };
+        if !in_code {
             continue;
         }
         let mut quote = None;
@@ -2919,6 +3307,44 @@ fn ps_code_context_mask(text: &str) -> Vec<PsLexical> {
     let mut stack = vec![Mode::Code(0)];
     // PowerShell accepts LF, CRLF and a lone CR as line terminators.
     let line_start = |i: usize| i == 0 || matches!(bytes[i - 1], b'\n' | b'\r');
+    // PowerShell also accepts the typographic quotes U+2018..U+201B as single
+    // and U+201C..U+201E as double quotes. Returns (is_single, byte length).
+    let quote_at = |i: usize| -> Option<(bool, usize)> {
+        match (bytes.get(i), bytes.get(i + 1), bytes.get(i + 2)) {
+            (Some(b'\''), ..) => Some((true, 1)),
+            (Some(b'"'), ..) => Some((false, 1)),
+            (Some(0xE2), Some(0x80), Some(0x98..=0x9B)) => Some((true, 3)),
+            (Some(0xE2), Some(0x80), Some(0x9C..=0x9E)) => Some((false, 3)),
+            _ => None,
+        }
+    };
+    // `#` starts a comment at the start of a token: after whitespace, an
+    // operator or bracket, a closing quote, or a variable name. Inside a
+    // bareword such as `a#b` it is an ordinary character.
+    let comment_starts = |i: usize| -> bool {
+        if i == 0 {
+            return true;
+        }
+        let prev = bytes[i - 1];
+        if prev.is_ascii_whitespace()
+            || matches!(
+                prev,
+                b';' | b'(' | b')' | b'{' | b'}' | b'|' | b',' | b'=' | b'&' | b'\'' | b'"'
+            )
+            || (i >= 3
+                && bytes[i - 3] == 0xE2
+                && bytes[i - 2] == 0x80
+                && (0x98..=0x9E).contains(&prev))
+        {
+            return true;
+        }
+        let word = bytes[..i]
+            .iter()
+            .rev()
+            .take_while(|b| b.is_ascii_alphanumeric() || **b == b'_' || **b == b':')
+            .count();
+        word > 0 && i > word && bytes[i - word - 1] == b'$'
+    };
     let mut i = 0usize;
     while i < bytes.len() {
         let mode = *stack.last().unwrap_or(&Mode::Code(0));
@@ -2931,10 +3357,23 @@ fn ps_code_context_mask(text: &str) -> Vec<PsLexical> {
         let next = bytes.get(i + 1).copied();
         let mut step = 1usize;
         match mode {
+            Mode::Code(_) if quote_at(i).is_some() => {
+                if let Some((single, len)) = quote_at(i) {
+                    stack.push(if single { Mode::Single } else { Mode::Double });
+                    step = len;
+                }
+            }
             Mode::Code(depth) => match b {
                 b'`' => step = 2,
-                b'\'' => stack.push(Mode::Single),
-                b'"' => stack.push(Mode::Double),
+                // `${...}` names may contain quotes, `#` and `<#`; only `}`
+                // (unless escaped with a backtick) ends them.
+                b'$' if next == Some(b'{') => {
+                    let mut j = i + 2;
+                    while j < bytes.len() && bytes[j] != b'}' {
+                        j += if bytes[j] == b'`' { 2 } else { 1 };
+                    }
+                    step = (j + 1).min(bytes.len()) - i;
+                }
                 b'@' if next == Some(b'\'') || next == Some(b'"') => {
                     let rest = &bytes[i + 2..];
                     let ws = rest
@@ -2954,17 +3393,7 @@ fn ps_code_context_mask(text: &str) -> Vec<PsLexical> {
                     stack.push(Mode::BlockComment);
                     step = 2;
                 }
-                // `#` starts a comment only at the start of a token; inside a
-                // bareword such as `a#b` it is an ordinary character.
-                b'#' if i == 0
-                    || bytes[i - 1].is_ascii_whitespace()
-                    || matches!(
-                        bytes[i - 1],
-                        b';' | b'(' | b')' | b'{' | b'}' | b'|' | b',' | b'=' | b'&'
-                    ) =>
-                {
-                    stack.push(Mode::LineComment)
-                }
+                b'#' if comment_starts(i) => stack.push(Mode::LineComment),
                 b'(' => {
                     if let Some(Mode::Code(d)) = stack.last_mut() {
                         *d += 1;
@@ -2982,11 +3411,14 @@ fn ps_code_context_mask(text: &str) -> Vec<PsLexical> {
                 _ => {}
             },
             Mode::Single => {
-                if b == b'\'' {
-                    if next == Some(b'\'') {
-                        step = 2;
-                    } else {
-                        stack.pop();
+                if let Some((true, len)) = quote_at(i) {
+                    // A doubled quote is a literal quote inside the string.
+                    match quote_at(i + len) {
+                        Some((true, len2)) => step = len + len2,
+                        _ => {
+                            stack.pop();
+                            step = len;
+                        }
                     }
                 }
             }
@@ -2996,11 +3428,14 @@ fn ps_code_context_mask(text: &str) -> Vec<PsLexical> {
                     stack.push(Mode::Code(0));
                     step = 2;
                 }
-                b'"' if mode == Mode::Double => {
-                    if next == Some(b'"') {
-                        step = 2;
-                    } else {
-                        stack.pop();
+                _ if mode == Mode::Double && quote_at(i).is_some_and(|(single, _)| !single) => {
+                    let len = quote_at(i).map_or(1, |(_, len)| len);
+                    match quote_at(i + len) {
+                        Some((false, len2)) => step = len + len2,
+                        _ => {
+                            stack.pop();
+                            step = len;
+                        }
                     }
                 }
                 b'"' if next == Some(b'@') && line_start(i) => {
@@ -3028,10 +3463,11 @@ fn ps_code_context_mask(text: &str) -> Vec<PsLexical> {
                 }
             }
         }
-        if step == 2 && i + 1 < bytes.len() {
-            mask[i + 1] = mask[i];
+        let step_end = (i + step).min(bytes.len());
+        for slot in i + 1..step_end {
+            mask[slot] = mask[i];
         }
-        i += step;
+        i += step.max(1);
     }
     if let Some(slot) = mask.get_mut(bytes.len()) {
         *slot = match stack.last() {
@@ -3041,134 +3477,6 @@ fn ps_code_context_mask(text: &str) -> Vec<PsLexical> {
         };
     }
     mask
-}
-
-#[allow(clippy::expect_used)]
-static PS_ANY_ASSIGN_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)\s*\+?=").expect("ps any assignment"));
-
-/// String bindings with assignment-time semantics: assignments apply in source
-/// order, a concatenation copies the values its operands hold at that point,
-/// and any assignment the resolver cannot evaluate makes the variable unknown
-/// rather than leaving a stale value that the script no longer holds.
-fn ps_string_bindings_in_order(
-    text: &str,
-    code: &[PsLexical],
-) -> std::collections::HashMap<String, String> {
-    // Only assignments in code take effect in order. Assignment-shaped text
-    // in a comment never runs and is ignored; in a string it may run later
-    // (`iex '...'`, `iex $s`), so it makes the variable unknown instead.
-    let context = |pos: usize| code.get(pos).copied().unwrap_or(PsLexical::String);
-    let in_code = |pos: usize| context(pos) == PsLexical::Code;
-    enum Event {
-        Unknown,
-        Set(String),
-        Append(String),
-        Concat(String),
-    }
-    // (position, rank, name, event): at one position a full concatenation
-    // overrides the literal prefix the plain assignment pattern also matched.
-    let mut events: Vec<(usize, u8, String, Event)> = Vec::new();
-    for caps in PS_VAR_ASSIGN_RE.captures_iter(text) {
-        if let (Some(full), Some(name), Some(value)) =
-            (caps.get(0), caps.get(1), ps_literal_assignment_value(&caps))
-        {
-            let name = name.as_str().to_ascii_lowercase();
-            if in_code(full.start()) {
-                events.push((full.start(), 1, name, Event::Set(value)));
-            }
-        }
-    }
-    for caps in PS_VAR_APPEND_RE.captures_iter(text) {
-        if let (Some(full), Some(name), Some(value)) =
-            (caps.get(0), caps.get(1), ps_literal_assignment_value(&caps))
-        {
-            let name = name.as_str().to_ascii_lowercase();
-            if in_code(full.start()) {
-                events.push((full.start(), 1, name, Event::Append(value)));
-            }
-        }
-    }
-    for caps in PS_MIXED_CONCAT_ASSIGN_RE.captures_iter(text) {
-        if let (Some(full), Some(name), Some(rhs)) = (caps.get(0), caps.get(1), caps.get(2)) {
-            let name = name.as_str().to_ascii_lowercase();
-            if in_code(full.start()) {
-                events.push((
-                    full.start(),
-                    2,
-                    name,
-                    Event::Concat(rhs.as_str().to_string()),
-                ));
-            }
-        }
-    }
-    let mut recognized: std::collections::HashSet<usize> =
-        events.iter().map(|(pos, ..)| *pos).collect();
-    for caps in PS_ANY_ASSIGN_RE.captures_iter(text) {
-        let (Some(full), Some(name)) = (caps.get(0), caps.get(1)) else {
-            continue;
-        };
-        if context(full.start()) == PsLexical::Comment || !recognized.insert(full.start()) {
-            continue;
-        }
-        let name = name.as_str().to_ascii_lowercase();
-        // `$x = $null` deterministically empties the variable; appending to
-        // it then yields the appended text.
-        let rhs = text[full.end()..].trim_start();
-        let is_null = in_code(full.start())
-            && !full.as_str().contains('+')
-            && rhs
-                .get(..5)
-                .is_some_and(|head| head.eq_ignore_ascii_case("$null"))
-            // The statement must end right after `$null`; `$null ?? 'x'` or
-            // `$null + $y` are expressions with other values.
-            && matches!(
-                rhs[5..].trim_start_matches([' ', '\t']).bytes().next(),
-                None | Some(b';' | b'\r' | b'\n' | b'}' | b'#')
-            );
-        let event = if is_null {
-            Event::Set(String::new())
-        } else {
-            Event::Unknown
-        };
-        events.push((full.start(), 0, name, event));
-    }
-    events.sort_by_key(|(pos, rank, ..)| (*pos, *rank));
-    let mut bindings = std::collections::HashMap::new();
-    let mut unknown = std::collections::HashSet::new();
-    for (_, _, name, event) in events {
-        match event {
-            Event::Unknown => {
-                bindings.remove(&name);
-                unknown.insert(name);
-            }
-            Event::Set(value) => {
-                unknown.remove(&name);
-                bindings.insert(name, value);
-            }
-            Event::Append(value) => {
-                // Appending to an unknown value yields an unknown value; an
-                // unassigned variable starts out empty.
-                if !unknown.contains(&name) {
-                    bindings
-                        .entry(name)
-                        .or_insert_with(String::new)
-                        .push_str(&value);
-                }
-            }
-            Event::Concat(rhs) => match resolve_ps_mixed_concat_expr(&rhs, &bindings) {
-                Some(value) => {
-                    unknown.remove(&name);
-                    bindings.insert(name, value);
-                }
-                None => {
-                    bindings.remove(&name);
-                    unknown.insert(name);
-                }
-            },
-        }
-    }
-    bindings
 }
 
 fn ps_string_bindings(text: &str) -> std::collections::HashMap<String, String> {
@@ -8535,7 +8843,7 @@ fn expand_obfuscation_until(text: &str, deadline: Option<std::time::Instant>) ->
             return (out, true);
         }
         out = expand_gzip_function_base64_variables(&out);
-        out = expand_variable_compression_chains(&out);
+        out = expand_variable_compression_chains(&out, deadline);
         out = expand_gzip_base64_literals(&out);
         out = inline_literal_iex_statements(&out);
         out = expand_json_script_base64(&out);
