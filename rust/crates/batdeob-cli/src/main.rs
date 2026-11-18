@@ -1276,7 +1276,8 @@ fn verify_retained_snapshot(path: &Path, expected_size: usize, expected_sha: &st
     if total != expected_size || hex::encode(hasher.finalize()) != expected_sha {
         anyhow::bail!("retained-source snapshot hash mismatch");
     }
-    file.sync_all()?;
+    // The writer already synced this file. Do not sync through this read-only
+    // handle: Windows FlushFileBuffers requires write access and would fail.
     Ok(())
 }
 

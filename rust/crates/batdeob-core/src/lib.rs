@@ -43,6 +43,24 @@ pub(crate) mod split;
 pub(crate) mod synth;
 pub(crate) mod vbs_scan;
 
+/// Wall-clock budget for tests asserting that a large input is summarized
+/// before the analysis deadline fires. `release_secs` is the budget the
+/// optimized, serialized CI run enforces. Unoptimized builds run the same
+/// work several times slower, and parallel test threads on a loaded host
+/// stretch it further, so debug builds scale the budget; the summary-marker
+/// assertions in each test still prove the fast path was taken.
+/// `BATDEOB_TEST_TIMEOUT_SCALE` overrides the factor (e.g. on a busy host).
+#[cfg(test)]
+pub(crate) fn test_timeout_secs(release_secs: u64) -> u64 {
+    let default_scale = if cfg!(debug_assertions) { 20 } else { 1 };
+    let scale = std::env::var("BATDEOB_TEST_TIMEOUT_SCALE")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|scale| *scale > 0)
+        .unwrap_or(default_scale);
+    release_secs.saturating_mul(scale)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -26573,7 +26591,7 @@ mod line_cap_tests {
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 4,
+                timeout_secs: crate::test_timeout_secs(4),
                 ..Config::default()
             },
         );
@@ -26728,7 +26746,7 @@ mod line_cap_tests {
         }
         script.push_str("certutil -decode payload.b64 payload.dll\r\n");
         let cfg = Config {
-            timeout_secs: 1,
+            timeout_secs: crate::test_timeout_secs(1),
             ..Config::default()
         };
 
@@ -26859,7 +26877,7 @@ mod line_cap_tests {
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 2,
+                timeout_secs: crate::test_timeout_secs(2),
                 ..Config::default()
             },
         );
@@ -27070,7 +27088,7 @@ mod line_cap_tests {
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 2,
+                timeout_secs: crate::test_timeout_secs(2),
                 ..Config::default()
             },
         );
@@ -27145,7 +27163,7 @@ mod line_cap_tests {
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 2,
+                timeout_secs: crate::test_timeout_secs(2),
                 ..Config::default()
             },
         );
@@ -27204,7 +27222,7 @@ mod line_cap_tests {
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 2,
+                timeout_secs: crate::test_timeout_secs(2),
                 ..Config::default()
             },
         );
@@ -28100,7 +28118,7 @@ mod limits_tests {
     fn timeout_fires() {
         // With timeout=1 and a trivial script, the deadline should NOT fire.
         let cfg = Config {
-            timeout_secs: 1,
+            timeout_secs: crate::test_timeout_secs(1),
             ..Config::default()
         };
         let report = analyze(b"set X=hi\r\necho %X%", &cfg);
@@ -37518,7 +37536,7 @@ mod trait_dedup_tests {
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 3,
+                timeout_secs: crate::test_timeout_secs(3),
                 ..Config::default()
             },
         );
@@ -37550,7 +37568,7 @@ mod trait_dedup_tests {
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 3,
+                timeout_secs: crate::test_timeout_secs(3),
                 ..Config::default()
             },
         );
@@ -37820,7 +37838,7 @@ ipconfig /all >nul
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 2,
+                timeout_secs: crate::test_timeout_secs(2),
                 ..Config::default()
             },
         );
@@ -37845,7 +37863,7 @@ ipconfig /all >nul
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 3,
+                timeout_secs: crate::test_timeout_secs(3),
                 ..Config::default()
             },
         );
@@ -38148,7 +38166,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             &utf16,
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -38177,7 +38195,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             &bytes,
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -38203,7 +38221,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 2,
+                timeout_secs: crate::test_timeout_secs(2),
                 ..Config::default()
             },
         );
@@ -38229,7 +38247,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -38256,7 +38274,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -38288,7 +38306,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -38321,7 +38339,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -38392,7 +38410,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -38702,7 +38720,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -38727,7 +38745,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -38953,7 +38971,7 @@ echo keep
     #[test]
     fn giant_percent_noise_line_is_summarized_before_timeout() {
         let config = Config {
-            timeout_secs: 2,
+            timeout_secs: crate::test_timeout_secs(2),
             ..Config::default()
         };
         let script = format!("@echo off\r\n{}\r\n", "%UNSET%".repeat(1_800_000));
@@ -40265,7 +40283,7 @@ powershell.exe -WindowStyle Hidden -Command "Write-Host keep"
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -40323,7 +40341,7 @@ powershell.exe -WindowStyle Hidden -Command "Write-Host keep"
         let report = crate::analyze_with_options(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
             &crate::AnalysisOptions::with_environment(environment),
@@ -42006,7 +42024,7 @@ echo after
         let report = analyze(
             &script,
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -42037,7 +42055,7 @@ echo after
         let report = analyze(
             &script,
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -42078,7 +42096,7 @@ echo after
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -42406,7 +42424,7 @@ echo after\r\n";
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -42443,7 +42461,7 @@ echo after\r\n";
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -42518,7 +42536,7 @@ echo after\r\n";
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 3,
+                timeout_secs: crate::test_timeout_secs(3),
                 ..Config::default()
             },
         );
@@ -48744,7 +48762,7 @@ exit
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 3,
+                timeout_secs: crate::test_timeout_secs(3),
                 ..Config::default()
             },
         );
