@@ -993,9 +993,6 @@ fn expand_gzip_base64_literals(text: &str) -> String {
     let mut matches: Vec<(usize, usize, String)> = Vec::new();
     let mut shared_wrapper_end = 0usize;
     for caps in GZIP_B64_LITERAL_RE.captures_iter(text) {
-        if remaining_inflated == 0 {
-            break;
-        }
         let Some(full) = caps.get(0) else { continue };
         let Some(b64) = caps.get(1).map(|m| m.as_str()) else {
             continue;
@@ -1025,6 +1022,11 @@ fn expand_gzip_base64_literals(text: &str) -> String {
             if let Some((_, prev_end, _)) = matches.pop() {
                 shared_wrapper_end = prev_end.max(end);
             }
+            continue;
+        }
+        // Once the budget is spent, keep scanning only to detect literals
+        // that share an already accepted wrapper.
+        if remaining_inflated == 0 {
             continue;
         }
         let Some(inflated) = decompress_ps_stream(&decoded, stream, remaining_inflated) else {
@@ -1214,6 +1216,39 @@ mod gzip_base64_prefilter_tests {
     }
 
     #[test]
+    fn exhausted_budget_still_declines_a_shared_wrapper() {
+        // The first literal alone uses up the budget; the second in the same
+        // wrapper must still make the pass decline the first.
+        let big = vec![b'Z'; super::MAX_GZIP_LITERAL_INFLATED_BYTES - 2];
+        let (decoy, payload) = (gzip_b64(&big), gzip_b64(b"Write-Output payload"));
+        let source = format!("$x=(New-Object IO.StreamReader([IO.Compression.GZipStream]::new([IO.MemoryStream]::new($(if ($false) {{ [Convert]::FromBase64String('{decoy}') }} else {{ [Convert]::FromBase64String('{payload}') }})),[IO.Compression.CompressionMode]::Decompress))).ReadToEnd()\n");
+        let out = expand_gzip_base64_literals(&source);
+        assert!(
+            !out.contains("ZZZZZZZZZZZZZZZZ"),
+            "decoy from a shared wrapper was decoded"
+        );
+    }
+
+    #[test]
+    fn sequential_wrappers_with_different_spellings_both_decode() {
+        // The second literal's wrapper is the nearest StreamReader marker,
+        // not an earlier wrapper with a higher-priority spelling.
+        let (a, b) = (
+            gzip_b64(b"Write-Output first"),
+            gzip_b64(b"Write-Output second"),
+        );
+        let source = format!(
+            "$a=(New-Object System.IO.StreamReader([System.IO.Compression.GZipStream]::new([System.IO.MemoryStream]::new([Convert]::FromBase64String('{a}')),[System.IO.Compression.CompressionMode]::Decompress))).ReadToEnd()\n\
+             $b=(New-Object IO.StreamReader([IO.Compression.GZipStream]::new([IO.MemoryStream]::new([Convert]::FromBase64String('{b}')),[IO.Compression.CompressionMode]::Decompress))).ReadToEnd()\n"
+        );
+        let out = expand_gzip_base64_literals(&source);
+        assert!(
+            out.contains("Write-Output first") && out.contains("Write-Output second"),
+            "{out}"
+        );
+    }
+
+    #[test]
     fn repeated_gzip_literals_share_one_inflation_budget() {
         // A small script of repeated high-ratio literals must not inflate into
         // tens of megabytes of text.
@@ -1373,19 +1408,30 @@ fn compression_wrapper_bounds(
     let after = &text[b64_end..after_end];
     let read_to_end = READ_TO_END_RE.find(after)?;
     let end = b64_end + read_to_end.end();
-    for marker in [
+    // Prefer a StreamReader wrapper over a bare MemoryStream one, and within
+    // each kind the marker nearest the literal: an earlier wrapper spelled
+    // differently must not be taken for this literal's own.
+    let nearest_first = |markers: &[&str]| {
+        let mut found: Vec<usize> = markers
+            .iter()
+            .filter_map(|marker| lower[..b64_start].rfind(marker))
+            .collect();
+        found.sort_unstable_by(|a, b| b.cmp(a));
+        found
+    };
+    let mut candidates = nearest_first(&[
         "new-object system.io.streamreader",
         "new-object io.streamreader",
         "[system.io.streamreader]::new",
         "[io.streamreader]::new",
+    ]);
+    candidates.extend(nearest_first(&[
         "new-object system.io.memorystream",
         "new-object io.memorystream",
         "[system.io.memorystream]::new",
         "[io.memorystream]::new",
-    ] {
-        let Some(start) = lower[..b64_start].rfind(marker) else {
-            continue;
-        };
+    ]));
+    for start in candidates {
         let wrapper = &lower[start..end];
         if !wrapper.contains("memorystream") {
             continue;
