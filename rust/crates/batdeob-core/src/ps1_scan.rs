@@ -1006,6 +1006,7 @@ fn expand_variable_compression_chains(text: &str) -> String {
     // both the chain count and the total inflated bytes are bounded per pass.
     // Chains past either bound stay intact in the output for the analyst.
     let mut remaining_inflated = MAX_COMPRESSION_CHAIN_INFLATED_BYTES;
+    let mut code_mask: Option<Vec<bool>> = None;
     for caps in VARIABLE_COMPRESSION_CHAIN_RE
         .captures_iter(text)
         .take(MAX_COMPRESSION_CHAINS_PER_PASS)
@@ -1029,7 +1030,8 @@ fn expand_variable_compression_chains(text: &str) -> String {
         }
         // Resolve only definitions preceding this chain; later assignments must
         // not retroactively change which bytes this decoder consumes.
-        let bindings = ps_string_bindings_in_order(&text[..full.start()]);
+        let code = code_mask.get_or_insert_with(|| ps_code_context_mask(text));
+        let bindings = ps_string_bindings_in_order(&text[..full.start()], code);
         let Some(encoded) = bindings.get(&names[1].to_ascii_lowercase()) else {
             continue;
         };
@@ -1119,6 +1121,15 @@ fn inline_literal_iex_statements(text: &str) -> String {
             text.as_bytes().get(after),
             None | Some(b';' | b'\r' | b'\n' | b'}' | b'#')
         ) {
+            continue;
+        }
+        // PowerShell 7 continues a pipeline onto a following line that begins
+        // with `|`, so a line break alone does not end the statement.
+        let next_code = text.as_bytes()[after..]
+            .iter()
+            .position(|b| !b.is_ascii_whitespace())
+            .map(|rel| text.as_bytes()[after + rel]);
+        if matches!(text.as_bytes().get(after), Some(b'\r' | b'\n')) && next_code == Some(b'|') {
             continue;
         }
         replacements.push((call.start(), close + 1, format!("{source}\n")));
@@ -1379,12 +1390,35 @@ mod gzip_base64_prefilter_tests {
         assert!(out.contains("executed-stage"), "{out}");
 
         // An assignment the resolver cannot evaluate makes the value unknown.
-        let source = format!("$blob='{executed}';$blob=Get-Content x.txt;{chain}");
-        let out = super::expand_variable_compression_chains(&source);
-        assert!(
-            !out.contains("executed-stage"),
-            "a stale value survived an unresolvable reassignment: {out}"
-        );
+        for reassignment in [
+            "$blob=Get-Content x.txt;",
+            "$n=\"$($blob=Get-Content x)\";",
+            // `#` inside a token is not a comment.
+            "Write-Output a#b;$blob=Get-Content x;",
+        ] {
+            let source = format!("$blob='{executed}';{reassignment}{chain}");
+            let out = super::expand_variable_compression_chains(&source);
+            assert!(
+                !out.contains("executed-stage"),
+                "a stale value survived an unresolvable reassignment {reassignment}: {out}"
+            );
+        }
+
+        // Assignment-shaped text in strings or comments assigns nothing and
+        // must not hide the stage.
+        for inert in [
+            "$note='$blob=Get-Content x';",
+            "$note=\"$blob=x\";",
+            "# $blob=Get-Content x\n",
+            "<# $blob=Get-Content x #>",
+        ] {
+            let source = format!("$blob='{executed}';{inert}{chain}");
+            let out = super::expand_variable_compression_chains(&source);
+            assert!(
+                out.contains("executed-stage"),
+                "inert text {inert:?} hid the decoded stage: {out}"
+            );
+        }
     }
 
     #[test]
@@ -1443,6 +1477,8 @@ mod gzip_base64_prefilter_tests {
             "iex('Write-Output a; Write-Output b') | Out-File result.txt",
             "iex('Write-Output a; Write-Output b') > result.txt",
             "iex('Write-Output a; Write-Output b').Length",
+            // PowerShell 7 continues a pipeline onto a line that starts with `|`.
+            "iex('Write-Output a; Write-Output b')\r\n  | Out-File result.txt",
         ] {
             let normalized = normalize_ps1_text(source);
             assert!(
@@ -1485,6 +1521,12 @@ mod gzip_base64_prefilter_tests {
             super::parse_ps_double_quoted_literal("\"a`nb`tc`rd`0e`\"f``g`qh\"", 0)
                 .map(|(_, value)| value),
             Some("a\nb\tc\rd\0e\"f`gqh".to_string())
+        );
+        // `e (ESC) exists only in PowerShell 6+; Windows PowerShell 5.1 reads `e as e.
+        assert_eq!(
+            super::parse_ps_double_quoted_literal("\"https://`example.com\"", 0)
+                .map(|(_, value)| value),
+            Some("https://example.com".to_string())
         );
         assert_eq!(
             super::parse_ps_double_quoted_literal("\"x`éy\"", 0).map(|(_, value)| value),
@@ -2811,6 +2853,140 @@ mod regex_replace_b64_prefilter_tests {
     }
 }
 
+/// Marks each byte of `text` that PowerShell would parse as code rather than
+/// as string content or a comment. Subexpressions `$( … )` inside expandable
+/// strings are code. Positions are byte offsets; the mask has `len + 1` slots.
+fn ps_code_context_mask(text: &str) -> Vec<bool> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Mode {
+        Code(usize),
+        Single,
+        Double,
+        HereSingle,
+        HereDouble,
+        LineComment,
+        BlockComment,
+    }
+    let bytes = text.as_bytes();
+    let mut mask = vec![false; bytes.len() + 1];
+    let mut stack = vec![Mode::Code(0)];
+    let line_start = |i: usize| i == 0 || bytes[i - 1] == b'\n';
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let mode = *stack.last().unwrap_or(&Mode::Code(0));
+        mask[i] = matches!(mode, Mode::Code(_));
+        let b = bytes[i];
+        let next = bytes.get(i + 1).copied();
+        let mut step = 1usize;
+        match mode {
+            Mode::Code(depth) => match b {
+                b'`' => step = 2,
+                b'\'' => stack.push(Mode::Single),
+                b'"' => stack.push(Mode::Double),
+                b'@' if next == Some(b'\'') || next == Some(b'"') => {
+                    let rest = &bytes[i + 2..];
+                    let ws = rest
+                        .iter()
+                        .take_while(|c| matches!(c, b' ' | b'\t'))
+                        .count();
+                    if matches!(rest.get(ws), Some(b'\r' | b'\n')) {
+                        stack.push(if next == Some(b'\'') {
+                            Mode::HereSingle
+                        } else {
+                            Mode::HereDouble
+                        });
+                        step = 2;
+                    }
+                }
+                b'<' if next == Some(b'#') => {
+                    stack.push(Mode::BlockComment);
+                    step = 2;
+                }
+                // `#` starts a comment only at the start of a token; inside a
+                // bareword such as `a#b` it is an ordinary character.
+                b'#' if i == 0
+                    || bytes[i - 1].is_ascii_whitespace()
+                    || matches!(
+                        bytes[i - 1],
+                        b';' | b'(' | b')' | b'{' | b'}' | b'|' | b',' | b'=' | b'&'
+                    ) =>
+                {
+                    stack.push(Mode::LineComment)
+                }
+                b'(' => {
+                    if let Some(Mode::Code(d)) = stack.last_mut() {
+                        *d += 1;
+                    }
+                }
+                b')' if depth == 0 && stack.len() > 1 => {
+                    // Closes a `$( … )` subexpression inside a string.
+                    stack.pop();
+                }
+                b')' => {
+                    if let Some(Mode::Code(d)) = stack.last_mut() {
+                        *d = d.saturating_sub(1);
+                    }
+                }
+                _ => {}
+            },
+            Mode::Single => {
+                if b == b'\'' {
+                    if next == Some(b'\'') {
+                        step = 2;
+                    } else {
+                        stack.pop();
+                    }
+                }
+            }
+            Mode::Double | Mode::HereDouble => match b {
+                b'`' => step = 2,
+                b'$' if next == Some(b'(') => {
+                    stack.push(Mode::Code(0));
+                    step = 2;
+                }
+                b'"' if mode == Mode::Double => {
+                    if next == Some(b'"') {
+                        step = 2;
+                    } else {
+                        stack.pop();
+                    }
+                }
+                b'"' if next == Some(b'@') && line_start(i) => {
+                    stack.pop();
+                    step = 2;
+                }
+                _ => {}
+            },
+            Mode::HereSingle => {
+                if b == b'\'' && next == Some(b'@') && line_start(i) {
+                    stack.pop();
+                    step = 2;
+                }
+            }
+            Mode::LineComment => {
+                if b == b'\n' {
+                    stack.pop();
+                    mask[i] = true;
+                }
+            }
+            Mode::BlockComment => {
+                if b == b'#' && next == Some(b'>') {
+                    stack.pop();
+                    step = 2;
+                }
+            }
+        }
+        if step == 2 && i + 1 < bytes.len() {
+            mask[i + 1] = mask[i];
+        }
+        i += step;
+    }
+    if let Some(slot) = mask.get_mut(bytes.len()) {
+        *slot = matches!(stack.last(), Some(Mode::Code(_)) | None);
+    }
+    mask
+}
+
 #[allow(clippy::expect_used)]
 static PS_ANY_ASSIGN_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)\s*\+?=").expect("ps any assignment"));
@@ -2819,7 +2995,12 @@ static PS_ANY_ASSIGN_RE: Lazy<Regex> =
 /// order, a concatenation copies the values its operands hold at that point,
 /// and any assignment the resolver cannot evaluate makes the variable unknown
 /// rather than leaving a stale value that the script no longer holds.
-fn ps_string_bindings_in_order(text: &str) -> std::collections::HashMap<String, String> {
+fn ps_string_bindings_in_order(
+    text: &str,
+    code: &[bool],
+) -> std::collections::HashMap<String, String> {
+    // Assignment-shaped text inside a string or comment assigns nothing.
+    let in_code = |pos: usize| code.get(pos).copied().unwrap_or(false);
     enum Event {
         Unknown,
         Set(String),
@@ -2834,7 +3015,9 @@ fn ps_string_bindings_in_order(text: &str) -> std::collections::HashMap<String, 
             (caps.get(0), caps.get(1), ps_literal_assignment_value(&caps))
         {
             let name = name.as_str().to_ascii_lowercase();
-            events.push((full.start(), 1, name, Event::Set(value)));
+            if in_code(full.start()) {
+                events.push((full.start(), 1, name, Event::Set(value)));
+            }
         }
     }
     for caps in PS_VAR_APPEND_RE.captures_iter(text) {
@@ -2842,18 +3025,22 @@ fn ps_string_bindings_in_order(text: &str) -> std::collections::HashMap<String, 
             (caps.get(0), caps.get(1), ps_literal_assignment_value(&caps))
         {
             let name = name.as_str().to_ascii_lowercase();
-            events.push((full.start(), 1, name, Event::Append(value)));
+            if in_code(full.start()) {
+                events.push((full.start(), 1, name, Event::Append(value)));
+            }
         }
     }
     for caps in PS_MIXED_CONCAT_ASSIGN_RE.captures_iter(text) {
         if let (Some(full), Some(name), Some(rhs)) = (caps.get(0), caps.get(1), caps.get(2)) {
             let name = name.as_str().to_ascii_lowercase();
-            events.push((
-                full.start(),
-                2,
-                name,
-                Event::Concat(rhs.as_str().to_string()),
-            ));
+            if in_code(full.start()) {
+                events.push((
+                    full.start(),
+                    2,
+                    name,
+                    Event::Concat(rhs.as_str().to_string()),
+                ));
+            }
         }
     }
     let mut recognized: std::collections::HashSet<usize> =
@@ -2862,7 +3049,7 @@ fn ps_string_bindings_in_order(text: &str) -> std::collections::HashMap<String, 
         let (Some(full), Some(name)) = (caps.get(0), caps.get(1)) else {
             continue;
         };
-        if recognized.insert(full.start()) {
+        if in_code(full.start()) && recognized.insert(full.start()) {
             let name = name.as_str().to_ascii_lowercase();
             events.push((full.start(), 0, name, Event::Unknown));
         }
@@ -7304,12 +7491,13 @@ fn parse_ps_double_quoted_literal(text: &str, start: usize) -> Option<(usize, St
         if byte == b'`' {
             // PowerShell escape: a known control letter maps to its control
             // character; any other character (including non-ASCII) is itself.
+            // `e and `u{…} exist only in PowerShell 6+; Windows PowerShell 5.1
+            // (powershell.exe) reads them as the plain letter.
             let (escaped, escaped_len) = next_char_at(text, pos + 1)?;
             out.push(match escaped {
                 '0' => '\0',
                 'a' => '\u{7}',
                 'b' => '\u{8}',
-                'e' => '\u{1b}',
                 'f' => '\u{c}',
                 'n' => '\n',
                 'r' => '\r',
