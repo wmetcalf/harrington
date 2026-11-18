@@ -1006,7 +1006,7 @@ fn expand_variable_compression_chains(text: &str) -> String {
     // both the chain count and the total inflated bytes are bounded per pass.
     // Chains past either bound stay intact in the output for the analyst.
     let mut remaining_inflated = MAX_COMPRESSION_CHAIN_INFLATED_BYTES;
-    let mut code_mask: Option<Vec<bool>> = None;
+    let mut code_mask: Option<Vec<PsLexical>> = None;
     for caps in VARIABLE_COMPRESSION_CHAIN_RE
         .captures_iter(text)
         .take(MAX_COMPRESSION_CHAINS_PER_PASS)
@@ -1390,7 +1390,13 @@ mod gzip_base64_prefilter_tests {
         assert!(out.contains("executed-stage"), "{out}");
 
         // An assignment the resolver cannot evaluate makes the value unknown.
+        // A string can run later (`iex '...'`, `iex $s`), so assignment-shaped
+        // text in one makes the value ambiguous: decline rather than decode a
+        // stage the script may no longer hold.
+        let quoted_decoy = format!("iex '$blob=''{decoy}''';");
         for reassignment in [
+            quoted_decoy.as_str(),
+            "$note='$blob=Get-Content x';",
             "$blob=Get-Content x.txt;",
             "$n=\"$($blob=Get-Content x)\";",
             // `#` inside a token is not a comment.
@@ -1404,14 +1410,9 @@ mod gzip_base64_prefilter_tests {
             );
         }
 
-        // Assignment-shaped text in strings or comments assigns nothing and
-        // must not hide the stage.
-        for inert in [
-            "$note='$blob=Get-Content x';",
-            "$note=\"$blob=x\";",
-            "# $blob=Get-Content x\n",
-            "<# $blob=Get-Content x #>",
-        ] {
+        // Comments never run, so assignment-shaped text there must not hide
+        // the stage.
+        for inert in ["# $blob=Get-Content x\n", "<# $blob=Get-Content x #>"] {
             let source = format!("$blob='{executed}';{inert}{chain}");
             let out = super::expand_variable_compression_chains(&source);
             assert!(
@@ -1469,6 +1470,15 @@ mod gzip_base64_prefilter_tests {
             out.len(),
             source.len()
         );
+    }
+
+    #[test]
+    fn ordered_bindings_apply_literal_appends() {
+        let text = "$p=$null;$p+='ab';$p += \"cd\";$q=$p+'e';$r=$nullable;$r+='x'";
+        let bindings = super::ps_string_bindings_in_order(text, &super::ps_code_context_mask(text));
+        assert_eq!(bindings.get("p").map(String::as_str), Some("abcd"));
+        assert_eq!(bindings.get("q").map(String::as_str), Some("abcde"));
+        assert_eq!(bindings.get("r"), None, "$nullable is not $null");
     }
 
     #[test]
@@ -2853,10 +2863,18 @@ mod regex_replace_b64_prefilter_tests {
     }
 }
 
-/// Marks each byte of `text` that PowerShell would parse as code rather than
-/// as string content or a comment. Subexpressions `$( … )` inside expandable
-/// strings are code. Positions are byte offsets; the mask has `len + 1` slots.
-fn ps_code_context_mask(text: &str) -> Vec<bool> {
+/// Lexical context of one byte for [`ps_code_context_mask`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PsLexical {
+    Code,
+    String,
+    Comment,
+}
+
+/// Classifies each byte of `text` as PowerShell code, string content or a
+/// comment. Subexpressions `$( … )` inside expandable strings are code.
+/// Positions are byte offsets; the mask has `len + 1` slots.
+fn ps_code_context_mask(text: &str) -> Vec<PsLexical> {
     #[derive(Clone, Copy, PartialEq)]
     enum Mode {
         Code(usize),
@@ -2868,13 +2886,17 @@ fn ps_code_context_mask(text: &str) -> Vec<bool> {
         BlockComment,
     }
     let bytes = text.as_bytes();
-    let mut mask = vec![false; bytes.len() + 1];
+    let mut mask = vec![PsLexical::String; bytes.len() + 1];
     let mut stack = vec![Mode::Code(0)];
     let line_start = |i: usize| i == 0 || bytes[i - 1] == b'\n';
     let mut i = 0usize;
     while i < bytes.len() {
         let mode = *stack.last().unwrap_or(&Mode::Code(0));
-        mask[i] = matches!(mode, Mode::Code(_));
+        mask[i] = match mode {
+            Mode::Code(_) => PsLexical::Code,
+            Mode::LineComment | Mode::BlockComment => PsLexical::Comment,
+            _ => PsLexical::String,
+        };
         let b = bytes[i];
         let next = bytes.get(i + 1).copied();
         let mut step = 1usize;
@@ -2966,7 +2988,7 @@ fn ps_code_context_mask(text: &str) -> Vec<bool> {
             Mode::LineComment => {
                 if b == b'\n' {
                     stack.pop();
-                    mask[i] = true;
+                    mask[i] = PsLexical::Code;
                 }
             }
             Mode::BlockComment => {
@@ -2982,7 +3004,11 @@ fn ps_code_context_mask(text: &str) -> Vec<bool> {
         i += step;
     }
     if let Some(slot) = mask.get_mut(bytes.len()) {
-        *slot = matches!(stack.last(), Some(Mode::Code(_)) | None);
+        *slot = match stack.last() {
+            Some(Mode::Code(_)) | None => PsLexical::Code,
+            Some(Mode::LineComment | Mode::BlockComment) => PsLexical::Comment,
+            Some(_) => PsLexical::String,
+        };
     }
     mask
 }
@@ -2997,10 +3023,13 @@ static PS_ANY_ASSIGN_RE: Lazy<Regex> =
 /// rather than leaving a stale value that the script no longer holds.
 fn ps_string_bindings_in_order(
     text: &str,
-    code: &[bool],
+    code: &[PsLexical],
 ) -> std::collections::HashMap<String, String> {
-    // Assignment-shaped text inside a string or comment assigns nothing.
-    let in_code = |pos: usize| code.get(pos).copied().unwrap_or(false);
+    // Only assignments in code take effect in order. Assignment-shaped text
+    // in a comment never runs and is ignored; in a string it may run later
+    // (`iex '...'`, `iex $s`), so it makes the variable unknown instead.
+    let context = |pos: usize| code.get(pos).copied().unwrap_or(PsLexical::String);
+    let in_code = |pos: usize| context(pos) == PsLexical::Code;
     enum Event {
         Unknown,
         Set(String),
@@ -3049,10 +3078,28 @@ fn ps_string_bindings_in_order(
         let (Some(full), Some(name)) = (caps.get(0), caps.get(1)) else {
             continue;
         };
-        if in_code(full.start()) && recognized.insert(full.start()) {
-            let name = name.as_str().to_ascii_lowercase();
-            events.push((full.start(), 0, name, Event::Unknown));
+        if context(full.start()) == PsLexical::Comment || !recognized.insert(full.start()) {
+            continue;
         }
+        let name = name.as_str().to_ascii_lowercase();
+        // `$x = $null` deterministically empties the variable; appending to
+        // it then yields the appended text.
+        let rhs = text[full.end()..].trim_start();
+        let is_null = in_code(full.start())
+            && !full.as_str().contains('+')
+            && rhs
+                .get(..5)
+                .is_some_and(|head| head.eq_ignore_ascii_case("$null"))
+            && !rhs[5..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | ':' | '.' | '['));
+        let event = if is_null {
+            Event::Set(String::new())
+        } else {
+            Event::Unknown
+        };
+        events.push((full.start(), 0, name, event));
     }
     events.sort_by_key(|(pos, rank, ..)| (*pos, *rank));
     let mut bindings = std::collections::HashMap::new();
