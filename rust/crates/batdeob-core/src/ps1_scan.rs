@@ -974,6 +974,11 @@ enum PsCompressionStream {
     Deflate,
 }
 
+/// Total inlined text one gzip-literal pass may add. expand_obfuscation_until
+/// runs at most 8 passes, so one normalization inlines at most 8x this (master
+/// had no aggregate bound at all).
+const MAX_GZIP_LITERAL_INFLATED_BYTES: usize = 2 * 1024 * 1024;
+
 fn expand_gzip_base64_literals(text: &str) -> String {
     let has_gzip = contains_ascii_case_insensitive(text, "gzipstream");
     let has_deflate = contains_ascii_case_insensitive(text, "deflatestream");
@@ -981,26 +986,54 @@ fn expand_gzip_base64_literals(text: &str) -> String {
         return text.to_string();
     }
 
-    let matches: Vec<(usize, usize, String)> = GZIP_B64_LITERAL_RE
-        .captures_iter(text)
-        .filter_map(|caps| {
-            let full = caps.get(0)?;
-            let b64 = caps.get(1)?.as_str();
-            let decoded = decode_ps_base64_string(b64)?;
-            let (start, end, stream) = compression_wrapper_bounds(text, full.start(), full.end())
-                .unwrap_or_else(|| {
-                    let stream = if has_deflate {
-                        PsCompressionStream::Deflate
-                    } else {
-                        PsCompressionStream::Gzip
-                    };
-                    (full.start(), full.end(), stream)
-                });
-            let inflated = decompress_ps_stream(&decoded, stream, 2 * 1024 * 1024)?;
-            let s = decode_payload(&inflated).into_owned().replace('\'', "''");
-            Some((start, end, format!("'{s}'")))
-        })
-        .collect();
+    // All literals in one pass share one inflation budget, so repeated
+    // high-ratio literals cannot amplify a small script into gigabytes.
+    let mut remaining_inflated = MAX_GZIP_LITERAL_INFLATED_BYTES;
+    let mut matches: Vec<(usize, usize, String)> = Vec::new();
+    for caps in GZIP_B64_LITERAL_RE.captures_iter(text) {
+        if remaining_inflated == 0 {
+            break;
+        }
+        let Some(full) = caps.get(0) else { continue };
+        let Some(b64) = caps.get(1).map(|m| m.as_str()) else {
+            continue;
+        };
+        let Some(decoded) = decode_ps_base64_string(b64) else {
+            continue;
+        };
+        let (start, end, stream) = compression_wrapper_bounds(text, full.start(), full.end())
+            .unwrap_or_else(|| {
+                let stream = if has_deflate {
+                    PsCompressionStream::Deflate
+                } else {
+                    PsCompressionStream::Gzip
+                };
+                (full.start(), full.end(), stream)
+            });
+        // Two literals inside one wrapper share its span; replacing it twice
+        // would slice past the end of the shortened text (master panicked).
+        // Keep the first. Known limit: the wrapper search reaches back to any
+        // earlier marker, so this cannot tell a genuinely shared wrapper (e.g.
+        // an if/else between two literals) from a later independent loader;
+        // declining both would lose ordinary two-stage loaders instead.
+        if matches
+            .last()
+            .is_some_and(|(_, prev_end, _)| start < *prev_end)
+        {
+            continue;
+        }
+        let Some(inflated) = decompress_ps_stream(&decoded, stream, remaining_inflated) else {
+            continue;
+        };
+        let s = decode_payload(&inflated).into_owned().replace('\'', "''");
+        // Text decoding can widen bytes; charge the inlined text.
+        let Some(left) = remaining_inflated.checked_sub(s.len() + 2) else {
+            remaining_inflated = 0;
+            continue;
+        };
+        remaining_inflated = left;
+        matches.push((start, end, format!("'{s}'")));
+    }
     let mut out = text.to_string();
     for (start, end, replacement) in matches.into_iter().rev() {
         out.replace_range(start..end, &replacement);
@@ -1148,6 +1181,43 @@ mod gzip_base64_prefilter_tests {
         expand_gzip_base64_literals, expand_gzip_function_base64_variables, gzip_wrapper_bounds,
         normalize_ps1_text,
     };
+
+    #[allow(clippy::expect_used)]
+    fn gzip_b64(bytes: &[u8]) -> String {
+        let mut writer = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        writer.write_all(bytes).expect("writes fixture");
+        base64::engine::general_purpose::STANDARD.encode(writer.finish().expect("gzip"))
+    }
+
+    #[test]
+    fn two_literals_in_one_wrapper_do_not_panic() {
+        // Both literals map to the same wrapper span; replacing it twice used
+        // to slice past the end of the already shortened string.
+        let (a, b) = (gzip_b64(b"Write-Output a"), gzip_b64(b"Write-Output b"));
+        let source = format!("$x=(New-Object IO.StreamReader([IO.Compression.GZipStream]::new([IO.MemoryStream]::new([Convert]::FromBase64String('{a}') + [Convert]::FromBase64String('{b}')),[IO.Compression.CompressionMode]::Decompress))).ReadToEnd()\n");
+        let _ = expand_gzip_base64_literals(&source);
+        let _ = normalize_ps1_text(&source);
+    }
+
+    #[test]
+    fn repeated_gzip_literals_share_one_inflation_budget() {
+        // A small script of repeated high-ratio literals must not inflate into
+        // tens of megabytes of text.
+        let blob = gzip_b64(&vec![b'A'; 1024 * 1024]);
+        let wrapper = format!("$a=(New-Object System.IO.StreamReader([System.IO.Compression.GZipStream]::new([System.IO.MemoryStream]::new([Convert]::FromBase64String('{blob}')),[System.IO.Compression.CompressionMode]::Decompress))).ReadToEnd()\n");
+        let source = wrapper.repeat(24);
+        let out = expand_gzip_base64_literals(&source);
+        assert!(
+            out.contains(&"A".repeat(1024)),
+            "first literal was not inflated"
+        );
+        assert!(
+            out.len() <= source.len() + super::MAX_GZIP_LITERAL_INFLATED_BYTES,
+            "literals inflated {} bytes from a {} byte script",
+            out.len(),
+            source.len()
+        );
+    }
 
     #[test]
     fn ignores_text_without_gzip_base64_shape() {

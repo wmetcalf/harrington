@@ -33,10 +33,33 @@ pub(crate) mod normalize;
 pub(crate) mod ps1_scan;
 pub(crate) mod ps_alias;
 pub(crate) mod redirect;
+mod retained_sources;
 pub(crate) mod snapshot;
+pub use retained_sources::{
+    RetainedSourceEvent, RetainedSourceRange, RetainedSourceSnapshot, RetainedSources,
+    MAX_RETAINED_SOURCE_BYTES, RETAINED_SOURCE_MANIFEST_RESERVE,
+};
 pub(crate) mod split;
 pub(crate) mod synth;
 pub(crate) mod vbs_scan;
+
+/// Wall-clock budget for tests asserting that a large input is summarized
+/// before the analysis deadline fires. `release_secs` is the budget the
+/// optimized, serialized CI run enforces. Unoptimized builds run the same
+/// work several times slower, and parallel test threads on a loaded host
+/// stretch it further, so debug builds scale the budget; the summary-marker
+/// assertions in each test still prove the fast path was taken.
+/// `BATDEOB_TEST_TIMEOUT_SCALE` overrides the factor (e.g. on a busy host).
+#[cfg(test)]
+pub(crate) fn test_timeout_secs(release_secs: u64) -> u64 {
+    let default_scale = if cfg!(debug_assertions) { 20 } else { 1 };
+    let scale = std::env::var("BATDEOB_TEST_TIMEOUT_SCALE")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|scale| *scale > 0)
+        .unwrap_or(default_scale);
+    release_secs.saturating_mul(scale)
+}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -9436,6 +9459,8 @@ set "_it="
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Report {
+    /// Optional bounded source snapshots; disabled by default.
+    pub retained_sources: Option<RetainedSources>,
     pub deobfuscated: String,
     pub traits: Vec<Trait>,
     pub extracted_cmd: Vec<String>,
@@ -10067,12 +10092,22 @@ pub fn analyze_with_path(
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct AnalysisOptions {
+    pub retain_summarized_sources: bool,
     pub environment: Vec<(String, String)>,
 }
 
 impl AnalysisOptions {
+    /// Enable the fixed 8 MiB, root-only retained-source profile.
+    pub fn with_retained_sources(mut self) -> Self {
+        self.retain_summarized_sources = true;
+        self
+    }
+
     pub fn with_environment(environment: Vec<(String, String)>) -> Self {
-        Self { environment }
+        Self {
+            environment,
+            ..Self::default()
+        }
     }
 }
 
@@ -10226,6 +10261,9 @@ fn analyze_inner(
     options: &AnalysisOptions,
 ) -> Report {
     let mut env = Environment::new(cfg);
+    let mut capture = options
+        .retain_summarized_sources
+        .then(|| retained_sources::Collector::new(input, env.limits.deadline));
     for (name, value) in &options.environment {
         env.seed(name, value);
     }
@@ -10234,21 +10272,50 @@ fn analyze_inner(
         env.input_bytes = Some(std::sync::Arc::from(input));
     }
     if looks_like_pe(input) {
-        return disguised_binary_report(
+        let mut report = disguised_binary_report(
             input,
             env,
             "pe",
             "disguised-pe-input",
             cfg.max_traits_per_kind,
         );
+        report.retained_sources = capture.map(|mut c| {
+            c.unsupported_input();
+            c.finish()
+        });
+        return report;
     }
     if let Some(fmt) = detect_disguised_binary(input) {
         let label = format!("disguised-{fmt}-input");
-        return disguised_binary_report(input, env, fmt, &label, cfg.max_traits_per_kind);
+        let mut report = disguised_binary_report(input, env, fmt, &label, cfg.max_traits_per_kind);
+        report.retained_sources = capture.map(|mut c| {
+            c.unsupported_input();
+            c.finish()
+        });
+        return report;
     }
     if let Some(blob) = extract_github_blob_raw_lines(input) {
         let nested_file_path = env.file_path.clone();
-        let mut report = analyze_inner(blob.content.as_bytes(), cfg, nested_file_path, options);
+        let nested_options;
+        let nested_options = if options.retain_summarized_sources {
+            nested_options = AnalysisOptions {
+                retain_summarized_sources: false,
+                ..options.clone()
+            };
+            &nested_options
+        } else {
+            options
+        };
+        let mut report = analyze_inner(
+            blob.content.as_bytes(),
+            cfg,
+            nested_file_path,
+            nested_options,
+        );
+        if let Some(mut collector) = capture.take() {
+            collector.unsupported_input();
+            report.retained_sources = Some(collector.finish());
+        }
         let mut summary = format!(
             "rem omitted GitHub HTML blob wrapper for {} ({} wrapper bytes)",
             blob.path.as_deref().unwrap_or("embedded file"),
@@ -10291,6 +10358,10 @@ fn analyze_inner(
         }
         dedup_traits(&mut traits, cfg.max_traits_per_kind);
         return Report {
+            retained_sources: capture.map(|mut c| {
+                c.unsupported_input();
+                c.finish()
+            }),
             deobfuscated: summary,
             traits,
             extracted_cmd: Vec::new(),
@@ -10322,14 +10393,19 @@ fn analyze_inner(
     let raw_scan_text = summarized_raw_windows_profile_checks
         .as_deref()
         .unwrap_or(raw_scan_text);
-    // Collapse giant unresolved percent-noise before broad raw-source scans.
+    // Collapse only giant unresolved percent-noise before broad raw-source scans.
+    // Smaller commands must wait until their SET definitions have been consumed.
     // The original bytes remain available for later artifact recovery, while
     // these scans only need the surviving commands and compact summaries.
     let summarized_early_raw_percent_noise = if raw_scan_text.len() >= 1024
         && raw_scan_text.contains('%')
         && has_oversize_percent_noise_candidate_line(raw_scan_text)
     {
-        let summarized = summarize_long_unresolved_percent_noise_lines(raw_scan_text, &mut env);
+        let summarized = summarize_percent_noise_lines_above(
+            raw_scan_text,
+            &mut env,
+            MAX_PERCENT_NOISE_ACTION_MATERIALIZATION_SOURCE_BYTES,
+        );
         (summarized != raw_scan_text).then_some(summarized)
     } else {
         None
@@ -10368,12 +10444,16 @@ fn analyze_inner(
     let standalone_script_input =
         pre_scan_standalone_script_input(raw_scan_text.as_bytes(), &mut env);
     pre_scan_damaged_powershell_handoff(raw_scan_text.as_bytes(), &mut env);
-    if let Some(report) = summarize_large_public_activation_utility_report(
+    if let Some(mut report) = summarize_large_public_activation_utility_report(
         raw_scan_text,
         input.len(),
         &mut env,
         cfg.max_traits_per_kind,
     ) {
+        report.retained_sources = capture.map(|mut c| {
+            c.unsupported_input();
+            c.finish()
+        });
         return report;
     }
     let summarized_raw_base64_pe = if has_embedded_base64_pe_carrier_hint(raw_scan_input) {
@@ -10385,7 +10465,7 @@ fn analyze_inner(
     };
     let raw_scan_text = summarized_raw_base64_pe.as_deref().unwrap_or(raw_scan_text);
     let summarized_raw_colon_comment =
-        summarize_long_double_colon_payload_lines(raw_scan_text, &mut env);
+        summarize_long_double_colon_payload_lines(raw_scan_text, &mut env, capture.as_mut());
     let raw_scan_text = summarized_raw_colon_comment
         .as_deref()
         .unwrap_or(raw_scan_text);
@@ -10788,7 +10868,12 @@ fn analyze_inner(
         out = summarize_numeric_label_dispatch_scaffolding(&out, &mut env);
         out = suppress_short_set_fragment_line_runs(&out, &mut env);
         out = suppress_unreferenced_extracted_short_set_fragments(&out, &env);
-        out = summarize_unreferenced_long_set_scaffolding_runs(&out, &mut env);
+        out = summarize_unreferenced_long_set_scaffolding_runs_captured(
+            &out,
+            &mut env,
+            capture.as_mut(),
+            "root_post_analysis_set",
+        );
         if let Some(summarized) =
             summarize_dense_unresolved_control_flow_noise_lines(&out, &mut env)
         {
@@ -11064,7 +11149,12 @@ fn analyze_inner(
     out = summarize_encoded_set_carrier_line_runs(&out, &mut env);
     out = suppress_short_set_fragment_line_runs(&out, &mut env);
     out = suppress_unreferenced_extracted_short_set_fragments(&out, &env);
-    out = summarize_unreferenced_long_set_scaffolding_runs(&out, &mut env);
+    out = summarize_unreferenced_long_set_scaffolding_runs_captured(
+        &out,
+        &mut env,
+        capture.as_mut(),
+        "root_final_set",
+    );
     out = summarize_generated_nonascii_set_scaffold_runs(&out, &mut env);
     if let Some(summarized) = summarize_dense_unresolved_control_flow_noise_lines(&out, &mut env) {
         out = summarized;
@@ -11141,6 +11231,7 @@ fn analyze_inner(
     dedup_traits(&mut env.traits, max_per_kind);
     reconcile_live_trait_caps(&mut env.traits, env.admin_command_total, max_per_kind);
     Report {
+        retained_sources: capture.map(retained_sources::Collector::finish),
         deobfuscated: out,
         traits: std::mem::take(&mut env.traits),
         extracted_cmd: std::mem::take(&mut env.all_extracted_cmd),
@@ -11169,6 +11260,7 @@ fn disguised_binary_report(
     dedup_traits(&mut env.traits, max_traits_per_kind);
 
     Report {
+        retained_sources: None,
         deobfuscated: String::new(),
         traits: std::mem::take(&mut env.traits),
         extracted_cmd: Vec::new(),
@@ -16084,7 +16176,17 @@ fn is_unreferenced_extracted_short_set_fragment_line(line: &str, text: &str) -> 
         && !contains_ascii_case_insensitive_bytes(text.as_bytes(), bang_ref.as_bytes())
 }
 
+#[cfg(test)]
 fn summarize_unreferenced_long_set_scaffolding_runs(text: &str, env: &mut Environment) -> String {
+    summarize_unreferenced_long_set_scaffolding_runs_captured(text, env, None, "test")
+}
+
+fn summarize_unreferenced_long_set_scaffolding_runs_captured(
+    text: &str,
+    env: &mut Environment,
+    mut capture: Option<&mut retained_sources::Collector>,
+    stage: &'static str,
+) -> String {
     let mut total_scaffold_lines = 0usize;
     let mut total_scaffold_bytes = 0usize;
     for line in text.lines() {
@@ -16098,17 +16200,32 @@ fn summarize_unreferenced_long_set_scaffolding_runs(text: &str, env: &mut Enviro
             text,
             env,
             total_scaffold_lines,
+            capture.as_deref_mut(),
+            stage,
         );
-        return summarize_dense_unreferenced_set_scaffolding_lines(&summarized, env);
+        return summarize_dense_unreferenced_set_scaffolding_lines(
+            &summarized,
+            env,
+            capture,
+            stage,
+        );
     }
 
     let mut out = String::with_capacity(text.len().min(512 * 1024));
     let mut pending = String::new();
     let mut pending_lines = 0usize;
+    let mut retained = capture.as_ref().map(|c| c.pending(text));
+    let mut offset = 0usize;
+    let mut pending_start = 0usize;
 
     for line in text.split_inclusive('\n') {
+        let line_start = offset;
+        offset += line.len();
         let (body, _) = split_line_ending(line);
         if is_unreferenced_long_set_scaffolding_line(body, text) {
+            if pending.is_empty() {
+                pending_start = line_start;
+            }
             pending.push_str(line);
             pending_lines += 1;
             continue;
@@ -16118,25 +16235,43 @@ fn summarize_unreferenced_long_set_scaffolding_runs(text: &str, env: &mut Enviro
             &mut pending,
             &mut pending_lines,
             env,
+            retained.as_mut(),
+            pending_start,
         );
         out.push_str(line);
     }
-    flush_unreferenced_long_set_scaffolding_run(&mut out, &mut pending, &mut pending_lines, env);
-    summarize_dense_unreferenced_set_scaffolding_lines(&out, env)
+    flush_unreferenced_long_set_scaffolding_run(
+        &mut out,
+        &mut pending,
+        &mut pending_lines,
+        env,
+        retained.as_mut(),
+        pending_start,
+    );
+    if let (Some(c), Some(event)) = (capture.as_deref_mut(), retained) {
+        c.record(stage, "long_set_scaffolding_run", text, event);
+    }
+    summarize_dense_unreferenced_set_scaffolding_lines(&out, env, capture, stage)
 }
 
 fn summarize_dense_unreferenced_long_set_scaffolding_lines(
     text: &str,
     env: &mut Environment,
     total_scaffold_lines: usize,
+    capture: Option<&mut retained_sources::Collector>,
+    stage: &'static str,
 ) -> String {
     let mut out = String::with_capacity(text.len().min(512 * 1024));
+    let mut retained = capture.as_ref().map(|c| c.pending(text));
+    let mut offset = 0usize;
     let mut omitted_lines = 0usize;
     let mut omitted_bytes = 0usize;
     let mut summary_inserted = false;
     let mut summary_ending = "\r\n";
 
     for line in text.split_inclusive('\n') {
+        let line_start = offset;
+        offset += line.len();
         let (body, ending) = split_line_ending(line);
         if is_unreferenced_long_set_scaffolding_line(body, text) {
             if !summary_inserted {
@@ -16146,6 +16281,9 @@ fn summarize_dense_unreferenced_long_set_scaffolding_lines(
                 ));
                 summary_inserted = true;
                 summary_ending = ending;
+            }
+            if let Some(event) = retained.as_mut() {
+                event.push(line_start, offset);
             }
             rescue_truncated_urls(body, body.len(), env);
             omitted_lines += 1;
@@ -16163,6 +16301,9 @@ fn summarize_dense_unreferenced_long_set_scaffolding_lines(
             "rem omitted {omitted_lines} unreferenced long-name set scaffolding lines ({omitted_bytes} bytes){summary_ending}"
         ));
     }
+    if let (Some(c), Some(event)) = (capture, retained) {
+        c.record(stage, "dense_long_set_scaffolding", text, event);
+    }
     out
 }
 
@@ -16171,11 +16312,16 @@ fn flush_unreferenced_long_set_scaffolding_run(
     pending: &mut String,
     pending_lines: &mut usize,
     env: &mut Environment,
+    retained: Option<&mut retained_sources::PendingEvent>,
+    pending_start: usize,
 ) {
     if pending.is_empty() {
         return;
     }
     if *pending_lines >= 64 && pending.len() >= 2048 {
+        if let Some(event) = retained {
+            event.push(pending_start, pending_start + pending.len());
+        }
         let ending = if pending.contains("\r\n") {
             "\r\n"
         } else {
@@ -16316,7 +16462,12 @@ fn is_generated_nonascii_set_scaffold_line(line: &str) -> bool {
         && value.bytes().any(|b| b.is_ascii_digit())
 }
 
-fn summarize_dense_unreferenced_set_scaffolding_lines(text: &str, env: &mut Environment) -> String {
+fn summarize_dense_unreferenced_set_scaffolding_lines(
+    text: &str,
+    env: &mut Environment,
+    capture: Option<&mut retained_sources::Collector>,
+    stage: &'static str,
+) -> String {
     let mut total_scaffold_lines = 0usize;
     let mut total_scaffold_bytes = 0usize;
     for line in text.lines() {
@@ -16329,12 +16480,16 @@ fn summarize_dense_unreferenced_set_scaffolding_lines(text: &str, env: &mut Envi
         return text.to_string();
     }
 
+    let mut retained = capture.as_ref().map(|c| c.pending(text));
+    let mut offset = 0usize;
     let mut out = String::with_capacity(text.len().min(512 * 1024));
     let mut omitted_lines = 0usize;
     let mut omitted_bytes = 0usize;
     let mut summary_inserted = false;
 
     for line in text.split_inclusive('\n') {
+        let line_start = offset;
+        offset += line.len();
         let (body, ending) = split_line_ending(line);
         if is_unreferenced_dense_set_scaffolding_line(body, text) {
             if !summary_inserted {
@@ -16342,6 +16497,9 @@ fn summarize_dense_unreferenced_set_scaffolding_lines(text: &str, env: &mut Envi
                     "rem omitted {total_scaffold_lines} unreferenced set scaffolding lines ({total_scaffold_bytes} bytes){ending}"
                 ));
                 summary_inserted = true;
+            }
+            if let Some(event) = retained.as_mut() {
+                event.push(line_start, offset);
             }
             rescue_truncated_urls(body, body.len(), env);
             omitted_lines += 1;
@@ -16355,6 +16513,9 @@ fn summarize_dense_unreferenced_set_scaffolding_lines(text: &str, env: &mut Envi
         env.traits.push(crate::traits::Trait::LineTruncated {
             original_len: omitted_bytes as u64,
         });
+    }
+    if let (Some(c), Some(event)) = (capture, retained) {
+        c.record(stage, "dense_set_scaffolding", text, event);
     }
     out
 }
@@ -17838,6 +17999,14 @@ fn has_oversize_percent_noise_candidate_line(text: &str) -> bool {
 }
 
 fn summarize_long_unresolved_percent_noise_lines(text: &str, env: &mut Environment) -> String {
+    summarize_percent_noise_lines_above(text, env, 0)
+}
+
+fn summarize_percent_noise_lines_above(
+    text: &str,
+    env: &mut Environment,
+    minimum_bytes: usize,
+) -> String {
     let mut out = String::with_capacity(text.len().min(512 * 1024));
     let mut changed = false;
     let mut materialized_seen = std::collections::HashSet::new();
@@ -17850,7 +18019,10 @@ fn summarize_long_unresolved_percent_noise_lines(text: &str, env: &mut Environme
     let mut pending_markers: Vec<&'static str> = Vec::new();
     for line in text.split_inclusive('\n') {
         let (body, ending) = split_line_ending(line);
-        if let Some(summary) = classify_long_unresolved_percent_noise_line(body) {
+        if let Some(summary) = (body.len() > minimum_bytes)
+            .then(|| classify_long_unresolved_percent_noise_line(body))
+            .flatten()
+        {
             changed = true;
             push_percent_noise_anti_analysis_markers(body, &summary.markers, env);
             let should_try_materialize = body.len()
@@ -18404,11 +18576,16 @@ fn preconsume_percent_setter_alias_assignments_before_percent_noise_summary(
 
 fn materialize_direct_percent_setter_alias_assignment(
     line: &str,
-    env: &Environment,
+    env: &mut Environment,
 ) -> Option<String> {
     let trimmed = line.trim_start_matches(['@', ' ', '\t']);
-    let after_open = trimmed.strip_prefix('%')?;
-    let close_rel = after_open.find('%')?;
+    let delimiter = match trimmed.as_bytes().first()? {
+        b'%' => '%',
+        b'!' if env.delayed_expansion => '!',
+        _ => return None,
+    };
+    let after_open = &trimmed[1..];
+    let close_rel = after_open.find(delimiter)?;
     let alias = &after_open[..close_rel];
     if !simple_percent_name_allowed(alias) {
         return None;
@@ -18421,7 +18598,17 @@ fn materialize_direct_percent_setter_alias_assignment(
     if !remainder.trim_start().starts_with('"') {
         return None;
     }
-    Some(format!("{setter}{remainder}"))
+    let materialized = format!("{setter}{remainder}");
+    if delimiter == '!' {
+        // Percent expansion precedes delayed expansion in CMD. The assignment
+        // name itself can contain empty percent references between its letters.
+        Some(normalize::normalize_to_string(
+            &lex::lex(&materialized),
+            env,
+        ))
+    } else {
+        Some(materialized)
+    }
 }
 
 fn preconsume_percent_wrapped_single_char_sets_before_percent_noise_summary(
@@ -18874,7 +19061,9 @@ fn summarize_long_powershell_marker_base64_lines(text: &str, env: &mut Environme
     let mut changed = false;
     for line in text.split_inclusive('\n') {
         let (body, ending) = split_line_ending(line);
-        if is_long_powershell_marker_base64_line(body) {
+        // Ordinary launchers are evidence an analyst needs to inspect. Only
+        // compact exceptionally large encoded wrappers, not normal command lines.
+        if body.len() > 64 * 1024 && is_long_powershell_marker_base64_line(body) {
             changed = true;
             env.traits.push(crate::traits::Trait::LineTruncated {
                 original_len: body.len() as u64,
@@ -20872,7 +21061,11 @@ fn is_windows_profile_check_label(line: &str) -> bool {
         )
 }
 
-fn summarize_long_double_colon_payload_lines(text: &str, env: &mut Environment) -> Option<String> {
+fn summarize_long_double_colon_payload_lines(
+    text: &str,
+    env: &mut Environment,
+    mut capture: Option<&mut retained_sources::Collector>,
+) -> Option<String> {
     const MIN_SUMMARY_BYTES: usize = 1024;
 
     if !contains_double_colon_comment_candidate(text) {
@@ -20880,9 +21073,14 @@ fn summarize_long_double_colon_payload_lines(text: &str, env: &mut Environment) 
     }
 
     let marker_prefixes = self_read_base64_marker_prefixes(text);
+    let mut ordinary = capture.as_ref().map(|c| c.pending(text));
+    let mut marker = capture.as_ref().map(|c| c.pending(text));
+    let mut offset = 0usize;
     let mut changed = false;
     let mut out = String::with_capacity(text.len().min(256 * 1024));
     for line in text.split_inclusive('\n') {
+        let line_start = offset;
+        offset += line.len();
         let (body, eol) = split_line_ending(line);
         let trimmed = body.trim_start_matches(['@', ' ', '\t']);
         let leading_len = body.len() - trimmed.len();
@@ -20898,6 +21096,9 @@ fn summarize_long_double_colon_payload_lines(text: &str, env: &mut Environment) 
             env,
             &mut out,
         ) {
+            if let Some(event) = marker.as_mut() {
+                event.push(line_start, offset);
+            }
             changed = true;
             continue;
         }
@@ -20909,6 +21110,9 @@ fn summarize_long_double_colon_payload_lines(text: &str, env: &mut Environment) 
             continue;
         }
 
+        if let Some(event) = ordinary.as_mut() {
+            event.push(line_start, offset);
+        }
         rescue_truncated_urls(payload, body.len(), env);
         env.traits.push(crate::traits::Trait::LineTruncated {
             original_len: body.len() as u64,
@@ -20921,6 +21125,14 @@ fn summarize_long_double_colon_payload_lines(text: &str, env: &mut Environment) 
         changed = true;
     }
 
+    if let Some(c) = capture.as_mut() {
+        if let Some(event) = ordinary {
+            c.record("root_pre_colon", "long_double_colon", text, event);
+        }
+        if let Some(event) = marker {
+            c.record("root_pre_colon", "colon_self_read_marker", text, event);
+        }
+    }
     changed.then_some(out)
 }
 
@@ -23164,6 +23376,7 @@ fn summarize_large_public_activation_utility_report(
     dedup_traits(&mut traits, max_traits_per_kind);
 
     Some(Report {
+        retained_sources: None,
         deobfuscated: format!(
             "{title}\r\nrem omitted large public activation utility body ({} bytes; static activation/KMS data labels: {})\r\n",
             original_len, data_labels
@@ -26378,7 +26591,7 @@ mod line_cap_tests {
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 4,
+                timeout_secs: crate::test_timeout_secs(4),
                 ..Config::default()
             },
         );
@@ -26533,7 +26746,7 @@ mod line_cap_tests {
         }
         script.push_str("certutil -decode payload.b64 payload.dll\r\n");
         let cfg = Config {
-            timeout_secs: 1,
+            timeout_secs: crate::test_timeout_secs(1),
             ..Config::default()
         };
 
@@ -26664,7 +26877,7 @@ mod line_cap_tests {
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 2,
+                timeout_secs: crate::test_timeout_secs(2),
                 ..Config::default()
             },
         );
@@ -26875,7 +27088,7 @@ mod line_cap_tests {
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 2,
+                timeout_secs: crate::test_timeout_secs(2),
                 ..Config::default()
             },
         );
@@ -26950,7 +27163,7 @@ mod line_cap_tests {
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 2,
+                timeout_secs: crate::test_timeout_secs(2),
                 ..Config::default()
             },
         );
@@ -27009,7 +27222,7 @@ mod line_cap_tests {
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 2,
+                timeout_secs: crate::test_timeout_secs(2),
                 ..Config::default()
             },
         );
@@ -27905,7 +28118,7 @@ mod limits_tests {
     fn timeout_fires() {
         // With timeout=1 and a trivial script, the deadline should NOT fire.
         let cfg = Config {
-            timeout_secs: 1,
+            timeout_secs: crate::test_timeout_secs(1),
             ..Config::default()
         };
         let report = analyze(b"set X=hi\r\necho %X%", &cfg);
@@ -37323,7 +37536,7 @@ mod trait_dedup_tests {
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 3,
+                timeout_secs: crate::test_timeout_secs(3),
                 ..Config::default()
             },
         );
@@ -37355,7 +37568,7 @@ mod trait_dedup_tests {
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 3,
+                timeout_secs: crate::test_timeout_secs(3),
                 ..Config::default()
             },
         );
@@ -37625,7 +37838,7 @@ ipconfig /all >nul
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 2,
+                timeout_secs: crate::test_timeout_secs(2),
                 ..Config::default()
             },
         );
@@ -37650,7 +37863,7 @@ ipconfig /all >nul
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 3,
+                timeout_secs: crate::test_timeout_secs(3),
                 ..Config::default()
             },
         );
@@ -37953,7 +38166,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             &utf16,
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -37982,7 +38195,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             &bytes,
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -38008,7 +38221,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 2,
+                timeout_secs: crate::test_timeout_secs(2),
                 ..Config::default()
             },
         );
@@ -38034,7 +38247,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -38061,7 +38274,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -38093,7 +38306,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -38126,7 +38339,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -38197,7 +38410,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -38507,7 +38720,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -38532,7 +38745,7 @@ powershell -Command \"Invoke-WebRequest -Uri '%ftspUrl%' -OutFile 'C:\\Users\\Pu
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -38758,7 +38971,7 @@ echo keep
     #[test]
     fn giant_percent_noise_line_is_summarized_before_timeout() {
         let config = Config {
-            timeout_secs: 2,
+            timeout_secs: crate::test_timeout_secs(2),
             ..Config::default()
         };
         let script = format!("@echo off\r\n{}\r\n", "%UNSET%".repeat(1_800_000));
@@ -39075,6 +39288,42 @@ echo keep
             )),
             "materialized echoed PowerShell loader URL was not scanned: {:?}\ndeob:\n{}",
             report.traits,
+            report.deobfuscated
+        );
+    }
+
+    #[test]
+    fn large_inert_carrier_preserves_delayed_setter_alias_command() {
+        let mut script =
+            String::from("@echo off\r\nsetlocal enabledelayedexpansion\r\nset \"setter=set\"\r\n");
+        script.push_str(":%");
+        script.push_str(&"InertCarrier%".repeat(20_000));
+        script.push_str("\r\n");
+        for idx in 1..=64 {
+            let value = match idx {
+                1 => "powershell.exe -NoProfile -Command \"Write-Output 'retained-child-proof'\"",
+                _ => " ",
+            };
+            let name = format!("Fragment{idx:03}Token");
+            let mut masked = String::new();
+            for ch in name.chars() {
+                masked.push_str("%Absent%");
+                masked.push(ch);
+            }
+            script.push_str(&format!("!setter! \"{masked}={value}\"\r\n"));
+        }
+        for idx in 1..=64 {
+            script.push_str(&format!("%Fragment{idx:03}Token%"));
+        }
+        script.push_str("\r\n");
+
+        let report = analyze(script.as_bytes(), &Config::default());
+        assert!(
+            report
+                .extracted_ps1
+                .iter()
+                .any(|s| String::from_utf8_lossy(s).contains("retained-child-proof")),
+            "live command after carrier was discarded: {}",
             report.deobfuscated
         );
     }
@@ -40034,7 +40283,7 @@ powershell.exe -WindowStyle Hidden -Command "Write-Host keep"
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -40092,7 +40341,7 @@ powershell.exe -WindowStyle Hidden -Command "Write-Host keep"
         let report = crate::analyze_with_options(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
             &crate::AnalysisOptions::with_environment(environment),
@@ -40288,9 +40537,22 @@ powershell.exe -WindowStyle Hidden -Command "Write-Host keep"
     }
 
     #[test]
+    fn inspectable_powershell_launcher_is_not_summarized() {
+        let b64 = "A".repeat(8192);
+        let line = format!("powershell.exe -nop -c \"iex([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(('{b64}').Replace('marker',''))))\"");
+        let mut env = crate::Environment::new(&Config::default());
+        let cleaned = crate::summarize_long_powershell_marker_base64_lines(&line, &mut env);
+        assert_eq!(cleaned, line);
+        assert!(!env
+            .traits
+            .iter()
+            .any(|t| matches!(t, Trait::LineTruncated { .. })));
+    }
+
+    #[test]
     fn long_powershell_marker_base64_wrapper_lines_are_summarized() {
         let marker = "wtghirpdtuue";
-        let b64 = "A".repeat(4096);
+        let b64 = "A".repeat(96 * 1024);
         let line = format!(
             "powershell.exe -nop -w h -c \"iex([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(('{b64}').Replace('{marker}',''))))\""
         );
@@ -41762,7 +42024,7 @@ echo after
         let report = analyze(
             &script,
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -41793,7 +42055,7 @@ echo after
         let report = analyze(
             &script,
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -41834,7 +42096,7 @@ echo after
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -42162,7 +42424,7 @@ echo after\r\n";
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -42199,7 +42461,7 @@ echo after\r\n";
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 1,
+                timeout_secs: crate::test_timeout_secs(1),
                 ..Config::default()
             },
         );
@@ -42274,7 +42536,7 @@ echo after\r\n";
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 3,
+                timeout_secs: crate::test_timeout_secs(3),
                 ..Config::default()
             },
         );
@@ -48500,7 +48762,7 @@ exit
         let report = analyze(
             script.as_bytes(),
             &Config {
-                timeout_secs: 3,
+                timeout_secs: crate::test_timeout_secs(3),
                 ..Config::default()
             },
         );

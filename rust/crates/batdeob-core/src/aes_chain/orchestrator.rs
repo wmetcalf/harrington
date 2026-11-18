@@ -1625,7 +1625,7 @@ $x.IV=[System.Convert]::FromBase64String('h2l7jJ1Xd8qRkIzzjzvfeg==');
 $x.CreateDecryptor().TransformFinalBlock($bytes,0,$bytes.Length);
 "#;
         let mut env = Environment::new(&Config {
-            timeout_secs: 1,
+            timeout_secs: crate::test_timeout_secs(1),
             ..Config::default()
         });
 
