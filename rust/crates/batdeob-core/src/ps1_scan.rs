@@ -974,7 +974,9 @@ enum PsCompressionStream {
     Deflate,
 }
 
-/// Total inlined text one gzip-literal pass may add (the per-stage cap).
+/// Total inlined text one gzip-literal pass may add. expand_obfuscation_until
+/// runs at most 8 passes, so one normalization inlines at most 8x this (master
+/// had no aggregate bound at all); the analysis deadline still applies.
 const MAX_GZIP_LITERAL_INFLATED_BYTES: usize = 2 * 1024 * 1024;
 
 fn expand_gzip_base64_literals(text: &str) -> String {
@@ -985,7 +987,8 @@ fn expand_gzip_base64_literals(text: &str) -> String {
     }
 
     // All literals in one pass share one inflation budget, so repeated
-    // high-ratio literals cannot amplify a small script into gigabytes.
+    // high-ratio literals cannot amplify a small script into gigabytes per
+    // pass.
     let mut remaining_inflated = MAX_GZIP_LITERAL_INFLATED_BYTES;
     let mut matches: Vec<(usize, usize, String)> = Vec::new();
     let mut shared_wrapper_end = 0usize;
