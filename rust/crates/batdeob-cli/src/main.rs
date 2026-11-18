@@ -1326,7 +1326,26 @@ fn publish_retained_manifest(canonical_out: &Path, target: &Path, bytes: &[u8]) 
     drop(file);
     // A same-directory hard link atomically publishes a complete file and refuses
     // any existing target, including symlinks. --force removed old outputs first.
-    fs::hard_link(&temporary.0, target).context("publish retained-source manifest")?;
+    match fs::hard_link(&temporary.0, target) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(anyhow::Error::from(error).context("publish retained-source manifest"));
+        }
+        // Filesystems without hard links (FAT/exFAT): fall back to a rename,
+        // still refusing to replace an existing target.
+        Err(link_error) => match fs::symlink_metadata(target) {
+            Err(missing) if missing.kind() == std::io::ErrorKind::NotFound => {
+                fs::rename(&temporary.0, target).with_context(|| {
+                    format!("publish retained-source manifest (hard link failed: {link_error})")
+                })?;
+            }
+            _ => {
+                return Err(
+                    anyhow::Error::from(link_error).context("publish retained-source manifest")
+                );
+            }
+        },
+    }
     #[cfg(unix)]
     if let Err(error) = fs::File::open(canonical_out).and_then(|directory| directory.sync_all()) {
         let _ = fs::remove_file(target);

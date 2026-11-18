@@ -1347,6 +1347,24 @@ fn skip_ascii_spaces_tabs(bytes: &[u8], mut pos: usize) -> usize {
     pos
 }
 
+/// Brace nesting depth of each byte, counting only `{` / `}` in code.
+fn ps_code_brace_depths(text: &str, mask: &[PsLexical]) -> Vec<u32> {
+    let mut depth = 0u32;
+    let mut depths = Vec::with_capacity(text.len() + 1);
+    for (i, b) in text.bytes().enumerate() {
+        let code = mask.get(i) == Some(&PsLexical::Code);
+        if code && b == b'}' {
+            depth = depth.saturating_sub(1);
+        }
+        depths.push(depth);
+        if code && b == b'{' {
+            depth = depth.saturating_add(1);
+        }
+    }
+    depths.push(depth);
+    depths
+}
+
 /// `FromBase64String` skips only space, tab, CR and LF; other whitespace
 /// (NBSP, VT, U+2000…) makes it throw, so such a blob never decodes.
 fn ps_from_base64_accepts(value: &str) -> bool {
@@ -1360,6 +1378,25 @@ fn ps_from_base64_accepts(value: &str) -> bool {
 fn ps_stream_reader_text(bytes: &[u8]) -> String {
     if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
         return String::from_utf8_lossy(rest).into_owned();
+    }
+    // UTF-32 BOMs first: FF FE 00 00 also starts with the UTF-16LE BOM.
+    let utf32 = |rest: &[u8], big: bool| -> String {
+        rest.chunks_exact(4)
+            .map(|b| {
+                let unit = if big {
+                    u32::from_be_bytes([b[0], b[1], b[2], b[3]])
+                } else {
+                    u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+                };
+                char::from_u32(unit).unwrap_or(char::REPLACEMENT_CHARACTER)
+            })
+            .collect()
+    };
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE, 0x00, 0x00]) {
+        return utf32(rest, false);
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0x00, 0x00, 0xFE, 0xFF]) {
+        return utf32(rest, true);
     }
     let utf16 = |rest: &[u8], big: bool| -> String {
         let units: Vec<u16> = rest
@@ -1403,6 +1440,7 @@ fn expand_variable_compression_chains(text: &str, deadline: Option<std::time::In
     // decoded stage itself writes variables dynamically, later blobs are no
     // longer known.
     let mut earlier_stage_unknown = false;
+    let mut depths: Option<Vec<u32>> = None;
     let mut chain_spans: Vec<(usize, usize)> = Vec::new();
     for caps in VARIABLE_COMPRESSION_CHAIN_RE.captures_iter(text) {
         if remaining_inflated == 0 || ps_deadline_expired(deadline) {
@@ -1430,7 +1468,14 @@ fn expand_variable_compression_chains(text: &str, deadline: Option<std::time::In
         if mask.get(full.start()) != Some(&PsLexical::Code) {
             continue;
         }
+        let depths = depths.get_or_insert_with(|| ps_code_brace_depths(text, mask));
         let decoded = (|| {
+            // Assignments and chains inside blocks (functions, branches,
+            // loops, scriptblocks) may run in another scope, conditionally,
+            // repeatedly or never; only top-level code is resolved.
+            if depths.get(full.start()).copied() != Some(0) {
+                return None;
+            }
             if earlier_stage_unknown
                 || replacements
                     .last()
@@ -1464,7 +1509,10 @@ fn expand_variable_compression_chains(text: &str, deadline: Option<std::time::In
             {
                 return None;
             }
-            if binding.assigned_at >= full.start() || !ps_from_base64_accepts(&binding.value) {
+            if binding.assigned_at >= full.start()
+                || !ps_from_base64_accepts(&binding.value)
+                || depths.get(binding.assigned_at).copied() != Some(0)
+            {
                 return None;
             }
             let bytes = decode_ps_base64_string(&binding.value)?;
@@ -1970,6 +2018,9 @@ mod gzip_base64_prefilter_tests {
             format!("{c};$blob='{de}'"),
             format!("$blob='{de}'; $blob `\n= '{ex}';{c}"),
             format!("$blob='{de}';$blob<#c#>='{ex}';{c}"),
+            format!("function Seed {{ $blob='{de}' }};{c}"),
+            format!("if ($false) {{ $blob='{de}' }};{c}"),
+            format!("$blob='{de}';function Run {{ {c} }};$blob='x';Run"),
             format!("$blob='{de}';$blob\u{0B}='{ex}';{c}"),
             format!("$blob='{de}';$blob\u{A0}='{ex}';{c}"),
             format!("$blob='{de}';$blob<#c#>,$z='{ex}','y';{c}"),
@@ -2048,6 +2099,17 @@ mod gzip_base64_prefilter_tests {
             out.contains("executed-stage") && !out.contains("decoy-stage"),
             "{out}"
         );
+        // StreamReader honours a UTF-32 byte-order mark.
+        let mut stage = vec![0xFF, 0xFE, 0x00, 0x00];
+        for ch in "Write-Output 'executed-stage'".chars() {
+            stage.extend_from_slice(&(ch as u32).to_le_bytes());
+        }
+        let mut writer = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        writer.write_all(&stage).unwrap_or_default();
+        let blob =
+            base64::engine::general_purpose::STANDARD.encode(writer.finish().unwrap_or_default());
+        let out = super::expand_variable_compression_chains(&format!("$blob='{blob}';{c}"), None);
+        assert!(out.contains("Write-Output 'executed-stage'"), "{out:?}");
         // FromBase64String rejects NBSP; such a blob never decodes.
         let ex = r5_encode("Write-Output 'executed-stage'");
         let source = format!("$blob='{}\u{A0}{}';{c}", &ex[..8], &ex[8..]);
@@ -2217,9 +2279,18 @@ mod gzip_base64_prefilter_tests {
     }
 
     #[test]
+    fn arguments_without_a_powershell_command_option_stay_data() {
+        // Arguments for cmd.exe or any other program are not PowerShell source.
+        let source = "$p.Arguments = \"iex('Remove-Item C:\\victim')\"";
+        let normalized = normalize_ps1_text(source);
+        // Still a call on the literal (aliases may be expanded), not inlined code.
+        assert!(normalized.contains("('Remove-Item C:"), "{normalized}");
+    }
+
+    #[test]
     fn arguments_assignment_keeps_double_quoted_escapes() {
         let normalized =
-            normalize_ps1_text("$p.Arguments = \"Write-Output one`nWrite-Output two\"");
+            normalize_ps1_text("$p.Arguments = \"-nop -c Write-Output one`nWrite-Output two\"");
         assert!(
             !normalized.contains("onenWrite-Output"),
             "escaped newline was dropped from the Arguments value: {normalized}"
@@ -9363,6 +9434,15 @@ static PS_ARGUMENT_ASSIGNMENT_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("PowerShell argument assignment")
 });
 
+/// A PowerShell command line: options first, including a command option.
+/// Only then is an `Arguments` value PowerShell source rather than data for
+/// some other program.
+#[allow(clippy::expect_used)]
+static PS_COMMAND_OPTION_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)^\s*(?:-[a-z]+(?:\s+[a-z]+)?\s+)*-(?:c|co|com|comm|comma|comman|command|e|ec|en|enc|enco|encodedcommand)\s")
+        .expect("PowerShell command option")
+});
+
 fn normalize_ps1_text_inner(
     text: &str,
     deadline: Option<std::time::Instant>,
@@ -9374,7 +9454,7 @@ fn normalize_ps1_text_inner(
     if depth < 8 {
         if let Some(prefix) = PS_ARGUMENT_ASSIGNMENT_RE.find(text) {
             if let Some((end, inner)) = parse_ps_quoted_literal(text, prefix.end()) {
-                if matches!(text[end..].trim(), "" | ";") {
+                if matches!(text[end..].trim(), "" | ";") && PS_COMMAND_OPTION_RE.is_match(&inner) {
                     let (normalized, timed_out) =
                         normalize_ps1_text_inner(&inner, deadline, depth + 1);
                     return (
