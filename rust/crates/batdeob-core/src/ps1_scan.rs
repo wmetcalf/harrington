@@ -1479,6 +1479,35 @@ mod gzip_base64_prefilter_tests {
         assert_eq!(bindings.get("p").map(String::as_str), Some("abcd"));
         assert_eq!(bindings.get("q").map(String::as_str), Some("abcde"));
         assert_eq!(bindings.get("r"), None, "$nullable is not $null");
+
+        // Only a bare `$null` right-hand side is a known empty value.
+        let text = "$b='!';$b=$null ?? '!';$b+='x'";
+        let bindings = super::ps_string_bindings_in_order(text, &super::ps_code_context_mask(text));
+        assert_eq!(
+            bindings.get("b"),
+            None,
+            "compound $null expression was treated as $null"
+        );
+    }
+
+    #[test]
+    fn code_context_mask_ends_comments_and_here_strings_at_any_line_break() {
+        use super::PsLexical;
+        // A lone CR ends a line comment, like LF.
+        let text = "# note\r$blob='x'";
+        let mask = super::ps_code_context_mask(text);
+        assert_eq!(mask[text.find("$blob").unwrap_or(0)], PsLexical::Code);
+        // CRLF and CR here-strings close, so later code is still code.
+        for eol in ["\r\n", "\r", "\n"] {
+            let text = format!("$s=@'{eol}body $blob='y'{eol}'@{eol}$blob='z'");
+            let mask = super::ps_code_context_mask(&text);
+            assert_eq!(
+                mask[text.rfind("$blob").unwrap_or(0)],
+                PsLexical::Code,
+                "here-string did not close with {eol:?}"
+            );
+            assert_eq!(mask[text.find("$blob").unwrap_or(0)], PsLexical::String);
+        }
     }
 
     #[test]
@@ -2888,7 +2917,8 @@ fn ps_code_context_mask(text: &str) -> Vec<PsLexical> {
     let bytes = text.as_bytes();
     let mut mask = vec![PsLexical::String; bytes.len() + 1];
     let mut stack = vec![Mode::Code(0)];
-    let line_start = |i: usize| i == 0 || bytes[i - 1] == b'\n';
+    // PowerShell accepts LF, CRLF and a lone CR as line terminators.
+    let line_start = |i: usize| i == 0 || matches!(bytes[i - 1], b'\n' | b'\r');
     let mut i = 0usize;
     while i < bytes.len() {
         let mode = *stack.last().unwrap_or(&Mode::Code(0));
@@ -2986,7 +3016,7 @@ fn ps_code_context_mask(text: &str) -> Vec<PsLexical> {
                 }
             }
             Mode::LineComment => {
-                if b == b'\n' {
+                if matches!(b, b'\n' | b'\r') {
                     stack.pop();
                     mask[i] = PsLexical::Code;
                 }
@@ -3090,10 +3120,12 @@ fn ps_string_bindings_in_order(
             && rhs
                 .get(..5)
                 .is_some_and(|head| head.eq_ignore_ascii_case("$null"))
-            && !rhs[5..]
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | ':' | '.' | '['));
+            // The statement must end right after `$null`; `$null ?? 'x'` or
+            // `$null + $y` are expressions with other values.
+            && matches!(
+                rhs[5..].trim_start_matches([' ', '\t']).bytes().next(),
+                None | Some(b';' | b'\r' | b'\n' | b'}' | b'#')
+            );
         let event = if is_null {
             Event::Set(String::new())
         } else {
