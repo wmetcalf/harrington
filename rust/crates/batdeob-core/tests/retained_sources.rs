@@ -290,3 +290,43 @@ fn contiguous_scaffolding_run_range_covers_only_the_omitted_set_lines() {
     let covered: usize = event.ranges.iter().map(|r| r.end_byte - r.start_byte).sum();
     assert_eq!(covered, 64 * "set ScaffoldCarrierNm000=vqxzw\r\n".len());
 }
+
+#[test]
+fn contiguous_scaffolding_range_restarts_after_a_short_unsummarized_run() {
+    // A short run is flushed without summarizing; the later summarized run
+    // must record its own start, not the first run's.
+    let mut input = String::from("@echo off\r\n");
+    for i in 0..4 {
+        input.push_str(&format!("set ScaffoldCarrierQq{i:03}=vqxzw\r\n"));
+    }
+    input.push_str("echo between\r\n");
+    for i in 0..64 {
+        input.push_str(&format!("set ScaffoldCarrierNm{i:03}=vqxzw\r\n"));
+    }
+    for i in 0..70 {
+        input.push_str(&format!("echo surviving-command-{i:07}\r\n"));
+    }
+    let report = analyze_with_options(input.as_bytes(), &Config::default(), &options());
+    let retained = report.retained_sources.as_ref().unwrap();
+    let event = retained
+        .events()
+        .iter()
+        .find(|e| e.family == "long_set_scaffolding_run")
+        .unwrap();
+    let snapshot = retained
+        .snapshots()
+        .iter()
+        .find(|s| s.sha256 == event.snapshot_sha256)
+        .unwrap();
+    for range in &event.ranges {
+        let omitted =
+            std::str::from_utf8(&snapshot.bytes[range.start_byte..range.end_byte]).unwrap();
+        assert!(
+            omitted.starts_with("set ScaffoldCarrierNm000") && !omitted.contains("echo"),
+            "range {}..{} is not the summarized run: {:?}",
+            range.start_byte,
+            range.end_byte,
+            &omitted[..omitted.len().min(80)]
+        );
+    }
+}
